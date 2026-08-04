@@ -13,6 +13,8 @@ from exporters import (
     briefing_json_bytes,
     catalog_json_bytes,
     merge_catalog_batches,
+    normalize_editor_products,
+    prepare_products_for_editor,
     to_xlsx_bytes,
 )
 
@@ -188,6 +190,9 @@ if run:
             products_df, rules_df, warnings_df = merge_catalog_batches(batches)
             st.session_state["catalog_batches"] = batches
             st.session_state["products_df"] = products_df
+            st.session_state["products_editor_df"] = (
+                prepare_products_for_editor(products_df)
+            )
             st.session_state["rules_df"] = rules_df
             st.session_state["warnings_df"] = warnings_df
 
@@ -256,14 +261,49 @@ if mode == "Catálogo de brindes" and "products_df" in st.session_state:
                 f"{missing_supplier_count} produto(s) estão sem fornecedor "
                 "identificado. O campo deve ser complementado na revisão."
             )
+        editor_source = st.session_state.get(
+            "products_editor_df",
+            prepare_products_for_editor(products_df),
+        )
+
         edited_products = st.data_editor(
-            products_df,
+            editor_source,
             use_container_width=True,
             num_rows="dynamic",
             hide_index=True,
             key="products_editor",
+            column_config={
+                "unit_price_formatted": st.column_config.TextColumn(
+                    "Valor unitário",
+                    help="Use o padrão brasileiro, por exemplo: R$ 32.000,00",
+                    width="medium",
+                ),
+                "price_min_formatted": st.column_config.TextColumn(
+                    "Valor mínimo",
+                    help="Use o padrão brasileiro, por exemplo: R$ 25.000,00",
+                    width="medium",
+                ),
+                "price_max_formatted": st.column_config.TextColumn(
+                    "Valor máximo",
+                    help="Use o padrão brasileiro, por exemplo: R$ 40.000,00",
+                    width="medium",
+                ),
+                "price_reference_qty_formatted": st.column_config.TextColumn(
+                    "Qtd. de referência",
+                    help="Exemplo: 5.000",
+                    width="small",
+                ),
+                "min_order_qty_formatted": st.column_config.TextColumn(
+                    "Pedido mínimo",
+                    help="Exemplo: 5.000",
+                    width="small",
+                ),
+            },
         )
-        st.session_state["edited_products_df"] = edited_products
+        st.session_state["products_editor_df"] = edited_products
+        st.session_state["edited_products_df"] = (
+            normalize_editor_products(edited_products)
+        )
 
     with tab2:
         st.dataframe(rules_df, use_container_width=True, hide_index=True)
@@ -274,10 +314,16 @@ if mode == "Catálogo de brindes" and "products_df" in st.session_state:
         else:
             st.dataframe(warnings_df, use_container_width=True, hide_index=True)
 
-    final_products = st.session_state.get("edited_products_df", products_df)
+    final_products = st.session_state.get(
+        "edited_products_df",
+        products_df,
+    )
+    review_products = prepare_products_for_editor(final_products)
+
     xlsx = to_xlsx_bytes(
         {
-            "Produtos": final_products,
+            "Produtos": review_products,
+            "Dados técnicos": final_products,
             "Regras gerais": rules_df,
             "Alertas": warnings_df,
         }

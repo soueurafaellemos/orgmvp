@@ -5,7 +5,221 @@ import json
 
 import pandas as pd
 
+
 from models import CatalogBatch, ProjectBriefing
+
+
+MONEY_COLUMNS = ("unit_price", "price_min", "price_max")
+QUANTITY_COLUMNS = ("price_reference_qty", "min_order_qty")
+
+FORMATTED_COLUMN_LABELS = {
+    "unit_price_formatted": "Valor unitário",
+    "price_min_formatted": "Valor mínimo",
+    "price_max_formatted": "Valor máximo",
+    "price_reference_qty_formatted": "Qtd. de referência",
+    "min_order_qty_formatted": "Pedido mínimo",
+}
+
+
+def _is_missing(value) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return not str(value).strip()
+
+
+def _currency_prefix(currency: object) -> str:
+    normalized = str(currency or "").strip().upper()
+    return {
+        "BRL": "R$ ",
+        "USD": "US$ ",
+        "EUR": "€ ",
+    }.get(normalized, "")
+
+
+def format_pt_br_number(
+    value: object,
+    *,
+    decimals: int = 2,
+    prefix: str = "",
+) -> str:
+    """Ex.: 32000 -> R$ 32.000,00."""
+    if _is_missing(value):
+        return ""
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    formatted = f"{numeric:,.{decimals}f}"
+    formatted = (
+        formatted.replace(",", "__THOUSANDS__")
+        .replace(".", ",")
+        .replace("__THOUSANDS__", ".")
+    )
+    return f"{prefix}{formatted}"
+
+
+def parse_pt_br_number(value: object) -> float | None:
+    """Aceita 32000, 32.000, 32.000,00, R$ 32.000,00 ou 35.5."""
+    if _is_missing(value):
+        return None
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+
+    text = (
+        str(value)
+        .strip()
+        .replace("R$", "")
+        .replace("US$", "")
+        .replace("€", "")
+        .replace(" ", "")
+    )
+
+    if not text:
+        return None
+
+    # Padrão brasileiro completo: 1.234,56
+    if "." in text and "," in text:
+        text = text.replace(".", "").replace(",", ".")
+    elif "," in text:
+        # Vírgula é decimal: 1234,56
+        text = text.replace(".", "").replace(",", ".")
+    elif "." in text:
+        parts = text.split(".")
+        if len(parts) > 2:
+            # 1.234.567
+            text = "".join(parts)
+        elif len(parts) == 2 and len(parts[1]) == 3:
+            # 32.000 no padrão brasileiro.
+            text = "".join(parts)
+        # 35.5 permanece decimal.
+
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def parse_pt_br_integer(value: object) -> int | None:
+    parsed = parse_pt_br_number(value)
+    return None if parsed is None else int(round(parsed))
+
+
+def prepare_products_for_editor(products_df: pd.DataFrame) -> pd.DataFrame:
+    """Cria uma visão amigável, preservando os números na base técnica."""
+    editor_df = products_df.copy()
+
+    for column in MONEY_COLUMNS:
+        formatted_column = f"{column}_formatted"
+        editor_df[formatted_column] = editor_df.apply(
+            lambda row, col=column: format_pt_br_number(
+                row.get(col),
+                decimals=2,
+                prefix=_currency_prefix(row.get("currency")),
+            ),
+            axis=1,
+        )
+
+    for column in QUANTITY_COLUMNS:
+        formatted_column = f"{column}_formatted"
+        editor_df[formatted_column] = editor_df[column].apply(
+            lambda value: format_pt_br_number(value, decimals=0)
+        )
+
+    editor_df = editor_df.drop(
+        columns=[
+            column
+            for column in MONEY_COLUMNS + QUANTITY_COLUMNS
+            if column in editor_df.columns
+        ]
+    )
+
+    # Coloca os campos amigáveis junto das informações comerciais.
+    preferred_order = [
+        "source_file",
+        "supplier_name",
+        "supplier_alert",
+        "catalog_name",
+        "document_year",
+        "source_page",
+        "category",
+        "sku",
+        "name",
+        "description",
+        "unit_price_formatted",
+        "price_min_formatted",
+        "price_max_formatted",
+        "currency",
+        "price_status",
+        "price_reference_qty_formatted",
+        "price_notes",
+        "price_alert",
+        "capacity",
+        "capacity_ml",
+        "dimensions_raw",
+        "material",
+        "finish",
+        "decoration",
+        "origin",
+        "development_status",
+        "min_order_qty_formatted",
+        "customizable",
+        "licensing_notes",
+        "tags",
+        "confidence",
+        "missing_fields",
+        "data_quality_alerts",
+        "evidence",
+    ]
+    existing = [column for column in preferred_order if column in editor_df.columns]
+    remaining = [
+        column for column in editor_df.columns if column not in existing
+    ]
+    return editor_df[existing + remaining]
+
+
+def normalize_editor_products(editor_df: pd.DataFrame) -> pd.DataFrame:
+    """Converte a visualização brasileira de volta para números técnicos."""
+    normalized = editor_df.copy()
+
+    for column in MONEY_COLUMNS:
+        formatted_column = f"{column}_formatted"
+        if formatted_column in normalized.columns:
+            normalized[column] = normalized[formatted_column].apply(
+                parse_pt_br_number
+            )
+
+    for column in QUANTITY_COLUMNS:
+        formatted_column = f"{column}_formatted"
+        if formatted_column in normalized.columns:
+            normalized[column] = normalized[formatted_column].apply(
+                parse_pt_br_integer
+            )
+
+    formatted_columns = [
+        column
+        for column in normalized.columns
+        if column.endswith("_formatted")
+    ]
+    normalized = normalized.drop(columns=formatted_columns)
+
+    for column in PRODUCT_COLUMN_ORDER:
+        if column not in normalized.columns:
+            normalized[column] = None
+
+    remaining = [
+        column
+        for column in normalized.columns
+        if column not in PRODUCT_COLUMN_ORDER
+    ]
+    return normalized[PRODUCT_COLUMN_ORDER + remaining]
 
 
 PRODUCT_COLUMN_ORDER = [
@@ -285,10 +499,23 @@ def briefing_json_bytes(briefing: ProjectBriefing) -> bytes:
 
 def briefing_dataframe(briefing: ProjectBriefing) -> pd.DataFrame:
     rows = []
+    monetary_fields = {"budget_total_brl", "budget_unit_brl"}
+    quantity_fields = {"audience_quantity"}
+
     for key, value in briefing.model_dump().items():
         if isinstance(value, list):
             value = " | ".join(str(item) for item in value)
+        elif key in monetary_fields:
+            value = format_pt_br_number(
+                value,
+                decimals=2,
+                prefix="R$ ",
+            )
+        elif key in quantity_fields:
+            value = format_pt_br_number(value, decimals=0)
+
         rows.append({"campo": key, "valor": value})
+
     return pd.DataFrame(rows)
 
 
@@ -352,6 +579,21 @@ def to_xlsx_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
                     len(safe_df.columns) - 1,
                 )
 
+            money_format = workbook.add_format(
+                {
+                    "num_format": 'R$ #,##0.00',
+                    "border": 1,
+                    "valign": "top",
+                }
+            )
+            integer_format = workbook.add_format(
+                {
+                    "num_format": "#,##0",
+                    "border": 1,
+                    "valign": "top",
+                }
+            )
+
             for col_index, column in enumerate(safe_df.columns):
                 worksheet.write(
                     0,
@@ -369,11 +611,19 @@ def to_xlsx_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
                     + [min(len(value), 60) for value in values]
                 )
                 width = min(max(max_len + 2, 12), 42)
+
+                if column in MONEY_COLUMNS:
+                    selected_format = money_format
+                elif column in QUANTITY_COLUMNS:
+                    selected_format = integer_format
+                else:
+                    selected_format = cell_format
+
                 worksheet.set_column(
                     col_index,
                     col_index,
                     width,
-                    cell_format,
+                    selected_format,
                 )
 
             if not safe_df.empty:
