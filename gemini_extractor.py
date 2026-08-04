@@ -13,12 +13,14 @@ from models import (
     CatalogBatch,
     DocumentClassification,
     ProjectBriefing,
+    VenueBatch,
 )
 from prompts import (
     ACTIVATION_SYSTEM_PROMPT,
     BRIEFING_SYSTEM_PROMPT,
     CATALOG_SYSTEM_PROMPT,
     CLASSIFICATION_SYSTEM_PROMPT,
+    VENUE_SYSTEM_PROMPT,
 )
 
 
@@ -232,6 +234,55 @@ def extract_activation(
 
     if progress_callback:
         progress_callback(total, total, "Extração concluída")
+    return batches
+
+
+
+def extract_venues(
+    docs: list[InputDocument],
+    *,
+    api_key: str | None,
+    model: str,
+    pages_per_batch: int,
+    start_page: int,
+    end_page: int | None,
+    progress_callback=None,
+) -> list[VenueBatch]:
+    client = get_client(api_key)
+    jobs = _jobs(
+        docs,
+        pages_per_batch=pages_per_batch,
+        start_page=start_page,
+        end_page=end_page,
+    )
+    batches = []
+    total = len(jobs)
+
+    for index, (doc, first, last, original_name) in enumerate(jobs, 1):
+        if progress_callback:
+            progress_callback(index - 1, total, f"Analisando {doc.name}")
+
+        instruction = (
+            f"Arquivo original: {original_name}. "
+            f"Páginas: {first or 'não aplicável'} a "
+            f"{last or 'não aplicável'}. Use o nome original em source_file "
+            "e a numeração original em source_page."
+        )
+
+        batches.append(
+            _structured_call(
+                client,
+                model=model,
+                prompt=VENUE_SYSTEM_PROMPT + "\n\n" + instruction,
+                docs=[doc],
+                schema=VenueBatch,
+                context=doc.name,
+            )
+        )
+
+    if progress_callback:
+        progress_callback(total, total, "Extração concluída")
+
     return batches
 
 

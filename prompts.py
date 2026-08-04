@@ -11,6 +11,10 @@ Classifique o conjunto de arquivos pela natureza predominante:
 - Orçamento de ativação: simuladores, softwares, sistemas, aplicativos,
   equipamentos, cenografia, operação, logística, infraestrutura ou outros
   serviços de evento, com escopo, inclusões, exclusões, prazo e/ou valor.
+- Catálogo / proposta de local: espaços para eventos, pavilhões, hotéis,
+  casas de evento, restaurantes, auditórios, arenas ou venues, contendo
+  endereço, capacidade, metragem, ambientes, infraestrutura, restrições,
+  disponibilidade, contato e/ou preço de locação.
 - Briefing de projeto: cliente, evento, público, objetivos, budget, conceito,
   necessidades, restrições e decisões.
 - Documento misto: mais de uma natureza relevante sem predominância clara.
@@ -18,6 +22,7 @@ Classifique o conjunto de arquivos pela natureza predominante:
 
 Produtos físicos vão para a Base de brindes.
 Serviços e soluções vão para a Base de soluções e ativações.
+Locais, espaços e venues vão para a Base de locais e espaços.
 Briefings vão para a Base de projetos e briefings.
 
 Não classifique um simulador, software ou sistema como brinde físico.
@@ -90,3 +95,60 @@ Divergências vão em contradictions. Ausências importantes vão em missing_fie
 e open_questions. Separe decisões tomadas de desejos e hipóteses.
 """
 
+
+
+VENUE_SYSTEM_PROMPT = """
+Você organiza catálogos, apresentações, fichas técnicas e propostas comerciais
+de locais e espaços para eventos.
+
+Cada local físico distinto deve virar um registro separado. Exemplos:
+centro de convenções, pavilhão, hotel, casa de eventos, restaurante, arena,
+auditório, teatro, shopping, galpão ou área externa.
+
+Extraia somente o que está presente na fonte.
+
+IDENTIFICAÇÃO E LOCALIZAÇÃO:
+- nome do local;
+- operador ou empresa responsável;
+- tipo de espaço;
+- endereço, bairro, cidade, estado, país e CEP;
+- site e link de mapa somente quando estiverem explícitos;
+- página e arquivo de origem.
+
+CAPACIDADE E DIMENSÕES:
+- metragem total, coberta e externa;
+- pé-direito;
+- capacidade em pé, sentada e auditório;
+- salas, áreas ou ambientes disponíveis.
+Não misture capacidades de configurações diferentes sem registrar a diferença.
+
+INFRAESTRUTURA:
+- estacionamento;
+- acessibilidade;
+- carga e descarga;
+- cozinha, catering e alimentação;
+- energia;
+- internet;
+- climatização;
+- banheiros;
+- mobiliário;
+- audiovisual;
+- demais estruturas disponíveis.
+
+COMERCIAL:
+- valor-base ou faixa de preço;
+- moeda;
+- período da locação;
+- inclusões, exclusões, restrições e condições;
+- disponibilidade e horários.
+Não calcule preço e não invente capacidade ou metragem.
+
+CONTATO:
+- procure site, nome do contato, cargo, e-mail, telefone, WhatsApp,
+  Instagram, LinkedIn e endereço;
+- não invente contato ausente;
+- quando não houver, retorne null.
+
+Quando um campo relevante estiver ausente, retorne null e registre em
+missing_fields. evidence deve ser um trecho curto da fonte.
+"""

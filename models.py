@@ -41,6 +41,7 @@ class DocumentClassification(BaseModel):
         "Catálogo de brindes",
         "Tabela comercial de produtos",
         "Orçamento de ativação",
+        "Catálogo / proposta de local",
         "Briefing de projeto",
         "Documento misto",
         "Outro",
@@ -48,12 +49,14 @@ class DocumentClassification(BaseModel):
     suggested_mode: Literal[
         "catalog",
         "activation",
+        "venue",
         "briefing",
         "manual_review",
     ]
     destination_base: Literal[
         "Base de brindes",
         "Base de soluções e ativações",
+        "Base de locais e espaços",
         "Base de projetos e briefings",
         "Revisão manual",
     ]
@@ -63,6 +66,7 @@ class DocumentClassification(BaseModel):
     document_year: int | None = None
     contains_products: bool = False
     contains_services_or_activations: bool = False
+    contains_venues_or_spaces: bool = False
     contains_prices: bool = False
     contains_project_briefing: bool = False
     summary: str
@@ -197,6 +201,90 @@ class ActivationBatch(BaseModel):
     document_year: int | None = None
     global_rules: list[GlobalRule] = Field(default_factory=list)
     solutions: list[ActivationSolution] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+
+class VenueSpace(BaseModel):
+    source_file: str
+    source_page: int | None = None
+    operator_name: str | None = None
+
+    name: str
+    venue_type: Literal[
+        "Centro de convenções",
+        "Pavilhão",
+        "Casa de eventos",
+        "Hotel",
+        "Restaurante / bar",
+        "Espaço cultural",
+        "Shopping",
+        "Área externa",
+        "Estádio / arena",
+        "Auditório / teatro",
+        "Galpão",
+        "Outro",
+        "Não informado",
+    ] = "Não informado"
+    description: str | None = None
+
+    address: str | None = None
+    neighborhood: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+    postal_code: str | None = None
+    map_url: str | None = None
+    website_url: str | None = None
+
+    total_area_sqm: float | None = None
+    indoor_area_sqm: float | None = None
+    outdoor_area_sqm: float | None = None
+    ceiling_height_m: float | None = None
+    standing_capacity: int | None = None
+    seated_capacity: int | None = None
+    auditorium_capacity: int | None = None
+    rooms_or_areas: list[str] = Field(default_factory=list)
+
+    parking: str | None = None
+    accessibility: str | None = None
+    loading_access: str | None = None
+    kitchen_or_catering: str | None = None
+    power_supply: str | None = None
+    internet: str | None = None
+    air_conditioning: str | None = None
+    bathrooms: str | None = None
+    furniture: str | None = None
+    audiovisual: str | None = None
+    infrastructure: list[str] = Field(default_factory=list)
+
+    included_items: list[str] = Field(default_factory=list)
+    excluded_items: list[str] = Field(default_factory=list)
+    restrictions: list[str] = Field(default_factory=list)
+    operating_hours: str | None = None
+    event_availability: str | None = None
+
+    base_price: float | None = None
+    price_min: float | None = None
+    price_max: float | None = None
+    currency: Currency = "Não informado"
+    price_status: PriceStatus = "Não informado"
+    pricing_period: str | None = None
+    price_notes: str | None = None
+
+    tags: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+    missing_fields: list[str] = Field(default_factory=list)
+    evidence: str | None = None
+
+
+class VenueBatch(BaseModel):
+    operator_name: str | None = None
+    venue_contact: SupplierContact | None = None
+    document_name: str | None = None
+    document_year: int | None = None
+    global_rules: list[GlobalRule] = Field(default_factory=list)
+    venues: list[VenueSpace] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 

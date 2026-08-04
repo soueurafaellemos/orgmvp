@@ -18,17 +18,22 @@ from exporters import (
     classification_dataframe,
     merge_activation_batches,
     merge_catalog_batches,
+    merge_venue_batches,
     normalize_editor_activations,
     normalize_editor_products,
+    normalize_editor_venues,
     prepare_activations_for_editor,
     prepare_products_for_editor,
+    prepare_venues_for_editor,
     to_xlsx_bytes,
+    venue_json_bytes,
 )
 from gemini_extractor import (
     classify_documents,
     extract_activation,
     extract_briefing,
     extract_catalog,
+    extract_venues,
 )
 
 
@@ -40,7 +45,7 @@ st.set_page_config(
 
 st.title("Organizador universal de pré-produção")
 st.caption(
-    "Organiza brindes, soluções de ativações e briefings em bases separadas."
+    "Organiza brindes, soluções de ativações, locais e briefings em bases separadas."
 )
 
 with st.sidebar:
@@ -73,6 +78,7 @@ mode_label = st.radio(
         "Detecção automática",
         "Catálogo / tabela de brindes",
         "Soluções / ativações",
+        "Locais / espaços",
         "Briefing / projeto",
     ],
     horizontal=True,
@@ -82,6 +88,7 @@ mode_map = {
     "Detecção automática": "auto",
     "Catálogo / tabela de brindes": "catalog",
     "Soluções / ativações": "activation",
+    "Locais / espaços": "venue",
     "Briefing / projeto": "briefing",
 }
 selected_mode = mode_map[mode_label]
@@ -321,6 +328,30 @@ if run:
             st.session_state["result_rules"] = rules
             st.session_state["result_alerts"] = alerts
             st.session_state["result_suppliers"] = suppliers
+
+
+
+        elif route == "venue":
+            batches = extract_venues(
+                docs,
+                api_key=api_key,
+                model=model,
+                pages_per_batch=int(pages_per_batch),
+                start_page=int(start_page),
+                end_page=end_page,
+                progress_callback=update,
+            )
+            records, rules, alerts, contacts = merge_venue_batches(
+                batches
+            )
+            st.session_state["result_type"] = "venue"
+            st.session_state["result_records"] = records
+            st.session_state["result_editor"] = (
+                prepare_venues_for_editor(records)
+            )
+            st.session_state["result_rules"] = rules
+            st.session_state["result_alerts"] = alerts
+            st.session_state["result_contacts"] = contacts
 
         elif route == "briefing":
             briefing = extract_briefing(
@@ -575,6 +606,141 @@ if result_type == "activation":
             classification,
         ),
         "base_solucoes_ativacoes.json",
+        use_container_width=True,
+    )
+
+
+
+if result_type == "venue":
+    st.divider()
+    st.header("Base de locais e espaços")
+
+    records = st.session_state["result_records"]
+    rules = st.session_state["result_rules"]
+    alerts = st.session_state["result_alerts"]
+    contacts = st.session_state["result_contacts"]
+
+    tabs = st.tabs(
+        [
+            "Locais",
+            "Imagem / fonte",
+            "Contatos",
+            "Regras gerais",
+            "Alertas",
+        ]
+    )
+
+    with tabs[0]:
+        edited = st.data_editor(
+            st.session_state["result_editor"],
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            key="venue_editor_v5",
+            column_config={
+                "contact_website": st.column_config.LinkColumn(
+                    "Site do local"
+                ),
+                "map_url": st.column_config.LinkColumn(
+                    "Mapa"
+                ),
+                "base_price_formatted": st.column_config.TextColumn(
+                    "Valor-base"
+                ),
+                "price_min_formatted": st.column_config.TextColumn(
+                    "Valor mínimo"
+                ),
+                "price_max_formatted": st.column_config.TextColumn(
+                    "Valor máximo"
+                ),
+                "standing_capacity_formatted":
+                    st.column_config.TextColumn(
+                        "Capacidade em pé"
+                    ),
+                "seated_capacity_formatted":
+                    st.column_config.TextColumn(
+                        "Capacidade sentada"
+                    ),
+                "auditorium_capacity_formatted":
+                    st.column_config.TextColumn(
+                        "Capacidade auditório"
+                    ),
+                "total_area_sqm_formatted":
+                    st.column_config.TextColumn(
+                        "Área total (m²)"
+                    ),
+            },
+        )
+        st.session_state["result_editor"] = edited
+        technical = normalize_editor_venues(edited)
+
+    with tabs[1]:
+        _source_image_tab(records, docs, "local")
+
+    with tabs[2]:
+        edited_contacts = st.data_editor(
+            contacts,
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            key="venue_contacts_editor_v5",
+            column_config={
+                "website_url": st.column_config.LinkColumn("Site"),
+                "instagram_url": st.column_config.LinkColumn(
+                    "Instagram"
+                ),
+                "linkedin_url": st.column_config.LinkColumn(
+                    "LinkedIn"
+                ),
+            },
+        )
+        contacts = edited_contacts
+
+    with tabs[3]:
+        st.dataframe(rules, use_container_width=True)
+
+    with tabs[4]:
+        if alerts.empty:
+            st.success("Nenhum alerta adicional.")
+        else:
+            st.dataframe(alerts, use_container_width=True)
+
+    classification_df = (
+        classification_dataframe(classification)
+        if classification
+        else pd.DataFrame()
+    )
+
+    xlsx = to_xlsx_bytes(
+        {
+            "Locais": edited,
+            "Dados técnicos": technical,
+            "Contatos": contacts,
+            "Regras gerais": rules,
+            "Alertas": alerts,
+            "Classificação": classification_df,
+        }
+    )
+
+    d1, d2 = st.columns(2)
+
+    d1.download_button(
+        "Baixar Excel",
+        xlsx,
+        "base_locais_espacos.xlsx",
+        use_container_width=True,
+    )
+
+    d2.download_button(
+        "Baixar JSON",
+        venue_json_bytes(
+            technical,
+            rules,
+            alerts,
+            contacts,
+            classification,
+        ),
+        "base_locais_espacos.json",
         use_container_width=True,
     )
 

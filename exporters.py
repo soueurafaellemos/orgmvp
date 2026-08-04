@@ -10,6 +10,7 @@ from models import (
     CatalogBatch,
     DocumentClassification,
     ProjectBriefing,
+    VenueBatch,
 )
 
 
@@ -107,6 +108,22 @@ def _contact_row(contact, fallback_name=None) -> dict:
     data["supplier_name"] = (
         data.get("supplier_name") or fallback_name
     )
+    data["confidence"] = float(data.get("confidence") or 0.0)
+
+    for field in (
+        "website_url",
+        "contact_name",
+        "contact_role",
+        "email",
+        "phone",
+        "whatsapp",
+        "instagram_url",
+        "linkedin_url",
+        "address",
+        "notes",
+    ):
+        data.setdefault(field, None)
+
     has_contact = any(
         data.get(field)
         for field in (
@@ -129,10 +146,36 @@ def _contact_row(contact, fallback_name=None) -> dict:
 
 def _dedupe_suppliers(rows: list[dict]) -> pd.DataFrame:
     if not rows:
-        return pd.DataFrame()
+        return pd.DataFrame(
+            columns=[
+                "supplier_name",
+                "website_url",
+                "contact_name",
+                "contact_role",
+                "email",
+                "phone",
+                "whatsapp",
+                "instagram_url",
+                "linkedin_url",
+                "address",
+                "notes",
+                "confidence",
+                "contact_alert",
+            ]
+        )
+
     df = pd.DataFrame(rows)
+
     if "supplier_name" not in df.columns:
-        return df
+        df["supplier_name"] = None
+    if "confidence" not in df.columns:
+        df["confidence"] = 0.0
+
+    df["confidence"] = pd.to_numeric(
+        df["confidence"],
+        errors="coerce",
+    ).fillna(0.0)
+
     return (
         df.sort_values(
             by=["confidence"],
@@ -391,6 +434,260 @@ def merge_activation_batches(batches):
         pd.DataFrame(alerts),
         _dedupe_suppliers(suppliers),
     )
+
+
+
+def merge_venue_batches(batches):
+    venues, rules, alerts, contacts = [], [], [], []
+
+    for batch_index, batch in enumerate(batches, 1):
+        contacts.append(
+            _contact_row(batch.venue_contact, batch.operator_name)
+        )
+        contact = contacts[-1]
+
+        for venue in batch.venues:
+            row = venue.model_dump()
+            row["operator_name"] = (
+                venue.operator_name or batch.operator_name
+            )
+            row["contact_website"] = (
+                venue.website_url or contact.get("website_url")
+            )
+            row["contact_name"] = contact.get("contact_name")
+            row["contact_email"] = contact.get("email")
+            row["contact_phone"] = contact.get("phone")
+            row["contact_whatsapp"] = contact.get("whatsapp")
+            row["document_name"] = batch.document_name
+            row["document_year"] = batch.document_year
+
+            row["rooms_or_areas"] = _join(venue.rooms_or_areas)
+            row["infrastructure"] = _join(venue.infrastructure)
+            row["included_items"] = _join(venue.included_items)
+            row["excluded_items"] = _join(venue.excluded_items)
+            row["restrictions"] = _join(venue.restrictions)
+            row["tags"] = _join(venue.tags)
+            row["missing_fields"] = _join(venue.missing_fields)
+
+            row["image_reference"] = (
+                f"{row.get('source_file')} — página "
+                f"{row.get('source_page')}"
+                if row.get("source_page")
+                else row.get("source_file")
+            )
+
+            quality = []
+
+            if _missing(row.get("address")) and (
+                _missing(row.get("city"))
+                or _missing(row.get("state"))
+            ):
+                row["location_alert"] = (
+                    "ALERTA: localização não identificada"
+                )
+                quality.append("Localização não identificada")
+            else:
+                row["location_alert"] = "OK"
+
+            has_capacity = any(
+                row.get(field) is not None
+                for field in (
+                    "standing_capacity",
+                    "seated_capacity",
+                    "auditorium_capacity",
+                )
+            )
+            if not has_capacity:
+                row["capacity_alert"] = (
+                    "ATENÇÃO: capacidade não informada"
+                )
+                quality.append("Capacidade não informada")
+            else:
+                row["capacity_alert"] = "OK"
+
+            has_price = any(
+                row.get(field) is not None
+                for field in (
+                    "base_price",
+                    "price_min",
+                    "price_max",
+                )
+            )
+            if venue.price_status == "Sob consulta":
+                row["price_alert"] = "ATENÇÃO: preço sob consulta"
+            elif not has_price:
+                row["price_alert"] = (
+                    "ATENÇÃO: preço de locação não informado"
+                )
+                quality.append("Preço não informado")
+            else:
+                row["price_alert"] = "OK"
+
+            row["data_quality_alerts"] = _join(quality)
+            venues.append(row)
+
+        for rule in batch.global_rules:
+            rule_row = rule.model_dump()
+            rule_row["batch"] = batch_index
+            rules.append(rule_row)
+
+        for warning in batch.warnings:
+            alerts.append(
+                {
+                    "severity": "Informativo",
+                    "record_name": None,
+                    "message": warning,
+                }
+            )
+
+    venues_df = pd.DataFrame(venues)
+    if not venues_df.empty:
+        venues_df = (
+            venues_df.sort_values(
+                "confidence",
+                ascending=False,
+                na_position="last",
+            )
+            .drop_duplicates(
+                ["name", "city", "source_page"],
+                keep="first",
+            )
+            .reset_index(drop=True)
+        )
+
+    return (
+        venues_df,
+        pd.DataFrame(rules),
+        pd.DataFrame(alerts),
+        _dedupe_suppliers(contacts),
+    )
+
+
+def prepare_venues_for_editor(df):
+    editor = df.copy()
+
+    for column in (
+        "base_price",
+        "price_min",
+        "price_max",
+    ):
+        if column in editor.columns:
+            editor[column + "_formatted"] = editor.apply(
+                lambda row, col=column: format_pt_br_number(
+                    row.get(col),
+                    prefix=_prefix(row.get("currency")),
+                ),
+                axis=1,
+            )
+
+    for column in (
+        "standing_capacity",
+        "seated_capacity",
+        "auditorium_capacity",
+    ):
+        if column in editor.columns:
+            editor[column + "_formatted"] = editor[column].apply(
+                lambda value: format_pt_br_number(
+                    value,
+                    decimals=0,
+                )
+            )
+
+    for column in (
+        "total_area_sqm",
+        "indoor_area_sqm",
+        "outdoor_area_sqm",
+        "ceiling_height_m",
+    ):
+        if column in editor.columns:
+            editor[column + "_formatted"] = editor[column].apply(
+                lambda value: format_pt_br_number(
+                    value,
+                    decimals=2,
+                )
+            )
+
+    raw_columns = [
+        "base_price",
+        "price_min",
+        "price_max",
+        "standing_capacity",
+        "seated_capacity",
+        "auditorium_capacity",
+        "total_area_sqm",
+        "indoor_area_sqm",
+        "outdoor_area_sqm",
+        "ceiling_height_m",
+    ]
+    return editor.drop(
+        columns=[
+            column
+            for column in raw_columns
+            if column in editor.columns
+        ]
+    )
+
+
+def normalize_editor_venues(df):
+    normalized = df.copy()
+
+    for column in (
+        "base_price",
+        "price_min",
+        "price_max",
+        "total_area_sqm",
+        "indoor_area_sqm",
+        "outdoor_area_sqm",
+        "ceiling_height_m",
+    ):
+        formatted = column + "_formatted"
+        if formatted in normalized.columns:
+            normalized[column] = normalized[formatted].apply(
+                parse_pt_br_number
+            )
+
+    for column in (
+        "standing_capacity",
+        "seated_capacity",
+        "auditorium_capacity",
+    ):
+        formatted = column + "_formatted"
+        if formatted in normalized.columns:
+            normalized[column] = normalized[formatted].apply(
+                parse_pt_br_integer
+            )
+
+    return normalized.drop(
+        columns=[
+            column
+            for column in normalized.columns
+            if column.endswith("_formatted")
+        ]
+    )
+
+
+def venue_json_bytes(
+    venues_df,
+    rules_df,
+    alerts_df,
+    contacts_df,
+    classification=None,
+):
+    payload = {
+        "classification": (
+            classification.model_dump() if classification else None
+        ),
+        "destination_base": "Base de locais e espaços",
+        "contacts": _records(contacts_df),
+        "venues": _records(venues_df),
+        "global_rules": _records(rules_df),
+        "alerts": _records(alerts_df),
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+    ).encode("utf-8")
 
 
 def prepare_products_for_editor(df):
