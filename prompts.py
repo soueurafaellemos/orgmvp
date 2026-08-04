@@ -152,3 +152,42 @@ CONTATO:
 Quando um campo relevante estiver ausente, retorne null e registre em
 missing_fields. evidence deve ser um trecho curto da fonte.
 """
+
+
+ACTIVATION_FALLBACK_PROMPT = """
+O documento já foi identificado como orçamento ou proposta de ativação.
+A extração anterior não conseguiu gerar linhas.
+
+Faça uma extração objetiva e simplificada.
+
+Crie UM ITEM para cada solução, serviço, equipamento, sistema, simulador ou
+linha comercial distinta mencionada no documento.
+
+Exemplos de itens que devem virar linhas separadas:
+- sistema de pontuação;
+- fila virtual;
+- simulador de skate;
+- simulador BMX;
+- aplicativo;
+- cenografia;
+- operação;
+- logística;
+- equipamento interativo.
+
+Para cada item, procure:
+- nome;
+- descrição;
+- fornecedor;
+- cliente ou projeto;
+- preço principal;
+- custos adicionais escritos separadamente;
+- itens inclusos;
+- itens não inclusos;
+- prazo;
+- localização;
+- infraestrutura necessária;
+- evidência textual.
+
+Não retorne items vazio quando o documento contiver itens comerciais.
+Não invente informações ausentes.
+"""

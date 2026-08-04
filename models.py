@@ -139,6 +139,42 @@ class CostComponent(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+
+class ActivationFallbackItem(BaseModel):
+    source_file: str
+    source_page: int | None = None
+    supplier_name: str | None = None
+    client_brand: str | None = None
+    project_name: str | None = None
+    event_name: str | None = None
+    name: str
+    description: str | None = None
+    base_price: float | None = None
+    currency: Currency = "Não informado"
+    price_status: PriceStatus = "Não informado"
+    pricing_period: str | None = None
+    price_notes: str | None = None
+    included_items: list[str] = Field(default_factory=list)
+    excluded_items: list[str] = Field(default_factory=list)
+    additional_costs_text: list[str] = Field(default_factory=list)
+    infrastructure_requirements: list[str] = Field(default_factory=list)
+    lead_time_days: int | None = None
+    location: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.7, ge=0, le=1)
+    evidence: str | None = None
+
+
+class ActivationFallbackBatch(BaseModel):
+    supplier_name: str | None = None
+    proposal_name: str | None = None
+    client_brand: str | None = None
+    project_name: str | None = None
+    document_year: int | None = None
+    items: list[ActivationFallbackItem] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ActivationSolution(BaseModel):
     source_file: str
     source_page: int | None = None

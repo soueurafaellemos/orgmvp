@@ -393,6 +393,16 @@ if result_type == "catalog":
     alerts = st.session_state["result_alerts"]
     suppliers = st.session_state["result_suppliers"]
 
+    if records.empty:
+        st.error(
+            "A triagem identificou um orçamento de ativação, mas nenhuma "
+            "solução foi transformada em linha. Esta versão possui uma "
+            "extração de segurança automática; reprocesse o arquivo após "
+            "a atualização. Se ainda ocorrer, selecione manualmente "
+            "'Soluções / ativações'."
+        )
+        st.stop()
+
     tabs = st.tabs(
         [
             "Produtos",

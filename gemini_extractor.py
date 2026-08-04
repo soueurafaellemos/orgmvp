@@ -10,12 +10,14 @@ from pydantic import BaseModel
 from document_io import InputDocument, split_pdf
 from models import (
     ActivationBatch,
+    ActivationFallbackBatch,
     CatalogBatch,
     DocumentClassification,
     ProjectBriefing,
     VenueBatch,
 )
 from prompts import (
+    ACTIVATION_FALLBACK_PROMPT,
     ACTIVATION_SYSTEM_PROMPT,
     BRIEFING_SYSTEM_PROMPT,
     CATALOG_SYSTEM_PROMPT,
@@ -192,6 +194,138 @@ def extract_catalog(
     return batches
 
 
+
+def _cost_from_text(text: str, source_page: int | None):
+    from models import CostComponent
+
+    return CostComponent(
+        description=text,
+        amount=None,
+        currency="Não informado",
+        treatment="Não informado",
+        notes=(
+            "Componente extraído como texto na etapa de segurança. "
+            "Revisar valor e classificação manualmente."
+        ),
+        source_page=source_page,
+        confidence=0.6,
+    )
+
+
+def _fallback_to_activation_batch(
+    fallback: ActivationFallbackBatch,
+) -> ActivationBatch:
+    from models import ActivationSolution
+
+    solutions = []
+
+    for item in fallback.items:
+        missing_fields = []
+        if item.base_price is None:
+            missing_fields.append("base_price")
+        if item.lead_time_days is None:
+            missing_fields.append("lead_time_days")
+        if not item.supplier_name and not fallback.supplier_name:
+            missing_fields.append("supplier_name")
+
+        solutions.append(
+            ActivationSolution(
+                source_file=item.source_file,
+                source_page=item.source_page,
+                supplier_name=(
+                    item.supplier_name or fallback.supplier_name
+                ),
+                client_brand=(
+                    item.client_brand or fallback.client_brand
+                ),
+                project_name=(
+                    item.project_name or fallback.project_name
+                ),
+                event_name=item.event_name,
+                category="Solução de ativação",
+                record_type="Outro",
+                name=item.name,
+                description=item.description,
+                base_price=item.base_price,
+                currency=item.currency,
+                price_status=item.price_status,
+                pricing_period=item.pricing_period,
+                price_notes=item.price_notes,
+                additional_costs=[
+                    _cost_from_text(text, item.source_page)
+                    for text in item.additional_costs_text
+                ],
+                included_items=item.included_items,
+                excluded_items=item.excluded_items,
+                infrastructure_requirements=(
+                    item.infrastructure_requirements
+                ),
+                lead_time_days=item.lead_time_days,
+                location=item.location,
+                customizable=None,
+                tags=item.tags,
+                confidence=item.confidence,
+                missing_fields=missing_fields,
+                evidence=item.evidence,
+            )
+        )
+
+    return ActivationBatch(
+        supplier_name=fallback.supplier_name,
+        supplier_contact=None,
+        proposal_name=fallback.proposal_name,
+        client_brand=fallback.client_brand,
+        project_name=fallback.project_name,
+        document_year=fallback.document_year,
+        global_rules=[],
+        solutions=solutions,
+        warnings=[
+            *fallback.warnings,
+            (
+                "A extração principal retornou zero soluções. "
+                "Foi utilizada a extração de segurança simplificada."
+            ),
+        ],
+    )
+
+
+def _extract_activation_batch_with_fallback(
+    client: genai.Client,
+    *,
+    model: str,
+    doc: InputDocument,
+    instruction: str,
+) -> ActivationBatch:
+    primary = _structured_call(
+        client,
+        model=model,
+        prompt=ACTIVATION_SYSTEM_PROMPT + "\n\n" + instruction,
+        docs=[doc],
+        schema=ActivationBatch,
+        context=doc.name,
+    )
+
+    if primary.solutions:
+        return primary
+
+    fallback = _structured_call(
+        client,
+        model=model,
+        prompt=(
+            ACTIVATION_FALLBACK_PROMPT
+            + "\n\n"
+            + instruction
+            + "\n\nAtenção: gere ao menos uma linha para cada item "
+              "comercial presente no documento."
+        ),
+        docs=[doc],
+        schema=ActivationFallbackBatch,
+        context=f"extração de segurança de {doc.name}",
+    )
+
+    return _fallback_to_activation_batch(fallback)
+
+
 def extract_activation(
     docs: list[InputDocument],
     *,
@@ -222,13 +356,11 @@ def extract_activation(
             "e a numeração original em source_page."
         )
         batches.append(
-            _structured_call(
+            _extract_activation_batch_with_fallback(
                 client,
                 model=model,
-                prompt=ACTIVATION_SYSTEM_PROMPT + "\n\n" + instruction,
-                docs=[doc],
-                schema=ActivationBatch,
-                context=doc.name,
+                doc=doc,
+                instruction=instruction,
             )
         )
 
