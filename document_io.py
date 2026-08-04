@@ -169,3 +169,30 @@ def split_pdf(
 
     source.close()
     return batches
+
+
+
+def render_pdf_page(
+    doc: InputDocument,
+    page_number: int,
+    zoom: float = 1.5,
+) -> bytes:
+    """Renderiza uma página humana (começando em 1) como PNG."""
+    if doc.mime_type != "application/pdf":
+        raise ValueError("A fonte selecionada não é um PDF.")
+
+    pdf = fitz.open(stream=doc.data, filetype="pdf")
+    try:
+        page_index = int(page_number) - 1
+        if page_index < 0 or page_index >= pdf.page_count:
+            raise ValueError(
+                f"Página {page_number} fora do intervalo do PDF."
+            )
+        page = pdf.load_page(page_index)
+        pixmap = page.get_pixmap(
+            matrix=fitz.Matrix(zoom, zoom),
+            alpha=False,
+        )
+        return pixmap.tobytes("png")
+    finally:
+        pdf.close()

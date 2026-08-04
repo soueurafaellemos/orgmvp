@@ -5,23 +5,15 @@ import json
 
 import pandas as pd
 
-
-from models import CatalogBatch, ProjectBriefing
-
-
-MONEY_COLUMNS = ("unit_price", "price_min", "price_max")
-QUANTITY_COLUMNS = ("price_reference_qty", "min_order_qty")
-
-FORMATTED_COLUMN_LABELS = {
-    "unit_price_formatted": "Valor unitário",
-    "price_min_formatted": "Valor mínimo",
-    "price_max_formatted": "Valor máximo",
-    "price_reference_qty_formatted": "Qtd. de referência",
-    "min_order_qty_formatted": "Pedido mínimo",
-}
+from models import (
+    ActivationBatch,
+    CatalogBatch,
+    DocumentClassification,
+    ProjectBriefing,
+)
 
 
-def _is_missing(value) -> bool:
+def _missing(value) -> bool:
     if value is None:
         return True
     try:
@@ -32,359 +24,183 @@ def _is_missing(value) -> bool:
     return not str(value).strip()
 
 
-def _currency_prefix(currency: object) -> str:
-    normalized = str(currency or "").strip().upper()
+def _join(values) -> str:
+    return " | ".join(values or [])
+
+
+def _prefix(currency) -> str:
     return {
         "BRL": "R$ ",
         "USD": "US$ ",
         "EUR": "€ ",
-    }.get(normalized, "")
+    }.get(str(currency or "").upper(), "")
 
 
 def format_pt_br_number(
-    value: object,
+    value,
     *,
     decimals: int = 2,
     prefix: str = "",
 ) -> str:
-    """Ex.: 32000 -> R$ 32.000,00."""
-    if _is_missing(value):
+    if _missing(value):
         return ""
-
     try:
-        numeric = float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return str(value)
-
-    formatted = f"{numeric:,.{decimals}f}"
+    formatted = f"{number:,.{decimals}f}"
     formatted = (
-        formatted.replace(",", "__THOUSANDS__")
+        formatted.replace(",", "__M__")
         .replace(".", ",")
-        .replace("__THOUSANDS__", ".")
+        .replace("__M__", ".")
     )
-    return f"{prefix}{formatted}"
+    return prefix + formatted
 
 
-def parse_pt_br_number(value: object) -> float | None:
-    """Aceita 32000, 32.000, 32.000,00, R$ 32.000,00 ou 35.5."""
-    if _is_missing(value):
+def parse_pt_br_number(value) -> float | None:
+    if _missing(value):
         return None
-
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
-
     text = (
         str(value)
-        .strip()
         .replace("R$", "")
         .replace("US$", "")
         .replace("€", "")
         .replace(" ", "")
+        .strip()
     )
-
-    if not text:
-        return None
-
-    # Padrão brasileiro completo: 1.234,56
     if "." in text and "," in text:
         text = text.replace(".", "").replace(",", ".")
     elif "," in text:
-        # Vírgula é decimal: 1234,56
         text = text.replace(".", "").replace(",", ".")
     elif "." in text:
-        parts = text.split(".")
-        if len(parts) > 2:
-            # 1.234.567
-            text = "".join(parts)
-        elif len(parts) == 2 and len(parts[1]) == 3:
-            # 32.000 no padrão brasileiro.
-            text = "".join(parts)
-        # 35.5 permanece decimal.
-
+        pieces = text.split(".")
+        if len(pieces) > 2 or (
+            len(pieces) == 2 and len(pieces[1]) == 3
+        ):
+            text = "".join(pieces)
     try:
         return float(text)
     except ValueError:
         return None
 
 
-def parse_pt_br_integer(value: object) -> int | None:
+def parse_pt_br_integer(value) -> int | None:
     parsed = parse_pt_br_number(value)
     return None if parsed is None else int(round(parsed))
 
 
-def prepare_products_for_editor(products_df: pd.DataFrame) -> pd.DataFrame:
-    """Cria uma visão amigável, preservando os números na base técnica."""
-    editor_df = products_df.copy()
+def classification_dataframe(
+    classification: DocumentClassification,
+) -> pd.DataFrame:
+    rows = []
+    for key, value in classification.model_dump().items():
+        if isinstance(value, list):
+            value = _join(value)
+        rows.append({"campo": key, "valor": value})
+    return pd.DataFrame(rows)
 
-    for column in MONEY_COLUMNS:
-        formatted_column = f"{column}_formatted"
-        editor_df[formatted_column] = editor_df.apply(
-            lambda row, col=column: format_pt_br_number(
-                row.get(col),
-                decimals=2,
-                prefix=_currency_prefix(row.get("currency")),
-            ),
-            axis=1,
+
+def _contact_row(contact, fallback_name=None) -> dict:
+    data = contact.model_dump() if contact else {}
+    data["supplier_name"] = (
+        data.get("supplier_name") or fallback_name
+    )
+    has_contact = any(
+        data.get(field)
+        for field in (
+            "website_url",
+            "contact_name",
+            "email",
+            "phone",
+            "whatsapp",
+            "instagram_url",
+            "linkedin_url",
         )
+    )
+    data["contact_alert"] = (
+        "OK"
+        if has_contact
+        else "ATENÇÃO: contato não encontrado no material"
+    )
+    return data
 
-    for column in QUANTITY_COLUMNS:
-        formatted_column = f"{column}_formatted"
-        editor_df[formatted_column] = editor_df[column].apply(
-            lambda value: format_pt_br_number(value, decimals=0)
+
+def _dedupe_suppliers(rows: list[dict]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "supplier_name" not in df.columns:
+        return df
+    return (
+        df.sort_values(
+            by=["confidence"],
+            ascending=False,
+            na_position="last",
         )
-
-    editor_df = editor_df.drop(
-        columns=[
-            column
-            for column in MONEY_COLUMNS + QUANTITY_COLUMNS
-            if column in editor_df.columns
-        ]
+        .drop_duplicates(
+            subset=["supplier_name"],
+            keep="first",
+        )
+        .reset_index(drop=True)
     )
 
-    # Coloca os campos amigáveis junto das informações comerciais.
-    preferred_order = [
-        "source_file",
-        "supplier_name",
-        "supplier_alert",
-        "catalog_name",
-        "document_year",
-        "source_page",
-        "category",
-        "sku",
-        "name",
-        "description",
-        "unit_price_formatted",
-        "price_min_formatted",
-        "price_max_formatted",
-        "currency",
-        "price_status",
-        "price_reference_qty_formatted",
-        "price_notes",
-        "price_alert",
-        "capacity",
-        "capacity_ml",
-        "dimensions_raw",
-        "material",
-        "finish",
-        "decoration",
-        "origin",
-        "development_status",
-        "min_order_qty_formatted",
-        "customizable",
-        "licensing_notes",
-        "tags",
-        "confidence",
-        "missing_fields",
-        "data_quality_alerts",
-        "evidence",
-    ]
-    existing = [column for column in preferred_order if column in editor_df.columns]
-    remaining = [
-        column for column in editor_df.columns if column not in existing
-    ]
-    return editor_df[existing + remaining]
 
+def merge_catalog_batches(batches):
+    products, rules, alerts, suppliers = [], [], [], []
 
-def normalize_editor_products(editor_df: pd.DataFrame) -> pd.DataFrame:
-    """Converte a visualização brasileira de volta para números técnicos."""
-    normalized = editor_df.copy()
+    for batch_index, batch in enumerate(batches, 1):
+        suppliers.append(
+            _contact_row(batch.supplier_contact, batch.supplier_name)
+        )
+        contact = suppliers[-1]
 
-    for column in MONEY_COLUMNS:
-        formatted_column = f"{column}_formatted"
-        if formatted_column in normalized.columns:
-            normalized[column] = normalized[formatted_column].apply(
-                parse_pt_br_number
-            )
-
-    for column in QUANTITY_COLUMNS:
-        formatted_column = f"{column}_formatted"
-        if formatted_column in normalized.columns:
-            normalized[column] = normalized[formatted_column].apply(
-                parse_pt_br_integer
-            )
-
-    formatted_columns = [
-        column
-        for column in normalized.columns
-        if column.endswith("_formatted")
-    ]
-    normalized = normalized.drop(columns=formatted_columns)
-
-    for column in PRODUCT_COLUMN_ORDER:
-        if column not in normalized.columns:
-            normalized[column] = None
-
-    remaining = [
-        column
-        for column in normalized.columns
-        if column not in PRODUCT_COLUMN_ORDER
-    ]
-    return normalized[PRODUCT_COLUMN_ORDER + remaining]
-
-
-PRODUCT_COLUMN_ORDER = [
-    "source_file",
-    "supplier_name",
-    "supplier_alert",
-    "catalog_name",
-    "document_year",
-    "source_page",
-    "category",
-    "sku",
-    "name",
-    "description",
-    "unit_price",
-    "price_min",
-    "price_max",
-    "currency",
-    "price_status",
-    "price_reference_qty",
-    "price_notes",
-    "price_alert",
-    "capacity",
-    "capacity_ml",
-    "dimensions_raw",
-    "material",
-    "finish",
-    "decoration",
-    "origin",
-    "development_status",
-    "min_order_qty",
-    "customizable",
-    "licensing_notes",
-    "tags",
-    "confidence",
-    "missing_fields",
-    "data_quality_alerts",
-    "evidence",
-]
-
-
-def _has_value(value) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, float) and pd.isna(value):
-        return False
-    return bool(str(value).strip())
-
-
-def _append_missing_field(existing: list[str], field: str) -> list[str]:
-    cleaned = [item for item in existing if item]
-    if field not in cleaned:
-        cleaned.append(field)
-    return cleaned
-
-
-def merge_catalog_batches(
-    batches: list[CatalogBatch],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    products: list[dict] = []
-    rules: list[dict] = []
-    warnings: list[dict] = []
-
-    for batch_index, batch in enumerate(batches, start=1):
         for product in batch.products:
             row = product.model_dump()
-
-            supplier_name = (
-                product.supplier_name
-                if _has_value(product.supplier_name)
-                else batch.supplier_name
+            row["supplier_name"] = (
+                product.supplier_name or batch.supplier_name
             )
-            row["supplier_name"] = supplier_name
+            row["supplier_website"] = contact.get("website_url")
+            row["supplier_email"] = contact.get("email")
+            row["supplier_phone"] = contact.get("phone")
+            row["supplier_whatsapp"] = contact.get("whatsapp")
             row["catalog_name"] = batch.catalog_name
             row["document_year"] = batch.document_year
 
-            missing_fields = list(row.get("missing_fields") or [])
-            quality_alerts: list[str] = []
-
-            if not _has_value(supplier_name):
-                row["supplier_alert"] = "ALERTA: fornecedor não identificado"
-                missing_fields = _append_missing_field(
-                    missing_fields,
-                    "supplier_name",
+            missing = list(row.get("missing_fields") or [])
+            quality = []
+            if _missing(row["supplier_name"]):
+                row["supplier_alert"] = (
+                    "ALERTA: fornecedor não identificado"
                 )
-                quality_alerts.append("Fornecedor não identificado")
-                warnings.append(
-                    {
-                        "severity": "Alto",
-                        "type": "Campo ausente",
-                        "field": "supplier_name",
-                        "supplier_name": None,
-                        "sku": row.get("sku"),
-                        "product_name": row.get("name"),
-                        "source_page": row.get("source_page"),
-                        "message": (
-                            "O fornecedor não foi identificado no documento."
-                        ),
-                    }
-                )
+                quality.append("Fornecedor não identificado")
             else:
                 row["supplier_alert"] = "OK"
 
-            price_status = row.get("price_status") or "Não informado"
-            has_numeric_price = any(
+            has_price = any(
                 row.get(field) is not None
                 for field in ("unit_price", "price_min", "price_max")
             )
-
-            if price_status == "Sob consulta":
+            if row.get("price_status") == "Sob consulta":
                 row["price_alert"] = "ATENÇÃO: preço sob consulta"
-                quality_alerts.append("Preço sob consulta")
-                missing_fields = _append_missing_field(
-                    missing_fields,
-                    "unit_price",
-                )
-                warnings.append(
-                    {
-                        "severity": "Médio",
-                        "type": "Preço",
-                        "field": "unit_price",
-                        "supplier_name": supplier_name,
-                        "sku": row.get("sku"),
-                        "product_name": row.get("name"),
-                        "source_page": row.get("source_page"),
-                        "message": (
-                            "O catálogo informa preço sob consulta; "
-                            "é necessária cotação."
-                        ),
-                    }
-                )
-            elif not has_numeric_price:
-                row["price_status"] = "Não informado"
+            elif not has_price:
                 row["price_alert"] = "ALERTA: preço não informado"
-                quality_alerts.append("Preço não informado")
-                missing_fields = _append_missing_field(
-                    missing_fields,
-                    "unit_price",
-                )
-                warnings.append(
-                    {
-                        "severity": "Alto",
-                        "type": "Preço",
-                        "field": "unit_price",
-                        "supplier_name": supplier_name,
-                        "sku": row.get("sku"),
-                        "product_name": row.get("name"),
-                        "source_page": row.get("source_page"),
-                        "message": (
-                            "Nenhum preço foi encontrado para este produto."
-                        ),
-                    }
-                )
+                if "unit_price" not in missing:
+                    missing.append("unit_price")
+                quality.append("Preço não informado")
             else:
                 row["price_alert"] = "OK"
-                if price_status == "Não informado":
-                    row["price_status"] = (
-                        "Faixa de preço"
-                        if row.get("price_min") is not None
-                        or row.get("price_max") is not None
-                        else "Informado"
-                    )
 
-            row["tags"] = " | ".join(row.get("tags") or [])
-            row["missing_fields"] = " | ".join(missing_fields)
-            row["data_quality_alerts"] = " | ".join(quality_alerts)
+            row["image_reference"] = (
+                f"{row.get('source_file')} — página "
+                f"{row.get('source_page')}"
+                if row.get("source_page")
+                else row.get("source_file")
+            )
+            row["tags"] = _join(row.get("tags"))
+            row["missing_fields"] = _join(missing)
+            row["data_quality_alerts"] = _join(quality)
             products.append(row)
 
         for rule in batch.global_rules:
@@ -393,94 +209,337 @@ def merge_catalog_batches(
             rules.append(rule_row)
 
         for warning in batch.warnings:
-            warnings.append(
+            alerts.append(
                 {
                     "severity": "Informativo",
-                    "type": "Agente",
-                    "field": None,
-                    "supplier_name": batch.supplier_name,
-                    "sku": None,
-                    "product_name": None,
-                    "source_page": None,
+                    "record_name": None,
                     "message": warning,
                 }
             )
 
     products_df = pd.DataFrame(products)
-
     if not products_df.empty:
         products_df["_dedupe"] = products_df.apply(
             lambda row: (
                 f"sku::{str(row.get('sku')).strip().lower()}"
-                if pd.notna(row.get("sku"))
-                and str(row.get("sku")).strip()
+                if not _missing(row.get("sku"))
                 else (
                     f"name::{str(row.get('name')).strip().lower()}::"
-                    f"{str(row.get('source_page'))}"
+                    f"{row.get('source_page')}"
                 )
             ),
             axis=1,
         )
-
         products_df = (
             products_df.sort_values(
-                by=["confidence"],
+                "confidence",
                 ascending=False,
                 na_position="last",
             )
-            .drop_duplicates(subset=["_dedupe"], keep="first")
-            .drop(columns=["_dedupe"])
+            .drop_duplicates("_dedupe")
+            .drop(columns="_dedupe")
             .reset_index(drop=True)
         )
 
-        for column in PRODUCT_COLUMN_ORDER:
-            if column not in products_df.columns:
-                products_df[column] = None
+    return (
+        products_df,
+        pd.DataFrame(rules),
+        pd.DataFrame(alerts),
+        _dedupe_suppliers(suppliers),
+    )
 
-        remaining = [
-            column
-            for column in products_df.columns
-            if column not in PRODUCT_COLUMN_ORDER
-        ]
-        products_df = products_df[
-            PRODUCT_COLUMN_ORDER + remaining
-        ]
 
-    warnings_df = pd.DataFrame(warnings)
-    if not warnings_df.empty:
-        warning_order = [
-            "severity",
-            "type",
-            "field",
-            "supplier_name",
-            "sku",
-            "product_name",
-            "source_page",
-            "message",
-        ]
-        for column in warning_order:
-            if column not in warnings_df.columns:
-                warnings_df[column] = None
-        warnings_df = warnings_df[warning_order]
+def merge_activation_batches(batches):
+    solutions, costs, rules, alerts, suppliers = [], [], [], [], []
 
-    return products_df, pd.DataFrame(rules), warnings_df
+    for batch_index, batch in enumerate(batches, 1):
+        suppliers.append(
+            _contact_row(batch.supplier_contact, batch.supplier_name)
+        )
+        contact = suppliers[-1]
+
+        for solution_index, solution in enumerate(batch.solutions, 1):
+            row = solution.model_dump()
+            row["supplier_name"] = (
+                solution.supplier_name or batch.supplier_name
+            )
+            row["supplier_website"] = contact.get("website_url")
+            row["supplier_email"] = contact.get("email")
+            row["supplier_phone"] = contact.get("phone")
+            row["supplier_whatsapp"] = contact.get("whatsapp")
+            row["proposal_name"] = batch.proposal_name
+            row["client_brand"] = (
+                solution.client_brand or batch.client_brand
+            )
+            row["project_name"] = (
+                solution.project_name or batch.project_name
+            )
+            row["document_year"] = batch.document_year
+            solution_id = f"{batch_index}-{solution_index}"
+            row["solution_id"] = solution_id
+
+            required_additional = 0.0
+            summary = []
+            for component in solution.additional_costs:
+                component_row = component.model_dump()
+                component_row["solution_id"] = solution_id
+                component_row["solution_name"] = solution.name
+                component_row["supplier_name"] = row["supplier_name"]
+                costs.append(component_row)
+                if (
+                    component.amount is not None
+                    and component.treatment == "Adicional obrigatório"
+                ):
+                    required_additional += float(component.amount)
+                summary.append(
+                    f"{component.description}: "
+                    f"{format_pt_br_number(component.amount, prefix=_prefix(component.currency)) or 'sem valor'} "
+                    f"[{component.treatment}]"
+                )
+
+            row["additional_costs_total"] = (
+                required_additional or None
+            )
+            row["estimated_total"] = (
+                float(solution.base_price) + required_additional
+                if solution.base_price is not None
+                else None
+            )
+            row["estimated_total_is_derived"] = (
+                solution.base_price is not None
+                and required_additional > 0
+            )
+            row["additional_costs_summary"] = _join(summary)
+            row["included_items"] = _join(solution.included_items)
+            row["excluded_items"] = _join(solution.excluded_items)
+            row["infrastructure_requirements"] = _join(
+                solution.infrastructure_requirements
+            )
+            row["tags"] = _join(solution.tags)
+            row["image_reference"] = (
+                f"{row.get('source_file')} — página "
+                f"{row.get('source_page')}"
+                if row.get("source_page")
+                else row.get("source_file")
+            )
+
+            quality = []
+            if _missing(row["supplier_name"]):
+                row["supplier_alert"] = (
+                    "ALERTA: fornecedor não identificado"
+                )
+                quality.append("Fornecedor não identificado")
+            else:
+                row["supplier_alert"] = "OK"
+
+            if solution.price_status == "Sob consulta":
+                row["price_alert"] = "ATENÇÃO: preço sob consulta"
+            elif solution.base_price is None:
+                row["price_alert"] = (
+                    "ALERTA: valor-base não informado"
+                )
+                quality.append("Valor-base não informado")
+            else:
+                row["price_alert"] = "OK"
+
+            if solution.lead_time_days is None:
+                row["lead_time_alert"] = (
+                    "ATENÇÃO: prazo não informado"
+                )
+                quality.append("Prazo não informado")
+            else:
+                row["lead_time_alert"] = "OK"
+
+            row["missing_fields"] = _join(solution.missing_fields)
+            row["data_quality_alerts"] = _join(quality)
+            row.pop("additional_costs", None)
+            solutions.append(row)
+
+        for rule in batch.global_rules:
+            rule_row = rule.model_dump()
+            rule_row["batch"] = batch_index
+            rules.append(rule_row)
+
+        for warning in batch.warnings:
+            alerts.append(
+                {
+                    "severity": "Informativo",
+                    "record_name": None,
+                    "message": warning,
+                }
+            )
+
+    solutions_df = pd.DataFrame(solutions)
+    if not solutions_df.empty:
+        solutions_df = (
+            solutions_df.sort_values(
+                "confidence",
+                ascending=False,
+                na_position="last",
+            )
+            .drop_duplicates(
+                ["supplier_name", "name", "source_page"],
+                keep="first",
+            )
+            .reset_index(drop=True)
+        )
+
+    return (
+        solutions_df,
+        pd.DataFrame(costs),
+        pd.DataFrame(rules),
+        pd.DataFrame(alerts),
+        _dedupe_suppliers(suppliers),
+    )
+
+
+def prepare_products_for_editor(df):
+    editor = df.copy()
+    for column in ("unit_price", "price_min", "price_max"):
+        if column in editor.columns:
+            editor[column + "_formatted"] = editor.apply(
+                lambda row, col=column: format_pt_br_number(
+                    row.get(col),
+                    prefix=_prefix(row.get("currency")),
+                ),
+                axis=1,
+            )
+    for column in ("price_reference_qty", "min_order_qty"):
+        if column in editor.columns:
+            editor[column + "_formatted"] = editor[column].apply(
+                lambda value: format_pt_br_number(value, decimals=0)
+            )
+    return editor.drop(
+        columns=[
+            col
+            for col in (
+                "unit_price",
+                "price_min",
+                "price_max",
+                "price_reference_qty",
+                "min_order_qty",
+            )
+            if col in editor.columns
+        ]
+    )
+
+
+def normalize_editor_products(df):
+    normalized = df.copy()
+    for column in ("unit_price", "price_min", "price_max"):
+        formatted = column + "_formatted"
+        if formatted in normalized.columns:
+            normalized[column] = normalized[formatted].apply(
+                parse_pt_br_number
+            )
+    for column in ("price_reference_qty", "min_order_qty"):
+        formatted = column + "_formatted"
+        if formatted in normalized.columns:
+            normalized[column] = normalized[formatted].apply(
+                parse_pt_br_integer
+            )
+    return normalized.drop(
+        columns=[
+            col
+            for col in normalized.columns
+            if col.endswith("_formatted")
+        ]
+    )
+
+
+def prepare_activations_for_editor(df):
+    editor = df.copy()
+    for column in (
+        "base_price",
+        "additional_costs_total",
+        "estimated_total",
+    ):
+        if column in editor.columns:
+            editor[column + "_formatted"] = editor.apply(
+                lambda row, col=column: format_pt_br_number(
+                    row.get(col),
+                    prefix=_prefix(row.get("currency")),
+                ),
+                axis=1,
+            )
+    if "lead_time_days" in editor.columns:
+        editor["lead_time_days_formatted"] = editor[
+            "lead_time_days"
+        ].apply(lambda value: format_pt_br_number(value, decimals=0))
+    return editor.drop(
+        columns=[
+            col
+            for col in (
+                "base_price",
+                "additional_costs_total",
+                "estimated_total",
+                "lead_time_days",
+            )
+            if col in editor.columns
+        ]
+    )
+
+
+def normalize_editor_activations(df):
+    normalized = df.copy()
+    for column in (
+        "base_price",
+        "additional_costs_total",
+        "estimated_total",
+    ):
+        formatted = column + "_formatted"
+        if formatted in normalized.columns:
+            normalized[column] = normalized[formatted].apply(
+                parse_pt_br_number
+            )
+    if "lead_time_days_formatted" in normalized.columns:
+        normalized["lead_time_days"] = normalized[
+            "lead_time_days_formatted"
+        ].apply(parse_pt_br_integer)
+    return normalized.drop(
+        columns=[
+            col
+            for col in normalized.columns
+            if col.endswith("_formatted")
+        ]
+    )
+
+
+def briefing_dataframe(briefing):
+    rows = []
+    for key, value in briefing.model_dump().items():
+        if isinstance(value, list):
+            value = _join(value)
+        elif key in ("budget_total_brl", "budget_unit_brl"):
+            value = format_pt_br_number(value, prefix="R$ ")
+        elif key == "audience_quantity":
+            value = format_pt_br_number(value, decimals=0)
+        rows.append({"campo": key, "valor": value})
+    return pd.DataFrame(rows)
+
+
+def _records(df):
+    if df.empty:
+        return []
+    return df.where(pd.notna(df), None).to_dict("records")
 
 
 def catalog_json_bytes(
-    products_df: pd.DataFrame,
-    rules_df: pd.DataFrame,
-    warnings_df: pd.DataFrame,
-) -> bytes:
+    products_df,
+    rules_df,
+    alerts_df,
+    suppliers_df,
+    classification=None,
+):
     payload = {
-        "products": products_df.where(
-            pd.notna(products_df), None
-        ).to_dict(orient="records"),
-        "global_rules": rules_df.where(
-            pd.notna(rules_df), None
-        ).to_dict(orient="records"),
-        "alerts": warnings_df.where(
-            pd.notna(warnings_df), None
-        ).to_dict(orient="records"),
+        "classification": (
+            classification.model_dump() if classification else None
+        ),
+        "destination_base": "Base de brindes",
+        "suppliers": _records(suppliers_df),
+        "products": _records(products_df),
+        "global_rules": _records(rules_df),
+        "alerts": _records(alerts_df),
     }
     return json.dumps(
         payload,
@@ -489,174 +548,117 @@ def catalog_json_bytes(
     ).encode("utf-8")
 
 
-def briefing_json_bytes(briefing: ProjectBriefing) -> bytes:
+def activation_json_bytes(
+    solutions_df,
+    costs_df,
+    rules_df,
+    alerts_df,
+    suppliers_df,
+    classification=None,
+):
+    payload = {
+        "classification": (
+            classification.model_dump() if classification else None
+        ),
+        "destination_base": "Base de soluções e ativações",
+        "suppliers": _records(suppliers_df),
+        "solutions": _records(solutions_df),
+        "cost_components": _records(costs_df),
+        "global_rules": _records(rules_df),
+        "alerts": _records(alerts_df),
+    }
     return json.dumps(
-        briefing.model_dump(),
+        payload,
         ensure_ascii=False,
         indent=2,
     ).encode("utf-8")
 
 
-def briefing_dataframe(briefing: ProjectBriefing) -> pd.DataFrame:
-    rows = []
-    monetary_fields = {"budget_total_brl", "budget_unit_brl"}
-    quantity_fields = {"audience_quantity"}
-
-    for key, value in briefing.model_dump().items():
-        if isinstance(value, list):
-            value = " | ".join(str(item) for item in value)
-        elif key in monetary_fields:
-            value = format_pt_br_number(
-                value,
-                decimals=2,
-                prefix="R$ ",
-            )
-        elif key in quantity_fields:
-            value = format_pt_br_number(value, decimals=0)
-
-        rows.append({"campo": key, "valor": value})
-
-    return pd.DataFrame(rows)
+def briefing_json_bytes(briefing, classification=None):
+    payload = {
+        "classification": (
+            classification.model_dump() if classification else None
+        ),
+        "destination_base": "Base de projetos e briefings",
+        "briefing": briefing.model_dump(),
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+    ).encode("utf-8")
 
 
-def to_xlsx_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
+def to_xlsx_bytes(sheets):
     buffer = io.BytesIO()
-
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         workbook = writer.book
-
-        header_format = workbook.add_format(
+        header = workbook.add_format(
             {
                 "bold": True,
                 "bg_color": "#E8E8E8",
                 "border": 1,
                 "text_wrap": True,
-                "valign": "top",
             }
         )
-        cell_format = workbook.add_format(
+        cell = workbook.add_format(
             {
                 "border": 1,
                 "text_wrap": True,
                 "valign": "top",
             }
         )
-        alert_format = workbook.add_format(
+        alert = workbook.add_format(
             {
                 "bg_color": "#FDE9E7",
                 "font_color": "#B42318",
                 "border": 1,
-                "text_wrap": True,
-                "valign": "top",
-            }
-        )
-        attention_format = workbook.add_format(
-            {
-                "bg_color": "#FFF4CE",
-                "font_color": "#7A4E00",
-                "border": 1,
-                "text_wrap": True,
-                "valign": "top",
             }
         )
 
         for raw_name, df in sheets.items():
-            sheet_name = raw_name[:31]
-            safe_df = df.copy()
-            safe_df.to_excel(
-                writer,
-                sheet_name=sheet_name,
-                index=False,
-            )
-            worksheet = writer.sheets[sheet_name]
-            worksheet.freeze_panes(1, 0)
-
-            if len(safe_df.columns) > 0:
-                worksheet.autofilter(
+            name = raw_name[:31]
+            safe = df.copy()
+            safe.to_excel(writer, sheet_name=name, index=False)
+            ws = writer.sheets[name]
+            ws.freeze_panes(1, 0)
+            if len(safe.columns):
+                ws.autofilter(
                     0,
                     0,
-                    max(len(safe_df), 1),
-                    len(safe_df.columns) - 1,
+                    max(len(safe), 1),
+                    len(safe.columns) - 1,
                 )
-
-            money_format = workbook.add_format(
-                {
-                    "num_format": 'R$ #,##0.00',
-                    "border": 1,
-                    "valign": "top",
-                }
-            )
-            integer_format = workbook.add_format(
-                {
-                    "num_format": "#,##0",
-                    "border": 1,
-                    "valign": "top",
-                }
-            )
-
-            for col_index, column in enumerate(safe_df.columns):
-                worksheet.write(
-                    0,
-                    col_index,
-                    column,
-                    header_format,
-                )
+            for index, column in enumerate(safe.columns):
+                ws.write(0, index, column, header)
                 values = (
-                    safe_df[column].astype(str).tolist()
-                    if not safe_df.empty
+                    safe[column].astype(str).tolist()
+                    if not safe.empty
                     else []
                 )
-                max_len = max(
-                    [len(str(column))]
-                    + [min(len(value), 60) for value in values]
+                width = min(
+                    max(
+                        [len(str(column))]
+                        + [min(len(value), 60) for value in values]
+                    )
+                    + 2,
+                    44,
                 )
-                width = min(max(max_len + 2, 12), 42)
-
-                if column in MONEY_COLUMNS:
-                    selected_format = money_format
-                elif column in QUANTITY_COLUMNS:
-                    selected_format = integer_format
-                else:
-                    selected_format = cell_format
-
-                worksheet.set_column(
-                    col_index,
-                    col_index,
-                    width,
-                    selected_format,
-                )
-
-            if not safe_df.empty:
-                for alert_column in (
-                    "supplier_alert",
-                    "price_alert",
-                    "data_quality_alerts",
+                ws.set_column(index, index, max(width, 12), cell)
+                if (
+                    not safe.empty
+                    and "alert" in column.lower()
                 ):
-                    if alert_column in safe_df.columns:
-                        column_index = safe_df.columns.get_loc(alert_column)
-                        worksheet.conditional_format(
-                            1,
-                            column_index,
-                            len(safe_df),
-                            column_index,
-                            {
-                                "type": "text",
-                                "criteria": "containing",
-                                "value": "ALERTA",
-                                "format": alert_format,
-                            },
-                        )
-                        worksheet.conditional_format(
-                            1,
-                            column_index,
-                            len(safe_df),
-                            column_index,
-                            {
-                                "type": "text",
-                                "criteria": "containing",
-                                "value": "ATENÇÃO",
-                                "format": attention_format,
-                            },
-                        )
-
+                    ws.conditional_format(
+                        1,
+                        index,
+                        len(safe),
+                        index,
+                        {
+                            "type": "text",
+                            "criteria": "containing",
+                            "value": "ALERTA",
+                            "format": alert,
+                        },
+                    )
     return buffer.getvalue()

@@ -2,21 +2,39 @@ from __future__ import annotations
 
 import base64
 import os
+from typing import Type, TypeVar
 
 from google import genai
+from pydantic import BaseModel
 
 from document_io import InputDocument, split_pdf
-from models import CatalogBatch, ProjectBriefing
-from prompts import CATALOG_SYSTEM_PROMPT, BRIEFING_SYSTEM_PROMPT
+from models import (
+    ActivationBatch,
+    CatalogBatch,
+    DocumentClassification,
+    ProjectBriefing,
+)
+from prompts import (
+    ACTIVATION_SYSTEM_PROMPT,
+    BRIEFING_SYSTEM_PROMPT,
+    CATALOG_SYSTEM_PROMPT,
+    CLASSIFICATION_SYSTEM_PROMPT,
+)
+
+
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 
 def get_client(api_key: str | None = None) -> genai.Client:
     resolved = api_key or os.getenv("GEMINI_API_KEY")
     if not resolved:
         raise RuntimeError(
-            "Configure GEMINI_API_KEY nos Secrets do Streamlit ou no ambiente."
+            "Configure GEMINI_API_KEY nos Secrets do Streamlit."
         )
-    return genai.Client(api_key=resolved, http_options={"api_version": "v1"})
+    return genai.Client(
+        api_key=resolved,
+        http_options={"api_version": "v1"},
+    )
 
 
 def _input_item(doc: InputDocument) -> dict:
@@ -28,7 +46,6 @@ def _input_item(doc: InputDocument) -> dict:
                 + doc.data.decode("utf-8", errors="replace")
             ),
         }
-
     return {
         "type": "document",
         "data": base64.b64encode(doc.data).decode("utf-8"),
@@ -36,26 +53,96 @@ def _input_item(doc: InputDocument) -> dict:
     }
 
 
-def _catalog_from_interaction(interaction, source_name: str) -> CatalogBatch:
+def _structured_call(
+    client: genai.Client,
+    *,
+    model: str,
+    prompt: str,
+    docs: list[InputDocument],
+    schema: Type[SchemaT],
+    context: str,
+) -> SchemaT:
+    interaction = client.interactions.create(
+        model=model,
+        input=[
+            {"type": "text", "text": prompt},
+            *[_input_item(doc) for doc in docs],
+        ],
+        response_format={
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": schema.model_json_schema(),
+        },
+    )
     if not interaction.output_text:
-        raise RuntimeError(f"O Gemini não devolveu conteúdo para {source_name}.")
+        raise RuntimeError(f"O Gemini não devolveu conteúdo para {context}.")
     try:
-        return CatalogBatch.model_validate_json(interaction.output_text)
+        return schema.model_validate_json(interaction.output_text)
     except Exception as exc:
         raise RuntimeError(
-            f"O Gemini devolveu uma estrutura inválida para {source_name}: {exc}"
+            f"Estrutura inválida devolvida para {context}: {exc}"
         ) from exc
 
 
-def _briefing_from_interaction(interaction) -> ProjectBriefing:
-    if not interaction.output_text:
-        raise RuntimeError("O Gemini não devolveu conteúdo para o briefing.")
-    try:
-        return ProjectBriefing.model_validate_json(interaction.output_text)
-    except Exception as exc:
-        raise RuntimeError(
-            f"O Gemini devolveu um briefing em estrutura inválida: {exc}"
-        ) from exc
+def _classification_sample(
+    docs: list[InputDocument],
+) -> list[InputDocument]:
+    sampled: list[InputDocument] = []
+    for doc in docs:
+        if doc.mime_type == "application/pdf":
+            parts = split_pdf(
+                doc,
+                pages_per_batch=6,
+                start_page=1,
+                end_page=6,
+            )
+            if parts:
+                sampled.append(parts[0][0])
+        else:
+            sampled.append(doc)
+    return sampled
+
+
+def classify_documents(
+    docs: list[InputDocument],
+    *,
+    api_key: str | None,
+    model: str,
+) -> DocumentClassification:
+    client = get_client(api_key)
+    return _structured_call(
+        client,
+        model=model,
+        prompt=(
+            CLASSIFICATION_SYSTEM_PROMPT
+            + "\n\nClassifique os arquivos e indique o modo e a base."
+        ),
+        docs=_classification_sample(docs),
+        schema=DocumentClassification,
+        context="classificação",
+    )
+
+
+def _jobs(
+    docs: list[InputDocument],
+    *,
+    pages_per_batch: int,
+    start_page: int,
+    end_page: int | None,
+) -> list[tuple[InputDocument, int | None, int | None, str]]:
+    result = []
+    for doc in docs:
+        if doc.mime_type == "application/pdf":
+            for part, first, last in split_pdf(
+                doc,
+                pages_per_batch=pages_per_batch,
+                start_page=start_page,
+                end_page=end_page,
+            ):
+                result.append((part, first, last, doc.name))
+        else:
+            result.append((doc, None, None, doc.name))
+    return result
 
 
 def extract_catalog(
@@ -69,62 +156,83 @@ def extract_catalog(
     progress_callback=None,
 ) -> list[CatalogBatch]:
     client = get_client(api_key)
-    jobs: list[tuple[InputDocument, str]] = []
-
-    for doc in docs:
-        if doc.mime_type == "application/pdf":
-            for part, first, last in split_pdf(
-                doc,
-                pages_per_batch=pages_per_batch,
-                start_page=start_page,
-                end_page=end_page,
-            ):
-                jobs.append(
-                    (
-                        part,
-                        (
-                            f"Arquivo original: {doc.name}. "
-                            f"Este lote corresponde às páginas {first} a {last}. "
-                            "Extraia todos os produtos e regras gerais presentes. "
-                            "Use a numeração original das páginas do catálogo."
-                        ),
-                    )
-                )
-        else:
-            jobs.append(
-                (
-                    doc,
-                    f"Arquivo: {doc.name}. Extraia todos os produtos e regras gerais.",
-                )
-            )
-
-    results: list[CatalogBatch] = []
+    jobs = _jobs(
+        docs,
+        pages_per_batch=pages_per_batch,
+        start_page=start_page,
+        end_page=end_page,
+    )
+    batches = []
     total = len(jobs)
 
-    for index, (doc, instruction) in enumerate(jobs, start=1):
+    for index, (doc, first, last, original_name) in enumerate(jobs, 1):
         if progress_callback:
             progress_callback(index - 1, total, f"Analisando {doc.name}")
-
-        interaction = client.interactions.create(
-            model=model,
-            input=[
-                {
-                    "type": "text",
-                    "text": CATALOG_SYSTEM_PROMPT + "\n\n" + instruction,
-                },
-                _input_item(doc),
-            ],
-            response_format={
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": CatalogBatch.model_json_schema(),
-            },
+        instruction = (
+            f"Arquivo original: {original_name}. "
+            f"Páginas: {first or 'não aplicável'} a "
+            f"{last or 'não aplicável'}. Use o nome original em source_file "
+            "e a numeração original em source_page."
         )
-        results.append(_catalog_from_interaction(interaction, doc.name))
+        batches.append(
+            _structured_call(
+                client,
+                model=model,
+                prompt=CATALOG_SYSTEM_PROMPT + "\n\n" + instruction,
+                docs=[doc],
+                schema=CatalogBatch,
+                context=doc.name,
+            )
+        )
 
     if progress_callback:
         progress_callback(total, total, "Extração concluída")
-    return results
+    return batches
+
+
+def extract_activation(
+    docs: list[InputDocument],
+    *,
+    api_key: str | None,
+    model: str,
+    pages_per_batch: int,
+    start_page: int,
+    end_page: int | None,
+    progress_callback=None,
+) -> list[ActivationBatch]:
+    client = get_client(api_key)
+    jobs = _jobs(
+        docs,
+        pages_per_batch=pages_per_batch,
+        start_page=start_page,
+        end_page=end_page,
+    )
+    batches = []
+    total = len(jobs)
+
+    for index, (doc, first, last, original_name) in enumerate(jobs, 1):
+        if progress_callback:
+            progress_callback(index - 1, total, f"Analisando {doc.name}")
+        instruction = (
+            f"Arquivo original: {original_name}. "
+            f"Páginas: {first or 'não aplicável'} a "
+            f"{last or 'não aplicável'}. Use o nome original em source_file "
+            "e a numeração original em source_page."
+        )
+        batches.append(
+            _structured_call(
+                client,
+                model=model,
+                prompt=ACTIVATION_SYSTEM_PROMPT + "\n\n" + instruction,
+                docs=[doc],
+                schema=ActivationBatch,
+                context=doc.name,
+            )
+        )
+
+    if progress_callback:
+        progress_callback(total, total, "Extração concluída")
+    return batches
 
 
 def extract_briefing(
@@ -135,36 +243,23 @@ def extract_briefing(
     model: str,
 ) -> ProjectBriefing:
     client = get_client(api_key)
-
-    content: list[dict] = [
-        {
-            "type": "text",
-            "text": (
-                BRIEFING_SYSTEM_PROMPT
-                + "\n\nConsolide todas as fontes em um único briefing "
-                "estruturado. Sinalize divergências e ausências sem inventar."
-            ),
-        }
-    ]
-
-    for doc in docs:
-        content.append(_input_item(doc))
-
+    all_docs = list(docs)
     if pasted_text.strip():
-        content.append(
-            {
-                "type": "text",
-                "text": "Texto colado pelo usuário:\n" + pasted_text.strip(),
-            }
+        all_docs.append(
+            InputDocument(
+                name="texto_colado_usuario.txt",
+                data=pasted_text.strip().encode("utf-8"),
+                mime_type="text/plain",
+            )
         )
-
-    interaction = client.interactions.create(
+    return _structured_call(
+        client,
         model=model,
-        input=content,
-        response_format={
-            "type": "text",
-            "mime_type": "application/json",
-            "schema": ProjectBriefing.model_json_schema(),
-        },
+        prompt=(
+            BRIEFING_SYSTEM_PROMPT
+            + "\n\nConsolide todas as fontes em um briefing estruturado."
+        ),
+        docs=all_docs,
+        schema=ProjectBriefing,
+        context="briefing",
     )
-    return _briefing_from_interaction(interaction)
