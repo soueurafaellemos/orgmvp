@@ -1,97 +1,58 @@
-# Agente Organizador de Insumos para Brindes
+# Agente Organizador de Insumos para Brindes — Gemini
 
-Protótipo embrionário para:
+Protótipo em Streamlit para transformar materiais desorganizados em uma base
+estruturada para o futuro recomendador de brindes.
 
-1. receber PDF, Word, Excel, PowerPoint, CSV, texto e e-mail `.eml`;
-2. transformar catálogos em uma tabela padronizada de produtos;
-3. consolidar e-mails e documentos em um briefing estruturado;
-4. permitir revisão humana;
-5. exportar Excel, CSV e JSON para alimentar o MVP recomendador.
+## Atualização da versão anterior
 
-## Por que este protótipo é separado do recomendador?
+Esta versão troca a OpenAI API pela Gemini API.
 
-O recomendador precisa receber dados minimamente confiáveis. Este app funciona
-como uma camada de ingestão e limpeza:
+Substitua no GitHub os arquivos do projeto pelos arquivos deste pacote.
+O arquivo antigo `ai_extractor.py` foi removido e substituído por:
 
-`documentos desorganizados -> dados estruturados -> revisão -> MVP`
-
-## Instalação local
-
-Requisitos:
-
-- Python 3.11 ou superior
-- uma OpenAI API key com faturamento habilitado
-
-```bash
-python -m venv .venv
-source .venv/bin/activate       # macOS/Linux
-# .venv\Scripts\activate        # Windows
-
-pip install -r requirements.txt
-export OPENAI_API_KEY="sua-chave"
-streamlit run streamlit_app.py
+```text
+gemini_extractor.py
 ```
 
-## Deploy rápido no Streamlit Community Cloud
+O `requirements.txt` também precisa ser substituído.
 
-1. Crie um repositório no GitHub.
-2. Envie todos os arquivos deste projeto.
-3. No Streamlit Community Cloud, crie um app apontando para
-   `streamlit_app.py`.
-4. Em **Secrets**, cadastre:
+## Configuração no Streamlit
+
+Crie uma chave no Google AI Studio e salve nos Secrets do app:
 
 ```toml
-OPENAI_API_KEY = "sua-chave"
+GEMINI_API_KEY = "SUA-CHAVE"
 ```
 
-## Primeiro teste com um catálogo grande
+Nunca coloque a chave diretamente no GitHub.
 
-Para reduzir custo e tempo:
+## Primeiro teste recomendado
 
-1. selecione o modo **Catálogo de brindes**;
-2. envie o PDF;
-3. processe primeiro um intervalo curto, como páginas 6 a 13;
-4. use quatro páginas por lote;
-5. revise a tabela;
-6. só depois processe o documento completo.
+1. Escolha **Catálogo de brindes**.
+2. Envie o catálogo PDF.
+3. Modelo: `gemini-3.5-flash`.
+4. Página inicial: `6`.
+5. Página final: `7`.
+6. Páginas por lote: `2`.
+7. Clique em **Organizar informações**.
 
-## Campos de produto
+## Formatos previstos nesta versão
 
-- arquivo e página de origem
-- categoria
-- SKU
-- nome
-- descrição
-- capacidade
-- dimensões
-- material
-- acabamento
-- decoração
-- origem
-- produto regular ou conceito
-- pedido mínimo
-- possibilidade de personalização
-- observações de licenciamento
-- tags
-- confiança da extração
-- campos ausentes
-- evidência textual
+PDF, TXT, Markdown, JSON, HTML, XML, Word, PowerPoint, planilhas, CSV e e-mail
+`.eml`. A leitura mais confiável nesta fase é de PDF e texto. Outros formatos
+devem ser testados antes de entrar no fluxo oficial.
 
-## Limitações desta versão
+## Privacidade
 
-- `.msg` do Outlook ainda não é processado; use `.eml` ou cole o corpo.
-- a leitura de catálogos extensos gera várias chamadas à API;
-- preços e prazos não são inferidos quando não aparecem;
-- imagens dos produtos ainda não são recortadas e armazenadas individualmente;
-- a revisão humana continua obrigatória;
-- o app não possui login, banco de dados ou permissões.
+Na faixa gratuita da Gemini API, conteúdos enviados podem ser usados pelo
+Google para melhorar produtos. Use materiais não confidenciais durante a prova
+de conceito.
 
-## Próximas evoluções recomendadas
+## Limitações
 
-- armazenar produtos aprovados em PostgreSQL/Supabase;
-- recortar automaticamente a imagem de cada produto;
-- criar histórico de versões e fornecedores;
-- importar diretamente o arquivo revisado no recomendador;
-- integrar Gmail/Outlook;
-- criar validações de duplicidade, unidade, moeda e prazo;
-- usar uma fila assíncrona para catálogos muito grandes.
+- revisão humana continua obrigatória;
+- ainda não recorta imagens de produtos;
+- ainda não possui banco de dados, login ou permissões;
+- PDFs extensos geram várias chamadas;
+- a faixa gratuita possui limites de uso;
+- documentos binários antigos podem exigir conversão para formatos modernos.

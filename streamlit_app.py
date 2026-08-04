@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from ai_extractor import extract_briefing, extract_catalog
+from gemini_extractor import extract_briefing, extract_catalog
 from document_io import prepare_documents
 from exporters import (
     briefing_dataframe,
@@ -30,29 +30,37 @@ st.caption(
 )
 
 with st.sidebar:
-    st.header("Configuração")
+    st.header("Configuração Gemini")
 
     default_key = ""
     try:
-        default_key = st.secrets.get("OPENAI_API_KEY", "")
+        default_key = st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
-        default_key = os.getenv("OPENAI_API_KEY", "")
+        default_key = os.getenv("GEMINI_API_KEY", "")
 
     api_key = st.text_input(
-        "OpenAI API key",
+        "Gemini API key",
         value=default_key,
         type="password",
         help="A chave fica apenas na sessão atual. Em produção, use secrets.",
     )
-    model = st.text_input(
+    model = st.selectbox(
         "Modelo",
-        value=os.getenv("OPENAI_MODEL", "gpt-5.6"),
+        options=[
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+        ],
+        index=0,
+        help=(
+            "Comece com Gemini 3.5 Flash. O Flash-Lite é mais econômico, "
+            "mas pode ser menos preciso em catálogos muito visuais."
+        ),
     )
-    pdf_detail = st.selectbox(
-        "Detalhe visual do PDF",
-        options=["low", "high"],
-        index=1,
-        help="Use high para catálogos com texto pequeno e muitas imagens.",
+
+    st.warning(
+        "Na faixa gratuita, os dados enviados podem ser usados pelo Google "
+        "para melhorar produtos. Use materiais não confidenciais nesta fase."
     )
 
 mode = st.radio(
@@ -129,7 +137,7 @@ if run:
         st.stop()
 
     if not api_key:
-        st.error("Informe uma OpenAI API key.")
+        st.error("Informe uma Gemini API key.")
         st.stop()
 
     raw_uploaded = [
@@ -170,7 +178,6 @@ if run:
                 api_key=api_key,
                 model=model,
                 pages_per_batch=int(pages_per_batch),
-                pdf_detail=pdf_detail,
                 start_page=int(start_page),
                 end_page=(
                     None if int(end_page_value) == 0 else int(end_page_value)
@@ -190,7 +197,6 @@ if run:
                 pasted_text=pasted_text,
                 api_key=api_key,
                 model=model,
-                pdf_detail=pdf_detail,
             )
             st.session_state["briefing"] = briefing
 
