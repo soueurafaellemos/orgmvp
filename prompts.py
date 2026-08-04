@@ -80,8 +80,16 @@ Valores:
 - registre período, moeda e condições.
 
 Converta prazo expresso em dias para lead_time_days.
-Registre montagem, evento, local, equipe, validade, pagamento, desconto e
-benefício negociado quando presentes.
+Registre montagem, evento, local, equipe, validade e pagamento quando presentes.
+
+REGRAS GLOBAIS:
+- Informações que valem para toda a proposta, como período do evento, endereço,
+  janela geral de montagem, exigência comum de internet e condição geral de
+  negociação, devem ir em global_rules.
+- Não repita o mesmo benefício negociado em todas as soluções quando ele valer
+  para a proposta inteira.
+- Use negotiated_benefit na solução apenas quando o benefício for exclusivo
+  daquele item.
 
 Use somente a fonte. evidence deve ser um trecho curto.
 """ + SUPPLIER_CONTACT_RULES

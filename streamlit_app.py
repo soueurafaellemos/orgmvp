@@ -200,10 +200,17 @@ def _source_image_tab(
     )
 
     if pd.isna(page):
-        st.warning(
-            "O registro não possui página de origem. "
-            "A imagem não pode ser exibida automaticamente."
-        )
+        if str(source_file or "").lower().endswith(".txt"):
+            st.warning(
+                "Este registro foi criado a partir de texto colado ou e-mail, "
+                "sem uma página visual de origem. Para exibir imagens, envie "
+                "também o PDF ou PowerPoint original que contenha as fotos."
+            )
+        else:
+            st.warning(
+                "O registro não possui página de origem. "
+                "A imagem não pode ser exibida automaticamente."
+            )
         return
 
     pdf = _find_pdf(docs, source_file)

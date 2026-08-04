@@ -684,9 +684,10 @@ def venue_json_bytes(
         "alerts": _records(alerts_df),
     }
     return json.dumps(
-        payload,
+        _json_safe_value(payload),
         ensure_ascii=False,
         indent=2,
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -815,10 +816,52 @@ def briefing_dataframe(briefing):
     return pd.DataFrame(rows)
 
 
+def _drop_blank_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=(df.columns if df is not None else None))
+
+    cleaned = df.copy()
+    text_view = cleaned.fillna("").astype(str).apply(
+        lambda column: column.str.strip()
+    )
+    return cleaned.loc[(text_view != "").any(axis=1)].reset_index(drop=True)
+
+
+def _json_safe_value(value):
+    if value is None:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(value, dict):
+        return {
+            key: _json_safe_value(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+
+    return value
+
+
 def _records(df):
-    if df.empty:
+    cleaned = _drop_blank_rows(df)
+    if cleaned.empty:
         return []
-    return df.where(pd.notna(df), None).to_dict("records")
+
+    records = cleaned.to_dict("records")
+    return [
+        {
+            key: _json_safe_value(value)
+            for key, value in record.items()
+        }
+        for record in records
+    ]
 
 
 def catalog_json_bytes(
@@ -839,9 +882,10 @@ def catalog_json_bytes(
         "alerts": _records(alerts_df),
     }
     return json.dumps(
-        payload,
+        _json_safe_value(payload),
         ensure_ascii=False,
         indent=2,
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -865,9 +909,10 @@ def activation_json_bytes(
         "alerts": _records(alerts_df),
     }
     return json.dumps(
-        payload,
+        _json_safe_value(payload),
         ensure_ascii=False,
         indent=2,
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -880,9 +925,10 @@ def briefing_json_bytes(briefing, classification=None):
         "briefing": briefing.model_dump(),
     }
     return json.dumps(
-        payload,
+        _json_safe_value(payload),
         ensure_ascii=False,
         indent=2,
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -915,7 +961,7 @@ def to_xlsx_bytes(sheets):
 
         for raw_name, df in sheets.items():
             name = raw_name[:31]
-            safe = df.copy()
+            safe = _drop_blank_rows(df)
             safe.to_excel(writer, sheet_name=name, index=False)
             ws = writer.sheets[name]
             ws.freeze_panes(1, 0)
