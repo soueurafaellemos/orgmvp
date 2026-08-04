@@ -219,6 +219,43 @@ if mode == "Catálogo de brindes" and "products_df" in st.session_state:
             f"**{len(products_df)} registros únicos encontrados.** "
             "Revise os dados antes de importar no MVP."
         )
+
+        missing_price_count = int(
+            products_df["price_alert"]
+            .astype(str)
+            .str.contains("ALERTA", na=False)
+            .sum()
+        )
+        price_quote_count = int(
+            products_df["price_alert"]
+            .astype(str)
+            .str.contains("ATENÇÃO", na=False)
+            .sum()
+        )
+        missing_supplier_count = int(
+            products_df["supplier_alert"]
+            .astype(str)
+            .str.contains("ALERTA", na=False)
+            .sum()
+        )
+
+        metric1, metric2, metric3 = st.columns(3)
+        metric1.metric("Sem preço informado", missing_price_count)
+        metric2.metric("Preço sob consulta", price_quote_count)
+        metric3.metric("Sem fornecedor", missing_supplier_count)
+
+        if missing_price_count:
+            st.warning(
+                f"{missing_price_count} produto(s) não possuem preço no "
+                "material enviado. A coluna foi mantida vazia e um alerta "
+                "foi criado para futura cotação."
+            )
+
+        if missing_supplier_count:
+            st.warning(
+                f"{missing_supplier_count} produto(s) estão sem fornecedor "
+                "identificado. O campo deve ser complementado na revisão."
+            )
         edited_products = st.data_editor(
             products_df,
             use_container_width=True,
@@ -266,7 +303,11 @@ if mode == "Catálogo de brindes" and "products_df" in st.session_state:
     with col3:
         st.download_button(
             "Baixar JSON técnico",
-            data=catalog_json_bytes(batches),
+            data=catalog_json_bytes(
+                final_products,
+                rules_df,
+                warnings_df,
+            ),
             file_name="catalogo_estruturado.json",
             mime="application/json",
             use_container_width=True,

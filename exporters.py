@@ -2,15 +2,68 @@ from __future__ import annotations
 
 import io
 import json
-from collections import OrderedDict
-from typing import Iterable
 
 import pandas as pd
 
-from models import CatalogBatch, CatalogProduct, GlobalRule, ProjectBriefing
+from models import CatalogBatch, ProjectBriefing
 
 
-def merge_catalog_batches(batches: list[CatalogBatch]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+PRODUCT_COLUMN_ORDER = [
+    "source_file",
+    "supplier_name",
+    "supplier_alert",
+    "catalog_name",
+    "document_year",
+    "source_page",
+    "category",
+    "sku",
+    "name",
+    "description",
+    "unit_price",
+    "price_min",
+    "price_max",
+    "currency",
+    "price_status",
+    "price_reference_qty",
+    "price_notes",
+    "price_alert",
+    "capacity",
+    "capacity_ml",
+    "dimensions_raw",
+    "material",
+    "finish",
+    "decoration",
+    "origin",
+    "development_status",
+    "min_order_qty",
+    "customizable",
+    "licensing_notes",
+    "tags",
+    "confidence",
+    "missing_fields",
+    "data_quality_alerts",
+    "evidence",
+]
+
+
+def _has_value(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and pd.isna(value):
+        return False
+    return bool(str(value).strip())
+
+
+def _append_missing_field(existing: list[str], field: str) -> list[str]:
+    cleaned = [item for item in existing if item]
+    if field not in cleaned:
+        cleaned.append(field)
+    return cleaned
+
+
+def merge_catalog_batches(
+    batches: list[CatalogBatch],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     products: list[dict] = []
     rules: list[dict] = []
     warnings: list[dict] = []
@@ -18,28 +71,135 @@ def merge_catalog_batches(batches: list[CatalogBatch]) -> tuple[pd.DataFrame, pd
     for batch_index, batch in enumerate(batches, start=1):
         for product in batch.products:
             row = product.model_dump()
-            row["tags"] = " | ".join(row.get("tags") or [])
-            row["missing_fields"] = " | ".join(row.get("missing_fields") or [])
-            row["supplier_name"] = batch.supplier_name
+
+            supplier_name = (
+                product.supplier_name
+                if _has_value(product.supplier_name)
+                else batch.supplier_name
+            )
+            row["supplier_name"] = supplier_name
             row["catalog_name"] = batch.catalog_name
             row["document_year"] = batch.document_year
+
+            missing_fields = list(row.get("missing_fields") or [])
+            quality_alerts: list[str] = []
+
+            if not _has_value(supplier_name):
+                row["supplier_alert"] = "ALERTA: fornecedor não identificado"
+                missing_fields = _append_missing_field(
+                    missing_fields,
+                    "supplier_name",
+                )
+                quality_alerts.append("Fornecedor não identificado")
+                warnings.append(
+                    {
+                        "severity": "Alto",
+                        "type": "Campo ausente",
+                        "field": "supplier_name",
+                        "supplier_name": None,
+                        "sku": row.get("sku"),
+                        "product_name": row.get("name"),
+                        "source_page": row.get("source_page"),
+                        "message": (
+                            "O fornecedor não foi identificado no documento."
+                        ),
+                    }
+                )
+            else:
+                row["supplier_alert"] = "OK"
+
+            price_status = row.get("price_status") or "Não informado"
+            has_numeric_price = any(
+                row.get(field) is not None
+                for field in ("unit_price", "price_min", "price_max")
+            )
+
+            if price_status == "Sob consulta":
+                row["price_alert"] = "ATENÇÃO: preço sob consulta"
+                quality_alerts.append("Preço sob consulta")
+                missing_fields = _append_missing_field(
+                    missing_fields,
+                    "unit_price",
+                )
+                warnings.append(
+                    {
+                        "severity": "Médio",
+                        "type": "Preço",
+                        "field": "unit_price",
+                        "supplier_name": supplier_name,
+                        "sku": row.get("sku"),
+                        "product_name": row.get("name"),
+                        "source_page": row.get("source_page"),
+                        "message": (
+                            "O catálogo informa preço sob consulta; "
+                            "é necessária cotação."
+                        ),
+                    }
+                )
+            elif not has_numeric_price:
+                row["price_status"] = "Não informado"
+                row["price_alert"] = "ALERTA: preço não informado"
+                quality_alerts.append("Preço não informado")
+                missing_fields = _append_missing_field(
+                    missing_fields,
+                    "unit_price",
+                )
+                warnings.append(
+                    {
+                        "severity": "Alto",
+                        "type": "Preço",
+                        "field": "unit_price",
+                        "supplier_name": supplier_name,
+                        "sku": row.get("sku"),
+                        "product_name": row.get("name"),
+                        "source_page": row.get("source_page"),
+                        "message": (
+                            "Nenhum preço foi encontrado para este produto."
+                        ),
+                    }
+                )
+            else:
+                row["price_alert"] = "OK"
+                if price_status == "Não informado":
+                    row["price_status"] = (
+                        "Faixa de preço"
+                        if row.get("price_min") is not None
+                        or row.get("price_max") is not None
+                        else "Informado"
+                    )
+
+            row["tags"] = " | ".join(row.get("tags") or [])
+            row["missing_fields"] = " | ".join(missing_fields)
+            row["data_quality_alerts"] = " | ".join(quality_alerts)
             products.append(row)
 
         for rule in batch.global_rules:
-            row = rule.model_dump()
-            row["batch"] = batch_index
-            rules.append(row)
+            rule_row = rule.model_dump()
+            rule_row["batch"] = batch_index
+            rules.append(rule_row)
 
         for warning in batch.warnings:
-            warnings.append({"batch": batch_index, "warning": warning})
+            warnings.append(
+                {
+                    "severity": "Informativo",
+                    "type": "Agente",
+                    "field": None,
+                    "supplier_name": batch.supplier_name,
+                    "sku": None,
+                    "product_name": None,
+                    "source_page": None,
+                    "message": warning,
+                }
+            )
 
     products_df = pd.DataFrame(products)
+
     if not products_df.empty:
-        # Deduplicação conservadora: SKU quando houver; senão nome + página.
         products_df["_dedupe"] = products_df.apply(
             lambda row: (
                 f"sku::{str(row.get('sku')).strip().lower()}"
-                if pd.notna(row.get("sku")) and str(row.get("sku")).strip()
+                if pd.notna(row.get("sku"))
+                and str(row.get("sku")).strip()
                 else (
                     f"name::{str(row.get('name')).strip().lower()}::"
                     f"{str(row.get('source_page'))}"
@@ -47,6 +207,7 @@ def merge_catalog_batches(batches: list[CatalogBatch]) -> tuple[pd.DataFrame, pd
             ),
             axis=1,
         )
+
         products_df = (
             products_df.sort_values(
                 by=["confidence"],
@@ -58,17 +219,67 @@ def merge_catalog_batches(batches: list[CatalogBatch]) -> tuple[pd.DataFrame, pd
             .reset_index(drop=True)
         )
 
-    return products_df, pd.DataFrame(rules), pd.DataFrame(warnings)
+        for column in PRODUCT_COLUMN_ORDER:
+            if column not in products_df.columns:
+                products_df[column] = None
+
+        remaining = [
+            column
+            for column in products_df.columns
+            if column not in PRODUCT_COLUMN_ORDER
+        ]
+        products_df = products_df[
+            PRODUCT_COLUMN_ORDER + remaining
+        ]
+
+    warnings_df = pd.DataFrame(warnings)
+    if not warnings_df.empty:
+        warning_order = [
+            "severity",
+            "type",
+            "field",
+            "supplier_name",
+            "sku",
+            "product_name",
+            "source_page",
+            "message",
+        ]
+        for column in warning_order:
+            if column not in warnings_df.columns:
+                warnings_df[column] = None
+        warnings_df = warnings_df[warning_order]
+
+    return products_df, pd.DataFrame(rules), warnings_df
 
 
-def catalog_json_bytes(batches: list[CatalogBatch]) -> bytes:
-    payload = [batch.model_dump() for batch in batches]
-    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+def catalog_json_bytes(
+    products_df: pd.DataFrame,
+    rules_df: pd.DataFrame,
+    warnings_df: pd.DataFrame,
+) -> bytes:
+    payload = {
+        "products": products_df.where(
+            pd.notna(products_df), None
+        ).to_dict(orient="records"),
+        "global_rules": rules_df.where(
+            pd.notna(rules_df), None
+        ).to_dict(orient="records"),
+        "alerts": warnings_df.where(
+            pd.notna(warnings_df), None
+        ).to_dict(orient="records"),
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+    ).encode("utf-8")
 
 
 def briefing_json_bytes(briefing: ProjectBriefing) -> bytes:
     return json.dumps(
-        briefing.model_dump(), ensure_ascii=False, indent=2
+        briefing.model_dump(),
+        ensure_ascii=False,
+        indent=2,
     ).encode("utf-8")
 
 
@@ -83,8 +294,10 @@ def briefing_dataframe(briefing: ProjectBriefing) -> pd.DataFrame:
 
 def to_xlsx_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
     buffer = io.BytesIO()
+
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         workbook = writer.book
+
         header_format = workbook.add_format(
             {
                 "bold": True,
@@ -101,23 +314,99 @@ def to_xlsx_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
                 "valign": "top",
             }
         )
+        alert_format = workbook.add_format(
+            {
+                "bg_color": "#FDE9E7",
+                "font_color": "#B42318",
+                "border": 1,
+                "text_wrap": True,
+                "valign": "top",
+            }
+        )
+        attention_format = workbook.add_format(
+            {
+                "bg_color": "#FFF4CE",
+                "font_color": "#7A4E00",
+                "border": 1,
+                "text_wrap": True,
+                "valign": "top",
+            }
+        )
 
         for raw_name, df in sheets.items():
             sheet_name = raw_name[:31]
             safe_df = df.copy()
-            safe_df.to_excel(writer, sheet_name=sheet_name, index=False)
+            safe_df.to_excel(
+                writer,
+                sheet_name=sheet_name,
+                index=False,
+            )
             worksheet = writer.sheets[sheet_name]
             worksheet.freeze_panes(1, 0)
-            worksheet.autofilter(0, 0, max(len(safe_df), 1), max(len(safe_df.columns) - 1, 0))
+
+            if len(safe_df.columns) > 0:
+                worksheet.autofilter(
+                    0,
+                    0,
+                    max(len(safe_df), 1),
+                    len(safe_df.columns) - 1,
+                )
 
             for col_index, column in enumerate(safe_df.columns):
-                worksheet.write(0, col_index, column, header_format)
-                values = safe_df[column].astype(str) if not safe_df.empty else []
+                worksheet.write(
+                    0,
+                    col_index,
+                    column,
+                    header_format,
+                )
+                values = (
+                    safe_df[column].astype(str).tolist()
+                    if not safe_df.empty
+                    else []
+                )
                 max_len = max(
                     [len(str(column))]
                     + [min(len(value), 60) for value in values]
                 )
                 width = min(max(max_len + 2, 12), 42)
-                worksheet.set_column(col_index, col_index, width, cell_format)
+                worksheet.set_column(
+                    col_index,
+                    col_index,
+                    width,
+                    cell_format,
+                )
+
+            if not safe_df.empty:
+                for alert_column in (
+                    "supplier_alert",
+                    "price_alert",
+                    "data_quality_alerts",
+                ):
+                    if alert_column in safe_df.columns:
+                        column_index = safe_df.columns.get_loc(alert_column)
+                        worksheet.conditional_format(
+                            1,
+                            column_index,
+                            len(safe_df),
+                            column_index,
+                            {
+                                "type": "text",
+                                "criteria": "containing",
+                                "value": "ALERTA",
+                                "format": alert_format,
+                            },
+                        )
+                        worksheet.conditional_format(
+                            1,
+                            column_index,
+                            len(safe_df),
+                            column_index,
+                            {
+                                "type": "text",
+                                "criteria": "containing",
+                                "value": "ATENÇÃO",
+                                "format": attention_format,
+                            },
+                        )
 
     return buffer.getvalue()

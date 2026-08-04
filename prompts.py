@@ -20,6 +20,33 @@ REGRAS:
 10. evidence deve conter um fragmento curto que permita ao revisor localizar a
     informação na fonte.
 11. confidence representa a confiança na extração, e não a qualidade do produto.
+
+FORNECEDOR:
+12. Identifique o nome do fornecedor pela capa, cabeçalho, rodapé, contatos ou
+    assinatura do documento.
+13. Preencha supplier_name no nível do catálogo e também no produto quando a
+    associação for clara.
+14. Se houver duas marcas apresentadas juntas como fornecedoras, preserve a
+    forma exibida, por exemplo: "Gifts Now / Global Products".
+15. Nunca use a marca licenciada estampada no brinde como nome do fornecedor.
+16. Quando o fornecedor não puder ser identificado, retorne null e inclua
+    supplier_name em missing_fields.
+
+PREÇO:
+17. Extraia preço unitário somente quando estiver explicitamente informado.
+18. Não calcule preço dividindo total, pedido mínimo ou qualquer outro valor.
+19. Quando houver um valor único, preencha unit_price e price_status="Informado".
+20. Quando houver uma faixa, preencha price_min, price_max e
+    price_status="Faixa de preço".
+21. Quando o documento disser "sob consulta", use price_status="Sob consulta".
+22. Quando nenhum preço aparecer, use price_status="Não informado", mantenha
+    unit_price, price_min e price_max como null e inclua unit_price em
+    missing_fields.
+23. Registre a moeda em currency. Se ela não estiver clara, use "Não informado".
+24. Se o preço valer apenas para uma quantidade específica, registre essa
+    quantidade em price_reference_qty.
+25. Use price_notes para condições como impostos, frete, validade, setup,
+    personalização, quantidade ou observações comerciais.
 """
 
 BRIEFING_SYSTEM_PROMPT = """
