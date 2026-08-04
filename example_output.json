@@ -1,0 +1,43 @@
+{
+  "document_example": "CATÁLOGO 2026",
+  "global_rules": [
+    {
+      "key": "pedido_minimo",
+      "value": "5.000 unidades",
+      "source_page": 3
+    },
+    {
+      "key": "licenciamento",
+      "value": "Licenças exibidas são ilustrativas; o licenciamento é responsabilidade do cliente.",
+      "source_page": 3
+    }
+  ],
+  "products": [
+    {
+      "source_page": 6,
+      "category": "Para beber",
+      "sku": "UCA0008",
+      "name": "Caneca Kids",
+      "capacity": "250 ml",
+      "dimensions_raw": "12 x 8,5 x 8 cm",
+      "material": "PP Copo",
+      "finish": "Fosco",
+      "decoration": "Heat transfer 4C",
+      "origin": "Brasil",
+      "development_status": "Produto regular"
+    },
+    {
+      "source_page": 6,
+      "category": "Para beber",
+      "sku": "UGA0017",
+      "name": "Garrafa com Caneca",
+      "capacity": "450 ml",
+      "dimensions_raw": "6,5 x 23 cm",
+      "material": "PP copo",
+      "finish": null,
+      "decoration": "In mold label 4C",
+      "origin": "Não informado",
+      "development_status": "Produto conceito"
+    }
+  ]
+}
