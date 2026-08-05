@@ -469,7 +469,7 @@ def render_sidebar() -> None:
         )
         st.page_link(
             "pages/1_Organizar_Conhecimento.py",
-            label="Organizar conhecimento",
+            label="Upload de Conhecimento",
         )
         st.page_link(
             "pages/2_Consultar_Base.py",

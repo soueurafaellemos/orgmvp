@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import date
 from typing import Any
@@ -55,8 +56,8 @@ if not require_app_access():
 apply_nave_branding()
 page_header(
     "Projetos",
-    "Consulte versões, compare mudanças e recupere a inteligência "
-    "registrada em cada projeto.",
+    "Selecione um projeto na tabela para consultar o briefing, "
+    "as versões, as recomendações e os feedbacks registrados.",
 )
 
 try:
@@ -522,21 +523,57 @@ m4.metric(
 
 st.divider()
 
-search = st.text_input(
-    "Buscar projeto, cliente ou evento",
-    placeholder="Ex.: Nissin, CCXP, Oktoberfest...",
+filter1, filter2, filter3 = st.columns(
+    [2.2, 1.2, 1]
 )
 
+with filter1:
+    search = st.text_input(
+        "Buscar projeto, cliente ou evento",
+        placeholder="Ex.: Nissin, CCXP, Oktoberfest...",
+    )
+
+status_values = sorted(
+    {
+        str(value)
+        for value in projects[
+            "latest_readiness_status"
+        ].dropna()
+        if str(value).strip()
+    }
+)
+
+with filter2:
+    selected_status = st.selectbox(
+        "Status atual",
+        ["Todos", *status_values],
+    )
+
+with filter3:
+    page_size = st.selectbox(
+        "Itens por página",
+        [25, 50, 100],
+        index=0,
+    )
+
 filtered_projects = projects.copy()
+
 if search.strip():
     query_text = search.strip().lower()
     searchable = (
-        filtered_projects["project_name"].fillna("").astype(str)
+        filtered_projects["project_name"]
+        .fillna("")
+        .astype(str)
         + " "
-        + filtered_projects["client_brand"].fillna("").astype(str)
+        + filtered_projects["client_brand"]
+        .fillna("")
+        .astype(str)
         + " "
-        + filtered_projects["event_name"].fillna("").astype(str)
+        + filtered_projects["event_name"]
+        .fillna("")
+        .astype(str)
     ).str.lower()
+
     filtered_projects = filtered_projects[
         searchable.str.contains(
             query_text,
@@ -544,92 +581,230 @@ if search.strip():
         )
     ]
 
-if filtered_projects.empty:
-    st.warning("Nenhum projeto corresponde à busca.")
-    st.stop()
+if selected_status != "Todos":
+    filtered_projects = filtered_projects[
+        filtered_projects[
+            "latest_readiness_status"
+        ].fillna("").eq(selected_status)
+    ]
 
-project_options = {
-    (
-        f"{row.get('project_name') or 'Projeto sem nome'}"
-        f" · {int(row.get('recommendation_versions') or 0)} versão(ões)"
-    ): row.get("project_id")
-    for _, row in filtered_projects.iterrows()
-}
-
-project_placeholder = "Selecione um projeto para visualizar"
-
-selected_project_label = st.selectbox(
-    "Projeto",
-    options=[project_placeholder, *project_options.keys()],
-    index=0,
+filtered_projects = filtered_projects.reset_index(
+    drop=True
 )
 
-if selected_project_label == project_placeholder:
-    st.markdown("### Visão geral dos projetos")
-
-    overview = filtered_projects.copy()
-
-    overview["Projeto"] = overview["project_name"].fillna(
-        "Projeto sem nome"
-    )
-    overview["Cliente"] = overview["client_brand"].fillna(
-        "Não informado"
-    )
-    overview["Evento"] = overview["event_name"].fillna("")
-    overview["Versões"] = pd.to_numeric(
-        overview["recommendation_versions"],
-        errors="coerce",
-    ).fillna(0).astype(int)
-    overview["Completude atual"] = overview[
-        "latest_completeness_score"
-    ].apply(
-        lambda value: (
-            f"{int(value)}%"
-            if not _missing(value)
-            else "Não calculada"
-        )
-    )
-    overview["Status atual"] = overview[
-        "latest_readiness_status"
-    ].fillna("Não informado")
-    overview["Budget"] = overview["budget_total_brl"].apply(
-        _money
-    )
-    overview["Última atividade"] = overview[
-        "latest_activity"
-    ].apply(
-        lambda value: (
-            str(value)[:10]
-            if not _missing(value)
-            else "Não informada"
-        )
-    )
-
-    st.dataframe(
-        overview[
-            [
-                "Projeto",
-                "Cliente",
-                "Evento",
-                "Versões",
-                "Completude atual",
-                "Status atual",
-                "Budget",
-                "Última atividade",
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.info(
-        "Selecione um projeto acima para abrir o briefing, "
-        "o diagnóstico, as recomendações, a comparação de versões "
-        "e os feedbacks."
+if filtered_projects.empty:
+    st.warning(
+        "Nenhum projeto corresponde aos filtros."
     )
     st.stop()
 
-selected_project_id = project_options[selected_project_label]
+total_projects = len(filtered_projects)
+total_pages = max(
+    1,
+    math.ceil(total_projects / page_size),
+)
+
+page_column, summary_column = st.columns(
+    [1, 4]
+)
+
+with page_column:
+    current_page = st.number_input(
+        "Página",
+        min_value=1,
+        max_value=total_pages,
+        value=1,
+        step=1,
+        key="projects_current_page",
+    )
+
+with summary_column:
+    st.caption(
+        f"{total_projects} projeto(s) encontrado(s) · "
+        f"página {int(current_page)} de {total_pages}"
+    )
+
+start_index = (
+    int(current_page) - 1
+) * page_size
+end_index = min(
+    start_index + page_size,
+    total_projects,
+)
+
+project_page = filtered_projects.iloc[
+    start_index:end_index
+].copy().reset_index(drop=True)
+
+project_page["Projeto"] = project_page[
+    "project_name"
+].fillna("Projeto sem nome")
+project_page["Cliente"] = project_page[
+    "client_brand"
+].fillna("Não informado")
+project_page["Evento"] = project_page[
+    "event_name"
+].fillna("Não informado")
+project_page["Versões"] = pd.to_numeric(
+    project_page["recommendation_versions"],
+    errors="coerce",
+).fillna(0).astype(int)
+project_page["Completude"] = pd.to_numeric(
+    project_page["latest_completeness_score"],
+    errors="coerce",
+).fillna(0)
+project_page["Status"] = project_page[
+    "latest_readiness_status"
+].fillna("Não informado")
+project_page["Budget"] = project_page[
+    "budget_total_brl"
+].apply(_money)
+project_page["Última atividade"] = project_page[
+    "latest_activity"
+].apply(
+    lambda value: (
+        str(value)[:10]
+        if not _missing(value)
+        else "Não informada"
+    )
+)
+
+st.caption(
+    "Selecione uma linha para abrir o histórico completo "
+    "do projeto."
+)
+
+project_event = st.dataframe(
+    project_page[
+        [
+            "Projeto",
+            "Cliente",
+            "Evento",
+            "Versões",
+            "Completude",
+            "Status",
+            "Budget",
+            "Última atividade",
+        ]
+    ],
+    use_container_width=True,
+    hide_index=True,
+    row_height=52,
+    key=(
+        f"projects_navigation_table_"
+        f"{int(current_page)}_"
+        f"{selected_status}"
+    ),
+    on_select="rerun",
+    selection_mode="single-row",
+    column_config={
+        "Projeto": st.column_config.TextColumn(
+            "Projeto",
+            width="medium",
+        ),
+        "Cliente": st.column_config.TextColumn(
+            "Cliente",
+            width="medium",
+        ),
+        "Evento": st.column_config.TextColumn(
+            "Evento",
+            width="medium",
+        ),
+        "Completude": st.column_config.ProgressColumn(
+            "Completude",
+            min_value=0,
+            max_value=100,
+            format="%.0f%%",
+        ),
+        "Status": st.column_config.TextColumn(
+            "Status",
+            width="medium",
+        ),
+    },
+)
+
+
+def _selected_rows(event) -> list[int]:
+    try:
+        return list(event.selection.rows)
+    except Exception:
+        try:
+            return list(
+                event.get(
+                    "selection",
+                    {},
+                ).get("rows", [])
+            )
+        except Exception:
+            return []
+
+
+selected_project_rows = _selected_rows(
+    project_event
+)
+
+if not selected_project_rows:
+    st.info(
+        "Selecione um projeto na tabela para abrir suas "
+        "versões, diagnóstico, recomendações e feedbacks."
+    )
+    st.stop()
+
+selected_project = project_page.iloc[
+    selected_project_rows[0]
+].to_dict()
+
+selected_project_id = str(
+    selected_project.get("project_id") or ""
+)
+
+st.divider()
+st.subheader(
+    selected_project.get("Projeto")
+    or "Projeto sem nome"
+)
+
+project_metric1, project_metric2, project_metric3, project_metric4 = (
+    st.columns(4)
+)
+
+project_metric1.metric(
+    "Cliente",
+    selected_project.get("Cliente")
+    or "Não informado",
+)
+project_metric2.metric(
+    "Versões",
+    int(selected_project.get("Versões") or 0),
+)
+project_metric3.metric(
+    "Completude atual",
+    (
+        f"{float(selected_project.get('Completude') or 0):.0f}%"
+    ),
+)
+project_metric4.metric(
+    "Budget",
+    selected_project.get("Budget")
+    or "Não informado",
+)
+
+project_status1, project_status2 = st.columns(2)
+project_status1.info(
+    "Status atual: "
+    + str(
+        selected_project.get("Status")
+        or "Não informado"
+    )
+)
+project_status2.info(
+    "Última atividade: "
+    + str(
+        selected_project.get("Última atividade")
+        or "Não informada"
+    )
+)
+
 
 versions = fetch_recommendation_history(
     client,

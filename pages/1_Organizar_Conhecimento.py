@@ -54,7 +54,7 @@ from supabase_db import (
 
 
 st.set_page_config(
-    page_title="NAVE by VOE | Organizar conhecimento",
+    page_title="NAVE by VOE | Upload de Conhecimento",
     page_icon=NAVE_APP_ICON,
     layout="wide",
     initial_sidebar_state="expanded",
@@ -65,8 +65,8 @@ if not require_app_access():
 
 apply_nave_branding()
 page_header(
-    "Organizar conhecimento",
-    "Adicione documentos para estruturar brindes, soluções, locais "
+    "Upload de Conhecimento",
+    "Envie documentos para estruturar brindes, soluções, locais "
     "e projetos na base da NAVE.",
 )
 
@@ -133,7 +133,7 @@ if database_client is None:
     )
 
 mode_label = st.radio(
-    "Como deseja organizar?",
+    "O que deseja enviar?",
     [
         "Identificar automaticamente",
         "Brindes / produtos",
@@ -231,7 +231,7 @@ if selected_mode != "briefing":
         )
 
 run = st.button(
-    "Organizar informações",
+    "Fazer Upload",
     type="primary",
     use_container_width=True,
 )

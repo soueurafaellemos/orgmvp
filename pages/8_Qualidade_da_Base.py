@@ -135,7 +135,7 @@ if quality.empty:
     )
     st.page_link(
         "pages/1_Organizar_Conhecimento.py",
-        label="Começar a organizar documentos",
+        label="Fazer upload de conhecimento",
         use_container_width=True,
     )
     st.stop()
@@ -253,7 +253,7 @@ with overview_tab:
     with action1:
         st.page_link(
             "pages/1_Organizar_Conhecimento.py",
-            label="Adicionar novos documentos",
+            label="Fazer upload de conhecimento",
             use_container_width=True,
         )
 

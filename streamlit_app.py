@@ -33,7 +33,7 @@ column1, column2, column3, column4 = st.columns(4)
 with column1:
     st.page_link(
         "pages/1_Organizar_Conhecimento.py",
-        label="Organizar conhecimento",
+        label="Upload de Conhecimento",
         icon="📥",
         use_container_width=True,
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -35,8 +36,8 @@ if not require_app_access():
 apply_nave_branding()
 page_header(
     "Fornecedores",
-    "Organize a cobertura territorial e os dados logísticos "
-    "que ajudam a qualificar as recomendações.",
+    "Selecione um fornecedor na tabela para consultar e editar "
+    "sua cobertura territorial e seus dados logísticos.",
 )
 
 try:
@@ -133,10 +134,41 @@ m4.metric("Sem cobertura cadastrada", missing)
 
 st.divider()
 
-search = st.text_input(
-    "Buscar fornecedor",
-    placeholder="Ex.: TechnoMotion, cenografia, brindes...",
+filter1, filter2, filter3 = st.columns(
+    [2.2, 1.3, 1]
 )
+
+with filter1:
+    search = st.text_input(
+        "Buscar fornecedor",
+        placeholder=(
+            "Ex.: TechnoMotion, cenografia, brindes..."
+        ),
+    )
+
+coverage_options = sorted(
+    {
+        str(value)
+        for value in coverage[
+            "coverage_level"
+        ].dropna()
+        if str(value).strip()
+    }
+)
+
+with filter2:
+    selected_coverage = st.selectbox(
+        "Cobertura",
+        ["Todos", *coverage_options],
+    )
+
+with filter3:
+    page_size = st.selectbox(
+        "Itens por página",
+        [25, 50, 100],
+        index=0,
+        key="supplier_page_size",
+    )
 
 filtered = coverage.copy()
 
@@ -151,15 +183,73 @@ if search.strip():
         + " "
         + filtered["coverage_level"].fillna("").astype(str)
     ).str.lower()
+
     filtered = filtered[
-        searchable.str.contains(term, regex=False)
+        searchable.str.contains(
+            term,
+            regex=False,
+        )
     ]
 
+if selected_coverage != "Todos":
+    filtered = filtered[
+        filtered[
+            "coverage_level"
+        ].fillna("").eq(selected_coverage)
+    ]
+
+filtered = filtered.reset_index(drop=True)
+
 if filtered.empty:
-    st.warning("Nenhum fornecedor corresponde à busca.")
+    st.warning(
+        "Nenhum fornecedor corresponde aos filtros."
+    )
     st.stop()
 
-overview = filtered.copy()
+total_filtered = len(filtered)
+total_pages = max(
+    1,
+    math.ceil(total_filtered / page_size),
+)
+
+page_column, summary_column = st.columns(
+    [1, 4]
+)
+
+with page_column:
+    current_page = st.number_input(
+        "Página",
+        min_value=1,
+        max_value=total_pages,
+        value=1,
+        step=1,
+        key="supplier_current_page",
+    )
+
+with summary_column:
+    st.caption(
+        f"{total_filtered} fornecedor(es) encontrado(s) · "
+        f"página {int(current_page)} de {total_pages}"
+    )
+
+start_index = (
+    int(current_page) - 1
+) * page_size
+end_index = min(
+    start_index + page_size,
+    total_filtered,
+)
+
+overview = filtered.iloc[
+    start_index:end_index
+].copy().reset_index(drop=True)
+
+overview["Fornecedor"] = overview[
+    "name"
+].fillna("Fornecedor sem nome")
+overview["Cobertura"] = overview[
+    "coverage_level"
+].fillna("Cobertura não cadastrada")
 overview["Base"] = overview.apply(
     lambda row: ", ".join(
         value
@@ -168,95 +258,226 @@ overview["Base"] = overview.apply(
             str(row.get("base_state") or "").strip(),
         ]
         if value
-    ) or "Não informada",
+    )
+    or "Não informada",
     axis=1,
 )
 overview["Nacional"] = overview[
     "serves_nationally"
 ].apply(
     lambda value: (
-        "Sim" if value is True
-        else "Não" if value is False
+        "Sim"
+        if value is True
+        else "Não"
+        if value is False
         else "Não informado"
     )
 )
-overview["Deslocamento"] = overview[
-    "default_travel_cost_brl"
+overview["Estados atendidos"] = overview[
+    "served_states"
 ].apply(
-    lambda value: (
-        format_pt_br_number(value, prefix="R$ ")
-        or ""
+    lambda value: _pipe(value).replace(
+        " | ",
+        ", ",
     )
+    or "Não informado"
 )
-overview["Frete"] = overview[
-    "default_freight_cost_brl"
+overview["Cidades atendidas"] = overview[
+    "served_cities"
 ].apply(
-    lambda value: (
-        format_pt_br_number(value, prefix="R$ ")
-        or ""
+    lambda value: _pipe(value).replace(
+        " | ",
+        ", ",
     )
+    or "Não informado"
+)
+overview["Soluções"] = pd.to_numeric(
+    overview["activations_count"],
+    errors="coerce",
+).fillna(0).astype(int)
+overview["Produtos"] = pd.to_numeric(
+    overview["products_count"],
+    errors="coerce",
+).fillna(0).astype(int)
+overview["Locais"] = pd.to_numeric(
+    overview["venues_count"],
+    errors="coerce",
+).fillna(0).astype(int)
+
+st.caption(
+    "Selecione uma linha para abrir os dados completos e "
+    "editar a cobertura."
 )
 
-st.dataframe(
+supplier_event = st.dataframe(
     overview[
         [
-            "name",
-            "coverage_level",
+            "Fornecedor",
+            "Cobertura",
             "Base",
             "Nacional",
-            "served_states",
-            "served_cities",
-            "Deslocamento",
-            "Frete",
-            "activations_count",
-            "products_count",
-            "venues_count",
+            "Estados atendidos",
+            "Cidades atendidas",
+            "Soluções",
+            "Produtos",
+            "Locais",
         ]
-    ].rename(
-        columns={
-            "name": "Fornecedor",
-            "coverage_level": "Cobertura",
-            "served_states": "Estados atendidos",
-            "served_cities": "Cidades atendidas",
-            "activations_count": "Soluções",
-            "products_count": "Produtos",
-            "venues_count": "Locais",
-        }
-    ),
+    ],
     use_container_width=True,
     hide_index=True,
+    row_height=52,
+    key=(
+        f"supplier_navigation_table_"
+        f"{int(current_page)}_"
+        f"{selected_coverage}"
+    ),
+    on_select="rerun",
+    selection_mode="single-row",
+    column_config={
+        "Fornecedor": st.column_config.TextColumn(
+            "Fornecedor",
+            width="medium",
+        ),
+        "Cobertura": st.column_config.TextColumn(
+            "Cobertura",
+            width="medium",
+        ),
+        "Estados atendidos": (
+            st.column_config.TextColumn(
+                "Estados atendidos",
+                width="medium",
+            )
+        ),
+        "Cidades atendidas": (
+            st.column_config.TextColumn(
+                "Cidades atendidas",
+                width="large",
+            )
+        ),
+    },
 )
 
-st.divider()
-st.subheader("Editar cobertura")
 
-placeholder = "Selecione um fornecedor"
+def _selected_rows(event) -> list[int]:
+    try:
+        return list(event.selection.rows)
+    except Exception:
+        try:
+            return list(
+                event.get(
+                    "selection",
+                    {},
+                ).get("rows", [])
+            )
+        except Exception:
+            return []
 
-supplier_options = {
-    str(row.get("name")): str(row.get("supplier_id"))
-    for _, row in filtered.iterrows()
-}
 
-selected_label = st.selectbox(
-    "Fornecedor",
-    [placeholder, *supplier_options.keys()],
+selected_supplier_rows = _selected_rows(
+    supplier_event
 )
 
-if selected_label == placeholder:
+if not selected_supplier_rows:
     st.info(
-        "Selecione um fornecedor para cadastrar sua área de atuação."
+        "Selecione um fornecedor na tabela para consultar "
+        "seus dados e editar a cobertura."
     )
     st.stop()
 
-supplier_id = supplier_options[selected_label]
-supplier = fetch_supplier_by_id(
-    client,
-    supplier_id,
+selected_overview = overview.iloc[
+    selected_supplier_rows[0]
+].to_dict()
+
+supplier_id = str(
+    selected_overview.get("supplier_id") or ""
 )
+selected_label = str(
+    selected_overview.get("Fornecedor")
+    or "Fornecedor"
+)
+
+try:
+    supplier = fetch_supplier_by_id(
+        client,
+        supplier_id,
+    )
+except Exception as exc:
+    report_service_error(
+        "consulta do fornecedor selecionado",
+        user_message=(
+            "Não foi possível abrir este fornecedor."
+        ),
+        exception=exc,
+    )
+    st.stop()
 
 if not supplier:
     st.error("Fornecedor não encontrado.")
     st.stop()
+
+st.divider()
+st.subheader(selected_label)
+
+detail1, detail2, detail3, detail4, detail5 = (
+    st.columns(5)
+)
+
+detail1.metric(
+    "Cobertura",
+    selected_overview.get("Cobertura")
+    or "Não cadastrada",
+)
+detail2.metric(
+    "Base",
+    selected_overview.get("Base")
+    or "Não informada",
+)
+detail3.metric(
+    "Soluções",
+    int(selected_overview.get("Soluções") or 0),
+)
+detail4.metric(
+    "Produtos",
+    int(selected_overview.get("Produtos") or 0),
+)
+detail5.metric(
+    "Locais",
+    int(selected_overview.get("Locais") or 0),
+)
+
+contact1, contact2, contact3 = st.columns(3)
+
+with contact1:
+    st.markdown("**Contato**")
+    st.write(
+        supplier.get("contact_name")
+        or supplier.get("email")
+        or "Não informado"
+    )
+
+with contact2:
+    st.markdown("**Telefone / WhatsApp**")
+    st.write(
+        supplier.get("whatsapp")
+        or supplier.get("phone")
+        or "Não informado"
+    )
+
+with contact3:
+    st.markdown("**Site**")
+    website = supplier.get("website_url")
+    if website:
+        st.link_button(
+            "Abrir site",
+            website,
+            use_container_width=True,
+        )
+    else:
+        st.write("Não informado")
+
+st.divider()
+st.subheader("Editar cobertura e logística")
+
 
 pricing_modes = [
     "Não informado",
@@ -265,9 +486,7 @@ pricing_modes = [
     "Sob consulta",
 ]
 
-with st.form("supplier_coverage_form"):
-    st.markdown(f"### {selected_label}")
-
+with st.form(f"supplier_coverage_form_{supplier_id}"):
     base1, base2, base3 = st.columns(3)
     with base1:
         base_city = st.text_input(

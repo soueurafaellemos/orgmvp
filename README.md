@@ -702,3 +702,21 @@ Antes de usar, execute:
 - acesso direto para organizar documentos e consultar a base;
 - não altera ou substitui o SVG de login corrigido pelo usuário;
 - não exige novo SQL.
+
+
+## V22 — Fase 9: navegação unificada
+
+- “Organizar conhecimento” passa a se chamar
+  “Upload de Conhecimento”;
+- botão principal passa a ser “Fazer Upload”;
+- novo nome aplicado à sidebar, Home e painel de prontidão;
+- Projetos passa a usar tabela com seleção de linha;
+- filtros por busca e status nos projetos;
+- paginação dos projetos;
+- resumo do projeto selecionado antes das versões;
+- Fornecedores passa a usar tabela com seleção de linha;
+- filtros por busca e cobertura nos fornecedores;
+- paginação dos fornecedores;
+- detalhes e formulário aparecem somente após selecionar a linha;
+- o patch não contém arquivos de logo;
+- não exige novo SQL.
