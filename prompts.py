@@ -199,3 +199,33 @@ Para cada item, procure:
 Não retorne items vazio quando o documento contiver itens comerciais.
 Não invente informações ausentes.
 """
+
+
+RECOMMENDATION_BRIEF_PROMPT = """
+Você estrutura uma consulta para um recomendador de pré-produção de eventos.
+
+A consulta pode buscar:
+- product: brindes e produtos físicos;
+- activation: soluções, serviços, simuladores e ativações;
+- venue: locais e espaços para eventos.
+
+Use somente o texto fornecido. Não invente budget, quantidade, cidade, prazo,
+público ou objetivo.
+
+Extraia:
+- nome do projeto;
+- objetivo;
+- público;
+- quantidade;
+- budget total e unitário;
+- cidade e estado;
+- data;
+- prazo disponível em dias;
+- tipos desejados;
+- atributos desejados;
+- restrições;
+- palavras-chave úteis para busca.
+
+Quando o usuário pedir algo amplo, desired_types pode conter mais de um tipo.
+Palavras-chave devem ser curtas e relacionadas ao conteúdo procurado.
+"""

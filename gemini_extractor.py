@@ -14,6 +14,7 @@ from models import (
     CatalogBatch,
     DocumentClassification,
     ProjectBriefing,
+    RecommendationBrief,
     VenueBatch,
 )
 from prompts import (
@@ -22,6 +23,7 @@ from prompts import (
     BRIEFING_SYSTEM_PROMPT,
     CATALOG_SYSTEM_PROMPT,
     CLASSIFICATION_SYSTEM_PROMPT,
+    RECOMMENDATION_BRIEF_PROMPT,
     VENUE_SYSTEM_PROMPT,
 )
 
@@ -445,4 +447,30 @@ def extract_briefing(
         docs=all_docs,
         schema=ProjectBriefing,
         context="briefing",
+    )
+
+
+
+def parse_recommendation_brief(
+    text: str,
+    *,
+    api_key: str | None,
+    model: str,
+) -> RecommendationBrief:
+    client = get_client(api_key)
+    source = InputDocument(
+        name="consulta_recomendador.txt",
+        data=text.encode("utf-8"),
+        mime_type="text/plain",
+    )
+    return _structured_call(
+        client,
+        model=model,
+        prompt=(
+            RECOMMENDATION_BRIEF_PROMPT
+            + "\n\nEstruture a consulta abaixo."
+        ),
+        docs=[source],
+        schema=RecommendationBrief,
+        context="consulta do recomendador",
     )

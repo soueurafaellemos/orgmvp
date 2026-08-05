@@ -833,3 +833,125 @@ def save_briefing(
         "duplicates_skipped": 0,
         "costs_inserted": 0,
     }
+
+
+
+def database_counts(client: Client) -> dict[str, int]:
+    tables = {
+        "Fornecedores": "suppliers",
+        "Brindes": "products",
+        "Soluções": "activation_solutions",
+        "Locais": "venues",
+        "Importações": "imports",
+    }
+    result = {}
+
+    for label, table in tables.items():
+        response = (
+            client.table(table)
+            .select("id", count="exact")
+            .limit(1)
+            .execute()
+        )
+        result[label] = int(response.count or 0)
+
+    return result
+
+
+def fetch_recommendation_candidates(
+    client: Client,
+    *,
+    limit: int = 2000,
+) -> pd.DataFrame:
+    response = (
+        client.table("recommendation_candidates")
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return pd.DataFrame(response.data or [])
+
+
+def save_recommendation(
+    client: Client,
+    *,
+    brief: dict,
+    briefing_text: str,
+    results_df: pd.DataFrame,
+) -> dict:
+    query_payload = {
+        "project_name": _json_safe(brief.get("project_name")),
+        "briefing_text": briefing_text,
+        "objective": _json_safe(brief.get("objective")),
+        "audience_profile": _json_safe(
+            brief.get("audience_profile")
+        ),
+        "audience_quantity": _json_safe(
+            brief.get("audience_quantity")
+        ),
+        "budget_total_brl": _json_safe(
+            brief.get("budget_total_brl")
+        ),
+        "budget_unit_brl": _json_safe(
+            brief.get("budget_unit_brl")
+        ),
+        "location_city": _json_safe(
+            brief.get("location_city")
+        ),
+        "location_state": _json_safe(
+            brief.get("location_state")
+        ),
+        "event_date": _iso_date_or_none(
+            brief.get("event_date")
+        ),
+        "available_days": _json_safe(
+            brief.get("available_days")
+        ),
+        "desired_types": brief.get("desired_types") or [],
+        "desired_attributes": (
+            brief.get("desired_attributes") or []
+        ),
+        "restrictions": brief.get("restrictions") or [],
+        "keywords": brief.get("keywords") or [],
+        "parsed_brief": _json_safe(brief),
+        "status": "gerada",
+    }
+
+    query_response = (
+        client.table("recommendation_queries")
+        .insert(query_payload)
+        .execute()
+    )
+    query_id = query_response.data[0]["id"]
+
+    result_rows = []
+    for row in dataframe_records(results_df):
+        result_rows.append(
+            {
+                "query_id": query_id,
+                "item_type": row.get("item_type"),
+                "item_id": row.get("item_id"),
+                "rank": int(row.get("rank") or 0),
+                "total_score": row.get("total_score"),
+                "relevance_score": row.get("relevance_score"),
+                "budget_score": row.get("budget_score"),
+                "quantity_score": row.get("quantity_score"),
+                "time_score": row.get("time_score"),
+                "location_score": row.get("location_score"),
+                "estimated_total": row.get("estimated_total"),
+                "reason": row.get("reason"),
+                "warnings": row.get("warnings") or [],
+                "snapshot": row,
+            }
+        )
+
+    if result_rows:
+        client.table("recommendation_results").insert(
+            result_rows
+        ).execute()
+
+    return {
+        "query_id": query_id,
+        "results_saved": len(result_rows),
+    }

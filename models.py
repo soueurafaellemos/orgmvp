@@ -352,3 +352,25 @@ class ProjectBriefing(BaseModel):
     contradictions: list[str] = Field(default_factory=list)
     source_summary: str
     confidence: float = Field(ge=0, le=1)
+
+
+
+class RecommendationBrief(BaseModel):
+    project_name: str | None = None
+    objective: str | None = None
+    audience_profile: str | None = None
+    audience_quantity: int | None = None
+    budget_total_brl: float | None = None
+    budget_unit_brl: float | None = None
+    location_city: str | None = None
+    location_state: str | None = None
+    event_date: str | None = None
+    available_days: int | None = None
+    desired_types: list[
+        Literal["product", "activation", "venue"]
+    ] = Field(default_factory=list)
+    desired_attributes: list[str] = Field(default_factory=list)
+    restrictions: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    source_summary: str
+    confidence: float = Field(ge=0, le=1)
