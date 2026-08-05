@@ -57,15 +57,24 @@ html, body, [class*="css"] {
     background: rgba(255, 255, 255, 0);
 }
 
-[data-testid="stToolbar"],
 [data-testid="stDecoration"],
-[data-testid="stStatusWidget"],
 [data-testid="manage-app-button"],
 .stDeployButton,
 #MainMenu,
 footer {
     display: none !important;
     visibility: hidden !important;
+}
+
+/*
+Mantém os controles essenciais do Streamlit visíveis:
+- toolbar minimal no topo;
+- indicador de execução e botão Stop.
+*/
+[data-testid="stToolbar"],
+[data-testid="stStatusWidget"] {
+    display: flex !important;
+    visibility: visible !important;
 }
 
 [data-testid="stSidebarNav"] {

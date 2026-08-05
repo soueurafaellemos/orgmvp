@@ -593,3 +593,13 @@ Antes de usar, execute:
 - rastreabilidade de arquivo, página, recorte, método e confiança;
 - recortes ambíguos ficam pendentes para upload manual;
 - use apenas `supabase_patch_fase_6_1_completa_v1.sql`; não execute antes o SQL isolado da V16.
+
+
+## V17.1 — restauração dos controles de execução
+
+- toolbar superior volta a aparecer em modo minimal;
+- indicador de execução volta a aparecer;
+- botão Stop volta a ficar disponível durante processamentos;
+- menu principal, deploy e elementos técnicos desnecessários
+  continuam ocultos;
+- não exige SQL nem alteração no Supabase.

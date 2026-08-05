@@ -62,15 +62,24 @@ LOGIN_CSS = """
     padding: 1.1rem 1.2rem 0.25rem;
 }
 
-[data-testid="stToolbar"],
 [data-testid="stDecoration"],
-[data-testid="stStatusWidget"],
 [data-testid="manage-app-button"],
 .stDeployButton,
 #MainMenu,
 footer {
     display: none !important;
     visibility: hidden !important;
+}
+
+/*
+Mantém os controles essenciais do Streamlit visíveis:
+- toolbar minimal no topo;
+- indicador de execução e botão Stop.
+*/
+[data-testid="stToolbar"],
+[data-testid="stStatusWidget"] {
+    display: flex !important;
+    visibility: visible !important;
 }
 </style>
 """
