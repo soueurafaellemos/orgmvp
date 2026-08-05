@@ -497,6 +497,10 @@ def render_sidebar() -> None:
             label="Prontidão da base",
         )
         st.page_link(
+            "pages/9_Taxonomia_NAVE.py",
+            label="Taxonomia NAVE",
+        )
+        st.page_link(
             "pages/7_Revisar_Duplicidades.py",
             label="Revisar duplicidades",
         )

@@ -159,8 +159,8 @@ type_labels = {
     "venue": "Locais / espaços",
 }
 
-col1, col2, col3, col4, col5 = st.columns(
-    [2, 1, 1, 1, 1.2]
+col1, col2, col3, col4, col5, col6 = st.columns(
+    [2, 1, 1.35, 1, 1, 1.1]
 )
 
 with col1:
@@ -179,7 +179,26 @@ with col2:
         format_func=lambda value: type_labels[value],
     )
 
+category_options = sorted(
+    {
+        str(value)
+        for value in candidates[
+            "category_nave"
+        ].dropna()
+        if str(value).strip()
+    }
+)
+
 with col3:
+    selected_category = st.selectbox(
+        "Categoria NAVE",
+        options=[
+            "Todas",
+            *category_options,
+        ],
+    )
+
+with col4:
     max_price = st.number_input(
         "Valor máximo",
         min_value=0.0,
@@ -188,7 +207,7 @@ with col3:
         help="Zero mantém todos os valores.",
     )
 
-with col4:
+with col5:
     media_filter = st.selectbox(
         "Acervo",
         options=[
@@ -198,7 +217,7 @@ with col4:
         ],
     )
 
-with col5:
+with col6:
     curation_filter = st.selectbox(
         "Situação",
         options=[
@@ -209,6 +228,13 @@ with col5:
     )
 
 filtered = candidates.copy()
+
+if selected_category != "Todas":
+    filtered = filtered[
+        filtered["category_nave"].fillna(
+            ""
+        ).eq(selected_category)
+    ]
 
 if curation_filter == "Ativos":
     filtered = filtered[
@@ -225,18 +251,13 @@ if selected_types:
     ]
 
 if search.strip():
-    normalized = search.strip().lower()
+    normalized = search.strip().casefold()
     searchable = (
-        filtered["name"].fillna("").astype(str)
-        + " "
-        + filtered["category"].fillna("").astype(str)
-        + " "
-        + filtered["supplier_name"].fillna("").astype(str)
-        + " "
-        + filtered["description"].fillna("").astype(str)
-        + " "
-        + filtered["location"].fillna("").astype(str)
-    ).str.lower()
+        filtered["taxonomy_search_text"]
+        .fillna("")
+        .astype(str)
+        .str.casefold()
+    )
     filtered = filtered[
         searchable.str.contains(
             normalized,
@@ -327,7 +348,8 @@ total_pages = max(
 
 filter_signature = hashlib.sha1(
     (
-        f"{search}|{selected_types}|{max_price}|"
+        f"{search}|{selected_types}|"
+        f"{selected_category}|{max_price}|"
         f"{media_filter}|{curation_filter}|"
         f"{page_size}|{total_items}"
     ).encode("utf-8")
@@ -487,7 +509,7 @@ columns = [
     "Capa",
     "Tipo",
     "name",
-    "category",
+    "category_nave",
     "supplier_name",
     "Valor",
     "Prazo",
@@ -500,7 +522,7 @@ columns = [
 table = display[columns].rename(
     columns={
         "name": "Nome",
-        "category": "Categoria",
+        "category_nave": "Categoria NAVE",
         "supplier_name": "Fornecedor",
         "location": "Localização",
     }

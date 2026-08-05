@@ -85,8 +85,10 @@ def _candidate_text(row: dict) -> str:
         for field in (
             "name",
             "category",
+            "category_nave",
             "supplier_name",
             "description",
+            "taxonomy_search_text",
         )
     ) + " " + str(tags or "")
 
@@ -101,7 +103,10 @@ def _relevance_score(
         ]
 
     name_tokens = tokens(row.get("name"))
-    category_tokens = tokens(row.get("category"))
+    category_tokens = tokens(
+        row.get("category_nave")
+        or row.get("category")
+    )
     all_tokens = tokens(_candidate_text(row))
 
     name_matches = query_tokens & name_tokens

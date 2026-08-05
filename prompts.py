@@ -1,3 +1,5 @@
+from taxonomy import taxonomy_prompt_block
+
 CLASSIFICATION_SYSTEM_PROMPT = """
 Você é o agente de triagem de uma plataforma de pré-produção para eventos,
 ativações e brindes.
@@ -74,7 +76,7 @@ IMAGEM REPRESENTATIVA:
 - Enquadre somente o objeto, espaço ou ativação; exclua títulos, preços, logos, rodapés e textos sempre que possível.
 - Use confidence para indicar a segurança do recorte.
 - Quando não houver uma imagem individual claramente associada ao item, retorne visual_crop=null.
-""" + SUPPLIER_CONTACT_RULES
+""" + SUPPLIER_CONTACT_RULES + taxonomy_prompt_block("product")
 
 ACTIVATION_SYSTEM_PROMPT = """
 Você organiza propostas e orçamentos de soluções para eventos e ativações.
@@ -116,7 +118,7 @@ IMAGEM REPRESENTATIVA:
 - Enquadre somente o objeto, espaço ou ativação; exclua títulos, preços, logos, rodapés e textos sempre que possível.
 - Use confidence para indicar a segurança do recorte.
 - Quando não houver uma imagem individual claramente associada ao item, retorne visual_crop=null.
-""" + SUPPLIER_CONTACT_RULES
+""" + SUPPLIER_CONTACT_RULES + taxonomy_prompt_block("activation")
 
 BRIEFING_SYSTEM_PROMPT = """
 Você consolida e-mails, documentos, planilhas e apresentações em um briefing
@@ -192,7 +194,7 @@ IMAGEM REPRESENTATIVA:
 - Enquadre somente o objeto, espaço ou ativação; exclua títulos, preços, logos, rodapés e textos sempre que possível.
 - Use confidence para indicar a segurança do recorte.
 - Quando não houver uma imagem individual claramente associada ao item, retorne visual_crop=null.
-"""
+""" + taxonomy_prompt_block("venue")
 
 
 ACTIVATION_FALLBACK_PROMPT = """

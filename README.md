@@ -756,3 +756,26 @@ Antes de usar, execute:
 - simplifica os filtros da Base e de Fornecedores;
 - não exige novo SQL;
 - não contém arquivos de logo.
+
+
+## V24 — Fase 11: taxonomia e padronização
+
+- dicionário canônico para brindes, ativações e locais;
+- centenas de variações, abreviações, traduções e erros comuns;
+- Photo-op reconhece photoop, photopp, phopp,
+  photo opportunity, espaço instagramável e termos relacionados;
+- preserva nome, descrição e documento de origem;
+- padroniza categoria e enriquece tags;
+- busca reconhece qualquer alias da mesma família;
+- recomendações usam a categoria canônica;
+- correspondência de duplicidades entende categorias equivalentes;
+- novas extrações recebem instruções de taxonomia;
+- edição manual usa listas canônicas;
+- página administrativa para acrescentar aliases personalizados;
+- auditoria e padronização da base existente;
+- mudanças ficam registradas no histórico de curadoria;
+- o patch não contém arquivos de logo.
+
+Antes de usar, execute:
+
+`supabase_patch_taxonomia_nave_v1.sql`

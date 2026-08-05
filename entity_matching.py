@@ -5,6 +5,8 @@ import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
+from taxonomy import match_taxonomy
+
 
 STOP_WORDS = {
     "a",
@@ -191,6 +193,32 @@ def _normalized_equal(
     )
 
 
+def _taxonomy_equal(
+    first: Any,
+    second: Any,
+    entity_type: str,
+) -> bool:
+    first_match = match_taxonomy(
+        first,
+        entity_type,
+    )
+    second_match = match_taxonomy(
+        second,
+        entity_type,
+    )
+
+    if first_match and second_match:
+        return (
+            first_match["canonical"]
+            == second_match["canonical"]
+        )
+
+    return _normalized_equal(
+        first,
+        second,
+    )
+
+
 def _same_or_blank(
     first: Any,
     second: Any,
@@ -231,9 +259,10 @@ def product_candidate_score(
     if (
         incoming_category
         and candidate_category
-        and not _normalized_equal(
+        and not _taxonomy_equal(
             incoming_category,
             candidate_category,
+            "product",
         )
     ):
         score -= 0.05
@@ -262,9 +291,10 @@ def activation_candidate_score(
     if (
         incoming_category
         and candidate_category
-        and not _normalized_equal(
+        and not _taxonomy_equal(
             incoming_category,
             candidate_category,
+            "activation",
         )
     ):
         score -= 0.04
@@ -293,9 +323,10 @@ def venue_candidate_score(
     if (
         incoming_type
         and candidate_type
-        and not _normalized_equal(
+        and not _taxonomy_equal(
             incoming_type,
             candidate_type,
+            "venue",
         )
     ):
         score -= 0.03

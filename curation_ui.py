@@ -9,6 +9,7 @@ from runtime_ui import (
     report_service_error,
     require_admin_access,
 )
+from taxonomy import taxonomy_options
 from supabase_db import (
     delete_knowledge_entity,
     fetch_curation_history,
@@ -47,7 +48,7 @@ EDIT_SCHEMAS = {
             [
                 {"field": "name", "label": "Nome", "type": "text"},
                 {"field": "sku", "label": "Código / SKU", "type": "text"},
-                {"field": "category", "label": "Categoria", "type": "text"},
+                {"field": "category", "label": "Categoria NAVE", "type": "taxonomy"},
                 {
                     "field": "supplier_id",
                     "label": "Fornecedor",
@@ -158,7 +159,7 @@ EDIT_SCHEMAS = {
             "Identificação",
             [
                 {"field": "name", "label": "Nome", "type": "text"},
-                {"field": "category", "label": "Categoria", "type": "text"},
+                {"field": "category", "label": "Categoria NAVE", "type": "taxonomy"},
                 {
                     "field": "record_type",
                     "label": "Tipo de registro",
@@ -310,8 +311,8 @@ EDIT_SCHEMAS = {
                 {"field": "name", "label": "Nome", "type": "text"},
                 {
                     "field": "venue_type",
-                    "label": "Tipo de espaço",
-                    "type": "text",
+                    "label": "Tipo de espaço NAVE",
+                    "type": "taxonomy",
                 },
                 {
                     "field": "operator_id",
@@ -716,6 +717,30 @@ def _render_widget(
             label,
             options,
             index=options.index(current),
+            format_func=lambda item: (
+                item or "Não informado"
+            ),
+            key=key,
+        )
+
+    if field_type == "taxonomy":
+        options = [
+            "",
+            *taxonomy_options(entity_type),
+        ]
+        current = _text_value(value)
+
+        if current and current not in options:
+            options.append(current)
+
+        return st.selectbox(
+            label,
+            options,
+            index=(
+                options.index(current)
+                if current in options
+                else 0
+            ),
             format_func=lambda item: (
                 item or "Não informado"
             ),

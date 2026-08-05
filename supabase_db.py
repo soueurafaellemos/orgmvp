@@ -20,6 +20,13 @@ from enrichment_engine import (
 )
 from media_library import upload_generated_media_asset
 from pdf_visuals import prepare_visual_assignments
+from taxonomy import (
+    annotate_candidate_taxonomy,
+    normalize_record_taxonomy,
+    normalize_taxonomy_text,
+    taxonomy_catalog_rows,
+    taxonomy_options,
+)
 
 
 PRODUCT_COLUMNS = {
@@ -1371,7 +1378,17 @@ def save_catalog(
         existing_strategy,
         skip_duplicates,
     )
-    products = dataframe_records(products_df)
+    custom_taxonomy_aliases = (
+        fetch_custom_taxonomy_aliases(client)
+    )
+    products = [
+        normalize_record_taxonomy(
+            record,
+            "product",
+            custom_taxonomy_aliases,
+        )
+        for record in dataframe_records(products_df)
+    ]
     visuals = (
         prepare_visual_assignments(
             products,
@@ -1627,7 +1644,17 @@ def save_activations(
         existing_strategy,
         skip_duplicates,
     )
-    solutions = dataframe_records(solutions_df)
+    custom_taxonomy_aliases = (
+        fetch_custom_taxonomy_aliases(client)
+    )
+    solutions = [
+        normalize_record_taxonomy(
+            record,
+            "activation",
+            custom_taxonomy_aliases,
+        )
+        for record in dataframe_records(solutions_df)
+    ]
     visuals = (
         prepare_visual_assignments(
             solutions,
@@ -1948,7 +1975,17 @@ def save_venues(
         existing_strategy,
         skip_duplicates,
     )
-    venues = dataframe_records(venues_df)
+    custom_taxonomy_aliases = (
+        fetch_custom_taxonomy_aliases(client)
+    )
+    venues = [
+        normalize_record_taxonomy(
+            record,
+            "venue",
+            custom_taxonomy_aliases,
+        )
+        for record in dataframe_records(venues_df)
+    ]
     visuals = (
         prepare_visual_assignments(
             venues,
@@ -2569,6 +2606,52 @@ def update_curated_entity(
     allowed = CURATION_EDIT_COLUMNS[
         entity_type
     ]
+
+    if entity_type in {
+        "product",
+        "activation",
+        "venue",
+    }:
+        try:
+            custom_taxonomy_aliases = (
+                fetch_custom_taxonomy_aliases(
+                    client
+                )
+            )
+        except Exception:
+            custom_taxonomy_aliases = []
+
+        taxonomy_input = {
+            **current,
+            **updates,
+        }
+        taxonomy_output = (
+            normalize_record_taxonomy(
+                taxonomy_input,
+                entity_type,
+                custom_taxonomy_aliases,
+            )
+        )
+
+        category_field = (
+            "venue_type"
+            if entity_type == "venue"
+            else "category"
+        )
+
+        if category_field in allowed:
+            updates[category_field] = (
+                taxonomy_output.get(
+                    category_field
+                )
+            )
+
+        if "tags" in allowed:
+            updates["tags"] = (
+                taxonomy_output.get("tags")
+                or []
+            )
+
     cleaned = {}
     events = []
 
@@ -2904,6 +2987,432 @@ def delete_knowledge_entity(
     )
 
 
+def fetch_custom_taxonomy_aliases(
+    client: Client,
+    *,
+    include_inactive: bool = False,
+) -> list[dict]:
+    query = (
+        client.table(
+            "knowledge_taxonomy_aliases"
+        )
+        .select("*")
+        .order("entity_type")
+        .order("canonical_term")
+        .order("alias")
+        .limit(5000)
+    )
+
+    if not include_inactive:
+        query = query.eq(
+            "is_active",
+            True,
+        )
+
+    try:
+        response = query.execute()
+        return response.data or []
+    except Exception:
+        return []
+
+
+def upsert_custom_taxonomy_alias(
+    client: Client,
+    *,
+    entity_type: str,
+    canonical_term: str,
+    alias: str,
+    notes: str | None = None,
+) -> dict:
+    if entity_type not in {
+        "product",
+        "activation",
+        "venue",
+    }:
+        raise ValueError(
+            "Tipo de taxonomia inválido."
+        )
+
+    if canonical_term not in taxonomy_options(
+        entity_type
+    ):
+        raise ValueError(
+            "A categoria canônica não existe "
+            "na taxonomia padrão."
+        )
+
+    clean_alias = str(alias or "").strip()
+
+    if len(clean_alias) < 2:
+        raise ValueError(
+            "Informe uma variação com pelo menos "
+            "dois caracteres."
+        )
+
+    normalized_alias = normalize_taxonomy_text(
+        clean_alias
+    )
+
+    default_rows = taxonomy_catalog_rows()
+
+    default_match = next(
+        (
+            row
+            for row in default_rows
+            if row["entity_type"] == entity_type
+            and row["normalized_alias"]
+            == normalized_alias
+        ),
+        None,
+    )
+
+    if default_match:
+        if (
+            default_match["canonical_term"]
+            == canonical_term
+        ):
+            raise ValueError(
+                "Essa variação já faz parte "
+                "da taxonomia padrão."
+            )
+
+        raise ValueError(
+            "Essa variação já aponta para "
+            f'"{default_match["canonical_term"]}".'
+        )
+
+    payload = {
+        "entity_type": entity_type,
+        "canonical_term": canonical_term,
+        "alias": clean_alias,
+        "normalized_alias": normalized_alias,
+        "is_active": True,
+        "created_by": "Administração da NAVE",
+        "notes": _json_safe(notes),
+    }
+
+    response = (
+        client.table(
+            "knowledge_taxonomy_aliases"
+        )
+        .upsert(
+            payload,
+            on_conflict=(
+                "entity_type,normalized_alias"
+            ),
+        )
+        .execute()
+    )
+
+    return (
+        response.data[0]
+        if response.data
+        else payload
+    )
+
+
+def set_custom_taxonomy_alias_active(
+    client: Client,
+    *,
+    alias_id: str,
+    is_active: bool,
+) -> None:
+    (
+        client.table(
+            "knowledge_taxonomy_aliases"
+        )
+        .update(
+            {
+                "is_active": bool(is_active),
+            }
+        )
+        .eq("id", alias_id)
+        .execute()
+    )
+
+
+def fetch_taxonomy_audit(
+    client: Client,
+) -> pd.DataFrame:
+    custom_aliases = (
+        fetch_custom_taxonomy_aliases(
+            client
+        )
+    )
+
+    table_specs = [
+        (
+            "product",
+            "products",
+            "category",
+        ),
+        (
+            "activation",
+            "activation_solutions",
+            "category",
+        ),
+        (
+            "venue",
+            "venues",
+            "venue_type",
+        ),
+    ]
+
+    rows = []
+
+    for (
+        entity_type,
+        table,
+        category_field,
+    ) in table_specs:
+        frame = _fetch_all_rows(
+            client,
+            table=table,
+            columns=(
+                f"id,name,{category_field},"
+                "description,tags"
+            ),
+        )
+
+        if frame.empty:
+            continue
+
+        for _, source in frame.iterrows():
+            record = source.to_dict()
+            normalized = normalize_record_taxonomy(
+                record,
+                entity_type,
+                custom_aliases,
+            )
+
+            original = record.get(
+                category_field
+            )
+            canonical = normalized.get(
+                category_field
+            )
+            original_tags = split_pipe(
+                record.get("tags")
+            )
+            new_tags = normalized.get(
+                "tags",
+                [],
+            )
+
+            category_changed = not (
+                normalize_taxonomy_text(original)
+                == normalize_taxonomy_text(
+                    canonical
+                )
+            )
+            tags_changed = set(
+                normalize_taxonomy_text(item)
+                for item in original_tags
+            ) != set(
+                normalize_taxonomy_text(item)
+                for item in new_tags
+            )
+
+            rows.append(
+                {
+                    "entity_type": entity_type,
+                    "entity_id": str(
+                        record.get("id")
+                    ),
+                    "Tipo": {
+                        "product": "Brinde",
+                        "activation": "Solução / ativação",
+                        "venue": "Local / espaço",
+                    }[entity_type],
+                    "Item": (
+                        record.get("name")
+                        or "Sem nome"
+                    ),
+                    "Categoria atual": (
+                        original
+                        or "Não informada"
+                    ),
+                    "Categoria NAVE": (
+                        canonical
+                        or "Não informada"
+                    ),
+                    "Termos reconhecidos": ", ".join(
+                        normalized.get(
+                            "taxonomy_terms",
+                            [],
+                        )
+                    )
+                    or "Nenhum",
+                    "Variações encontradas": ", ".join(
+                        normalized.get(
+                            "taxonomy_matched_aliases",
+                            [],
+                        )
+                    )
+                    or "Nenhuma",
+                    "Precisa atualizar": bool(
+                        category_changed
+                        or tags_changed
+                    ),
+                    "_category_field": category_field,
+                    "_new_category": canonical,
+                    "_old_tags": original_tags,
+                    "_new_tags": new_tags,
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def apply_taxonomy_normalization(
+    client: Client,
+) -> dict:
+    audit = fetch_taxonomy_audit(
+        client
+    )
+
+    if audit.empty:
+        return {
+            "updated_records": 0,
+            "category_changes": 0,
+            "tag_changes": 0,
+        }
+
+    updates = audit[
+        audit["Precisa atualizar"].eq(True)
+    ]
+
+    updated_records = 0
+    category_changes = 0
+    tag_changes = 0
+
+    table_map = {
+        "product": "products",
+        "activation": "activation_solutions",
+        "venue": "venues",
+    }
+
+    for _, row in updates.iterrows():
+        entity_type = str(
+            row["entity_type"]
+        )
+        entity_id = str(
+            row["entity_id"]
+        )
+        category_field = str(
+            row["_category_field"]
+        )
+
+        current_response = (
+            client.table(
+                table_map[entity_type]
+            )
+            .select("*")
+            .eq("id", entity_id)
+            .limit(1)
+            .execute()
+        )
+
+        if not current_response.data:
+            continue
+
+        current = current_response.data[0]
+        changes = {}
+        events = []
+
+        new_category = row.get(
+            "_new_category"
+        )
+
+        if (
+            new_category
+            and normalize_taxonomy_text(
+                current.get(category_field)
+            )
+            != normalize_taxonomy_text(
+                new_category
+            )
+        ):
+            changes[category_field] = (
+                new_category
+            )
+            category_changes += 1
+            events.append(
+                {
+                    "field_name": category_field,
+                    "field_label": (
+                        "Categoria NAVE"
+                        if entity_type != "venue"
+                        else "Tipo de espaço NAVE"
+                    ),
+                    "old_value": current.get(
+                        category_field
+                    ),
+                    "new_value": new_category,
+                    "event_type": "manual_update",
+                }
+            )
+
+        old_tags = split_pipe(
+            current.get("tags")
+        )
+        new_tags = list(
+            row.get("_new_tags")
+            or []
+        )
+
+        if set(
+            normalize_taxonomy_text(item)
+            for item in old_tags
+        ) != set(
+            normalize_taxonomy_text(item)
+            for item in new_tags
+        ):
+            changes["tags"] = new_tags
+            tag_changes += 1
+            events.append(
+                {
+                    "field_name": "tags",
+                    "field_label": "Tags da taxonomia",
+                    "old_value": old_tags,
+                    "new_value": new_tags,
+                    "event_type": "manual_update",
+                }
+            )
+
+        if not changes:
+            continue
+
+        (
+            client.table(
+                table_map[entity_type]
+            )
+            .update(changes)
+            .eq("id", entity_id)
+            .execute()
+        )
+
+        _insert_edit_events(
+            client,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            events=events,
+            editor_name="Taxonomia NAVE",
+            edit_notes=(
+                "Padronização automática de "
+                "categorias e termos equivalentes."
+            ),
+        )
+
+        updated_records += 1
+
+    return {
+        "updated_records": updated_records,
+        "category_changes": category_changes,
+        "tag_changes": tag_changes,
+    }
+
+
 def fetch_supplier_coverage(
     client: Client,
     *,
@@ -3228,6 +3737,43 @@ def fetch_recommendation_candidates(
 
     if frame.empty:
         return frame
+
+    try:
+        custom_taxonomy_aliases = (
+            fetch_custom_taxonomy_aliases(
+                client
+            )
+        )
+    except Exception:
+        custom_taxonomy_aliases = []
+
+    annotations = frame.apply(
+        lambda row: annotate_candidate_taxonomy(
+            row.to_dict(),
+            custom_taxonomy_aliases,
+        ),
+        axis=1,
+    )
+
+    frame["category_nave"] = annotations.apply(
+        lambda item: item.get(
+            "category_nave"
+        )
+    )
+    frame["taxonomy_terms"] = annotations.apply(
+        lambda item: item.get(
+            "taxonomy_terms",
+            [],
+        )
+    )
+    frame["taxonomy_search_text"] = (
+        annotations.apply(
+            lambda item: item.get(
+                "taxonomy_search_text",
+                "",
+            )
+        )
+    )
 
     keys = [
         (
