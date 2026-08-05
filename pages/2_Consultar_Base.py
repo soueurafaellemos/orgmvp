@@ -5,6 +5,12 @@ import os
 import pandas as pd
 import streamlit as st
 
+from branding import (
+    NAVE_APP_ICON,
+    apply_nave_branding,
+    page_header,
+)
+
 from exporters import format_pt_br_number
 from supabase_db import (
     database_counts,
@@ -14,14 +20,16 @@ from supabase_db import (
 
 
 st.set_page_config(
-    page_title="Consultar base",
-    page_icon="🔎",
+    page_title="NAVE by VOE | Base de conhecimento",
+    page_icon=NAVE_APP_ICON,
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("Consultar base")
-st.caption(
-    "Explore brindes, soluções e locais já organizados no Supabase."
+apply_nave_branding()
+page_header(
+    "Base de conhecimento",
+    "Explore brindes, soluções e locais já organizados pela NAVE.",
 )
 
 try:

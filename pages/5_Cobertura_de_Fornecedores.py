@@ -6,6 +6,12 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from branding import (
+    NAVE_APP_ICON,
+    apply_nave_branding,
+    page_header,
+)
+
 from exporters import format_pt_br_number
 from supabase_db import (
     fetch_supplier_by_id,
@@ -16,15 +22,17 @@ from supabase_db import (
 
 
 st.set_page_config(
-    page_title="Cobertura de fornecedores",
-    page_icon="🗺️",
+    page_title="NAVE by VOE | Fornecedores",
+    page_icon=NAVE_APP_ICON,
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("Cobertura de fornecedores")
-st.caption(
-    "Cadastre onde cada fornecedor atua e quais custos logísticos "
-    "devem ser considerados nas recomendações."
+apply_nave_branding()
+page_header(
+    "Fornecedores",
+    "Organize a cobertura territorial e os dados logísticos "
+    "que ajudam a qualificar as recomendações.",
 )
 
 try:

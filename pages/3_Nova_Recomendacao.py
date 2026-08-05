@@ -8,6 +8,12 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from branding import (
+    NAVE_APP_ICON,
+    apply_nave_branding,
+    page_header,
+)
+
 from adaptive_briefing import (
     DELIVERABLE_COLUMNS,
     EXECUTION_COLUMNS,
@@ -46,15 +52,17 @@ from supabase_db import (
 
 
 st.set_page_config(
-    page_title="Nova recomendação",
-    page_icon="✨",
+    page_title="NAVE by VOE | Analisar e recomendar",
+    page_icon=NAVE_APP_ICON,
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("Nova recomendação")
-st.caption(
-    "O formulário se adapta a uma entrega simples, a um projeto único "
-    "estruturado ou a um programa com várias execuções."
+apply_nave_branding()
+page_header(
+    "Analisar e recomendar",
+    "Qualifique o briefing e conecte as necessidades do projeto "
+    "ao repertório disponível na base.",
 )
 
 try:
@@ -78,20 +86,21 @@ if not gemini_key or not supabase_url or not supabase_key:
 
 client = get_supabase_client(supabase_url, supabase_key)
 
-with st.sidebar:
-    model = st.selectbox(
-        "Modelo Gemini",
-        [
-            "gemini-3.5-flash-lite",
-            "gemini-3.5-flash",
-            "gemini-3.6-flash",
-        ],
+try:
+    default_model = st.secrets.get(
+        "GEMINI_MODEL",
+        "gemini-3.5-flash-lite",
     )
-    st.info(
-        "A IA escolhe o nível de estrutura. Para economizar quota, o "
-        "Flash Lite é o padrão. Se outro modelo atingir o limite, o app "
-        "também tenta o Lite automaticamente."
+except Exception:
+    default_model = os.getenv(
+        "GEMINI_MODEL",
+        "gemini-3.5-flash-lite",
     )
+
+model = st.session_state.get(
+    "nave_model",
+    default_model,
+)
 
 type_labels = {
     "product": "Brindes / produtos / press kits",

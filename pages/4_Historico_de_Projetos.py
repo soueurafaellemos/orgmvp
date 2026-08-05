@@ -8,6 +8,12 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from branding import (
+    NAVE_APP_ICON,
+    apply_nave_branding,
+    page_header,
+)
+
 from adaptive_briefing import (
     DELIVERABLE_COLUMNS,
     EXECUTION_COLUMNS,
@@ -35,15 +41,17 @@ from supabase_db import (
 
 
 st.set_page_config(
-    page_title="Histórico de projetos",
-    page_icon="🕘",
+    page_title="NAVE by VOE | Projetos",
+    page_icon=NAVE_APP_ICON,
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("Histórico de projetos")
-st.caption(
-    "Consulte versões, compare mudanças, recupere briefings e registre "
-    "o que foi aprovado ou rejeitado."
+apply_nave_branding()
+page_header(
+    "Projetos",
+    "Consulte versões, compare mudanças e recupere a inteligência "
+    "registrada em cada projeto.",
 )
 
 try:

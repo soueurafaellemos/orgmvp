@@ -5,6 +5,13 @@ import os
 import pandas as pd
 import streamlit as st
 
+from branding import (
+    NAVE_APP_ICON,
+    apply_nave_branding,
+    home_header,
+    journey_cards,
+)
+
 from document_io import (
     InputDocument,
     prepare_documents,
@@ -41,113 +48,94 @@ from supabase_db import (
     save_briefing,
     save_catalog,
     save_venues,
-    test_connection,
 )
 
 
 st.set_page_config(
-    page_title="Organizador Universal de Pré-Produção",
-    page_icon="🧩",
+    page_title="NAVE by VOE | Organizar conhecimento",
+    page_icon=NAVE_APP_ICON,
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("Organizador universal de pré-produção")
+apply_nave_branding()
+home_header()
+journey_cards()
+
+st.divider()
+st.subheader("Organizar conhecimento")
 st.caption(
-    "Organiza brindes, soluções de ativações, locais e briefings em bases separadas."
+    "Adicione documentos para estruturar brindes, soluções, locais "
+    "e projetos na base da NAVE."
 )
 
-with st.sidebar:
-    st.header("Configuração Gemini")
-    try:
-        default_key = st.secrets.get("GEMINI_API_KEY", "")
-    except Exception:
-        default_key = os.getenv("GEMINI_API_KEY", "")
-
-    api_key = st.text_input(
-        "Gemini API key",
-        value=default_key,
-        type="password",
+try:
+    api_key = st.secrets.get(
+        "GEMINI_API_KEY",
+        os.getenv("GEMINI_API_KEY", ""),
     )
-    model = st.selectbox(
-        "Modelo",
-        [
-            "gemini-3.5-flash",
+    model = st.session_state.get(
+        "nave_model",
+        st.secrets.get(
+            "GEMINI_MODEL",
             "gemini-3.5-flash-lite",
-            "gemini-3.6-flash",
-        ],
+        ),
     )
-    st.warning(
-        "Na faixa gratuita, não use documentos confidenciais."
+    supabase_url = st.secrets.get(
+        "SUPABASE_URL",
+        os.getenv("SUPABASE_URL", ""),
+    )
+    supabase_secret_key = st.secrets.get(
+        "SUPABASE_SECRET_KEY",
+        st.secrets.get(
+            "SUPABASE_SERVICE_ROLE_KEY",
+            os.getenv("SUPABASE_SECRET_KEY", "")
+            or os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
+        ),
+    )
+except Exception:
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    model = st.session_state.get(
+        "nave_model",
+        os.getenv(
+            "GEMINI_MODEL",
+            "gemini-3.5-flash-lite",
+        ),
+    )
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    supabase_secret_key = (
+        os.getenv("SUPABASE_SECRET_KEY", "")
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     )
 
-    st.divider()
-    st.header("Banco Supabase")
-
+if supabase_url and supabase_secret_key:
     try:
-        supabase_url = st.secrets.get("SUPABASE_URL", "")
-        supabase_secret_key = st.secrets.get(
-            "SUPABASE_SECRET_KEY",
-            st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", ""),
+        database_client = get_supabase_client(
+            supabase_url,
+            supabase_secret_key,
         )
     except Exception:
-        supabase_url = os.getenv("SUPABASE_URL", "")
-        supabase_secret_key = (
-            os.getenv("SUPABASE_SECRET_KEY", "")
-            or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-        )
+        database_client = None
+else:
+    database_client = None
 
-    database_configured = bool(
-        supabase_url and supabase_secret_key
+if not api_key:
+    st.warning(
+        "O serviço de leitura ainda não está configurado. "
+        "Consulte a área de Administração."
     )
 
-    if database_configured:
-        try:
-            database_client = get_supabase_client(
-                supabase_url,
-                supabase_secret_key,
-            )
-            st.success(
-                "Supabase configurado. O teste de conexão não bloqueia "
-                "mais a abertura do aplicativo."
-            )
-
-            if st.button(
-                "Testar conexão com Supabase",
-                use_container_width=True,
-            ):
-                try:
-                    with st.spinner("Testando Supabase..."):
-                        connection = test_connection(
-                            database_client
-                        )
-                    st.success(
-                        "Supabase conectado. "
-                        f"Fornecedores cadastrados: "
-                        f"{connection['supplier_count']}."
-                    )
-                except Exception as exc:
-                    st.error(
-                        "Não foi possível testar o Supabase agora: "
-                        f"{exc}"
-                    )
-        except Exception as exc:
-            database_client = None
-            st.error(
-                "Não foi possível preparar o cliente Supabase: "
-                f"{exc}"
-            )
-    else:
-        database_client = None
-        st.info(
-            "Adicione SUPABASE_URL e SUPABASE_SECRET_KEY "
-            "nos Secrets do Streamlit."
-        )
+if database_client is None:
+    st.warning(
+        "A base de conhecimento ainda não está disponível. "
+        "Consulte a área de Administração."
+    )
 
 mode_label = st.radio(
     "Como deseja organizar?",
     [
-        "Detecção automática",
-        "Catálogo / tabela de brindes",
+        "Identificar automaticamente",
+        "Brindes / produtos",
         "Soluções / ativações",
         "Locais / espaços",
         "Briefing / projeto",
@@ -156,8 +144,8 @@ mode_label = st.radio(
 )
 
 mode_map = {
-    "Detecção automática": "auto",
-    "Catálogo / tabela de brindes": "catalog",
+    "Identificar automaticamente": "auto",
+    "Brindes / produtos": "catalog",
     "Soluções / ativações": "activation",
     "Locais / espaços": "venue",
     "Briefing / projeto": "briefing",
@@ -208,7 +196,7 @@ if selected_mode != "briefing":
         )
 
 run = st.button(
-    "Identificar e organizar",
+    "Organizar informações",
     type="primary",
     use_container_width=True,
 )
