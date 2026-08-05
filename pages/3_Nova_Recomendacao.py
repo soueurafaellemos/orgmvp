@@ -1730,6 +1730,20 @@ if results is not None:
                     ) or "Não informado",
                 )
 
+                logistic1, logistic2 = st.columns(2)
+                logistic1.metric(
+                    "Cobertura",
+                    row.get("coverage_status")
+                    or "Não cadastrada",
+                )
+                logistic2.metric(
+                    "Logística estimada",
+                    format_pt_br_number(
+                        row.get("logistics_estimate"),
+                        prefix="R$ ",
+                    ) or "R$ 0,00",
+                )
+
                 st.write(row.get("description") or "")
                 st.success(row.get("reason") or "")
 
@@ -1744,7 +1758,7 @@ if results is not None:
                             "Budget",
                             "Quantidade / capacidade",
                             "Prazo",
-                            "Localização",
+                            "Cobertura / localização",
                         ],
                         "Pontos": [
                             row.get("relevance_score"),

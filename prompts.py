@@ -35,7 +35,13 @@ CONTATO DO FORNECEDOR:
   contatos comerciais e corpo do e-mail.
 - Extraia site, nome do contato, cargo, e-mail, telefone, WhatsApp, Instagram,
   LinkedIn, endereço e observações.
-- Não invente domínio, e-mail, telefone ou link.
+- Quando estiver explicitamente informado, extraia cidade-base, estado,
+  atendimento nacional, estados e cidades atendidos, equipes locais,
+  política de deslocamento, frete, prazo logístico, hospedagem e transporte
+  de equipamentos.
+- Não conclua atendimento nacional apenas porque o fornecedor possui clientes
+  em mais de uma cidade.
+- Não invente domínio, e-mail, telefone, link, cobertura ou custo logístico.
 - Não transforme a marca do cliente ou a licença ilustrada em fornecedor.
 - Quando ausente, retorne null.
 """

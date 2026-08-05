@@ -316,6 +316,47 @@ def upsert_supplier(
         "raw_data": _json_safe(supplier),
     }
 
+    # Somente grava cobertura quando ela estiver presente no material
+    # ou tiver sido preenchida pelo usuário. Isso evita apagar um cadastro
+    # territorial já enriquecido em uma importação futura.
+    scalar_coverage_fields = (
+        "base_city",
+        "base_state",
+        "base_country",
+        "travel_pricing_mode",
+        "default_travel_cost_brl",
+        "freight_pricing_mode",
+        "default_freight_cost_brl",
+        "travel_lead_days",
+        "coverage_notes",
+    )
+    boolean_coverage_fields = (
+        "serves_nationally",
+        "has_local_teams",
+        "equipment_transport_required",
+        "accommodation_required",
+    )
+    array_coverage_fields = (
+        "served_states",
+        "served_cities",
+        "local_team_locations",
+    )
+
+    for field in scalar_coverage_fields:
+        value = supplier.get(field)
+        if not _is_missing(value):
+            payload[field] = _json_safe(value)
+
+    for field in boolean_coverage_fields:
+        value = supplier.get(field)
+        if value is not None and not _is_missing(value):
+            payload[field] = bool(value)
+
+    for field in array_coverage_fields:
+        value = split_pipe(supplier.get(field))
+        if value:
+            payload[field] = value
+
     response = (
         client.table("suppliers")
         .upsert(payload, on_conflict="normalized_name")
@@ -838,6 +879,84 @@ def save_briefing(
 
 
 
+
+def fetch_supplier_coverage(
+    client: Client,
+    *,
+    limit: int = 1000,
+) -> pd.DataFrame:
+    response = (
+        client.table("supplier_coverage_overview")
+        .select("*")
+        .order("name")
+        .limit(limit)
+        .execute()
+    )
+    return pd.DataFrame(response.data or [])
+
+
+def fetch_supplier_by_id(
+    client: Client,
+    supplier_id: str,
+) -> dict | None:
+    response = (
+        client.table("suppliers")
+        .select("*")
+        .eq("id", supplier_id)
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else None
+
+
+def update_supplier_coverage(
+    client: Client,
+    *,
+    supplier_id: str,
+    payload: dict,
+) -> dict:
+    arrays = {
+        "served_states",
+        "served_cities",
+        "local_team_locations",
+    }
+    allowed = {
+        "base_city",
+        "base_state",
+        "base_country",
+        "serves_nationally",
+        "served_states",
+        "served_cities",
+        "has_local_teams",
+        "local_team_locations",
+        "travel_pricing_mode",
+        "default_travel_cost_brl",
+        "freight_pricing_mode",
+        "default_freight_cost_brl",
+        "travel_lead_days",
+        "equipment_transport_required",
+        "accommodation_required",
+        "coverage_notes",
+    }
+
+    cleaned = {}
+    for key in allowed:
+        value = payload.get(key)
+        if key in arrays:
+            cleaned[key] = split_pipe(value)
+        else:
+            cleaned[key] = _json_safe(value)
+
+    response = (
+        client.table("suppliers")
+        .update(cleaned)
+        .eq("id", supplier_id)
+        .execute()
+    )
+    return response.data[0] if response.data else cleaned
+
+
+
 def database_counts(client: Client) -> dict[str, int]:
     tables = {
         "Fornecedores": "suppliers",
@@ -1296,6 +1415,10 @@ def save_recommendation(
                 "time_score": row.get("time_score"),
                 "location_score": row.get("location_score"),
                 "estimated_total": row.get("estimated_total"),
+                "logistics_estimate": row.get(
+                    "logistics_estimate"
+                ),
+                "coverage_status": row.get("coverage_status"),
                 "reason": row.get("reason"),
                 "warnings": row.get("warnings") or [],
                 "snapshot": row,
@@ -1345,6 +1468,12 @@ def save_recommendation(
                     ),
                     "estimated_total": row.get(
                         "estimated_total"
+                    ),
+                    "logistics_estimate": row.get(
+                        "logistics_estimate"
+                    ),
+                    "coverage_status": row.get(
+                        "coverage_status"
                     ),
                     "reason": row.get("reason"),
                     "warnings": row.get("warnings") or [],

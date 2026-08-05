@@ -120,9 +120,37 @@ def _contact_row(contact, fallback_name=None) -> dict:
         "instagram_url",
         "linkedin_url",
         "address",
+        "base_city",
+        "base_state",
+        "base_country",
+        "serves_nationally",
+        "has_local_teams",
+        "travel_pricing_mode",
+        "default_travel_cost_brl",
+        "freight_pricing_mode",
+        "default_freight_cost_brl",
+        "travel_lead_days",
+        "equipment_transport_required",
+        "accommodation_required",
+        "coverage_notes",
         "notes",
     ):
         data.setdefault(field, None)
+
+    for field in (
+        "served_states",
+        "served_cities",
+        "local_team_locations",
+    ):
+        value = data.get(field) or []
+        if isinstance(value, (list, tuple)):
+            data[field] = " | ".join(
+                str(item).strip()
+                for item in value
+                if str(item).strip()
+            )
+        else:
+            data[field] = value
 
     has_contact = any(
         data.get(field)
@@ -158,6 +186,22 @@ def _dedupe_suppliers(rows: list[dict]) -> pd.DataFrame:
                 "instagram_url",
                 "linkedin_url",
                 "address",
+                "base_city",
+                "base_state",
+                "base_country",
+                "serves_nationally",
+                "served_states",
+                "served_cities",
+                "has_local_teams",
+                "local_team_locations",
+                "travel_pricing_mode",
+                "default_travel_cost_brl",
+                "freight_pricing_mode",
+                "default_freight_cost_brl",
+                "travel_lead_days",
+                "equipment_transport_required",
+                "accommodation_required",
+                "coverage_notes",
                 "notes",
                 "confidence",
                 "contact_alert",

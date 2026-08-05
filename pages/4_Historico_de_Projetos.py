@@ -951,6 +951,8 @@ with tab_results:
                     "item_type",
                     "Fornecedor",
                     "total_score",
+                    "coverage_status",
+                    "logistics_estimate",
                     "Estimativa",
                     "reason",
                 ]
@@ -959,6 +961,8 @@ with tab_results:
                     "rank": "Posição",
                     "item_type": "Tipo",
                     "total_score": "Nota",
+                    "coverage_status": "Cobertura",
+                    "logistics_estimate": "Logística estimada",
                     "reason": "Motivo",
                 }
             ),
@@ -1085,6 +1089,13 @@ with tab_execution:
                             or "Não informado"
                         ),
                         "Nota": row.get("total_score"),
+                        "Cobertura": (
+                            row.get("coverage_status")
+                            or "Não cadastrada"
+                        ),
+                        "Logística estimada": _money(
+                            row.get("logistics_estimate")
+                        ),
                         "Estimativa": _money(
                             row.get("estimated_total")
                         ),

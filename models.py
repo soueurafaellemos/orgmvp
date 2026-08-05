@@ -24,6 +24,37 @@ class SupplierContact(BaseModel):
     instagram_url: str | None = None
     linkedin_url: str | None = None
     address: str | None = None
+
+    base_city: str | None = None
+    base_state: str | None = None
+    base_country: str | None = None
+    serves_nationally: bool | None = None
+    served_states: list[str] = Field(default_factory=list)
+    served_cities: list[str] = Field(default_factory=list)
+    has_local_teams: bool | None = None
+    local_team_locations: list[str] = Field(default_factory=list)
+
+    travel_pricing_mode: Literal[
+        "Incluído no valor",
+        "Adicionar estimativa",
+        "Sob consulta",
+        "Não informado",
+    ] = "Não informado"
+    default_travel_cost_brl: float | None = None
+
+    freight_pricing_mode: Literal[
+        "Incluído no valor",
+        "Adicionar estimativa",
+        "Sob consulta",
+        "Não informado",
+    ] = "Não informado"
+    default_freight_cost_brl: float | None = None
+
+    travel_lead_days: int | None = None
+    equipment_transport_required: bool | None = None
+    accommodation_required: bool | None = None
+    coverage_notes: str | None = None
+
     notes: str | None = None
     confidence: float = Field(default=0.0, ge=0, le=1)
 
