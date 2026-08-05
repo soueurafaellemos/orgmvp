@@ -356,6 +356,7 @@ class ProjectBriefing(BaseModel):
 
 
 class RecommendationBrief(BaseModel):
+    source_files: list[str] = Field(default_factory=list)
     project_name: str | None = None
     objective: str | None = None
     audience_profile: str | None = None
@@ -372,5 +373,7 @@ class RecommendationBrief(BaseModel):
     desired_attributes: list[str] = Field(default_factory=list)
     restrictions: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
     source_summary: str
     confidence: float = Field(ge=0, le=1)

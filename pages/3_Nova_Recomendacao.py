@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import os
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
+from document_io import prepare_documents
 from exporters import format_pt_br_number
-from gemini_extractor import parse_recommendation_brief
+from gemini_extractor import (
+    parse_recommendation_brief,
+    parse_recommendation_sources,
+)
 from recommendation_engine import score_candidates
 from supabase_db import (
     fetch_recommendation_candidates,
@@ -24,7 +29,7 @@ st.set_page_config(
 
 st.title("Nova recomendação")
 st.caption(
-    "Cruza o briefing com os registros existentes e explica a aderência."
+    "Envie o briefing, revise o preenchimento automático e consulte a base."
 )
 
 try:
@@ -58,8 +63,8 @@ with st.sidebar:
         ],
     )
     st.info(
-        "Esta primeira versão usa regras transparentes. "
-        "Preço, prazo, capacidade e localização pesam na nota."
+        "A IA organiza o briefing. Preço, prazo, escala e localização "
+        "continuam sendo avaliados por regras transparentes."
     )
 
 type_labels = {
@@ -68,17 +73,262 @@ type_labels = {
     "venue": "Locais / espaços",
 }
 
-with st.form("recommendation_form"):
-    project_name = st.text_input("Nome do projeto")
+FIELD_KEYS = {
+    "project_name": "rec_project_name",
+    "objective": "rec_objective",
+    "audience_profile": "rec_audience_profile",
+    "audience_quantity": "rec_quantity",
+    "budget_total_brl": "rec_budget_total",
+    "location_city": "rec_city",
+    "location_state": "rec_state",
+    "event_date": "rec_event_date",
+    "available_days": "rec_available_days",
+    "desired_types": "rec_desired_types",
+    "desired_attributes": "rec_desired_attributes",
+    "restrictions": "rec_restrictions",
+}
 
-    briefing_text = st.text_area(
-        "Briefing",
-        height=180,
-        placeholder=(
-            "Descreva o evento, público, objetivo, conceito e o que "
-            "você está procurando."
-        ),
+
+def _set_default_state() -> None:
+    defaults = {
+        "rec_project_name": "",
+        "rec_objective": "",
+        "rec_audience_profile": "",
+        "rec_quantity": 0,
+        "rec_budget_total": 0.0,
+        "rec_city": "",
+        "rec_state": "",
+        "rec_event_date": None,
+        "rec_available_days": 0,
+        "rec_desired_types": ["product"],
+        "rec_desired_attributes": "",
+        "rec_restrictions": "",
+        "rec_briefing_paste": "",
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+
+
+def _to_date(value):
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _join_list(value) -> str:
+    return ", ".join(value or [])
+
+
+def _split_list(value: str) -> list[str]:
+    return [
+        item.strip()
+        for item in str(value or "").replace("|", ",").split(",")
+        if item.strip()
+    ]
+
+
+def _apply_parsed_brief(parsed: dict) -> None:
+    st.session_state["rec_project_name"] = (
+        parsed.get("project_name") or ""
     )
+    st.session_state["rec_objective"] = (
+        parsed.get("objective") or ""
+    )
+    st.session_state["rec_audience_profile"] = (
+        parsed.get("audience_profile") or ""
+    )
+    st.session_state["rec_quantity"] = int(
+        parsed.get("audience_quantity") or 0
+    )
+    st.session_state["rec_budget_total"] = float(
+        parsed.get("budget_total_brl") or 0.0
+    )
+    st.session_state["rec_city"] = (
+        parsed.get("location_city") or ""
+    )
+    st.session_state["rec_state"] = (
+        parsed.get("location_state") or ""
+    )
+    st.session_state["rec_event_date"] = _to_date(
+        parsed.get("event_date")
+    )
+    st.session_state["rec_available_days"] = int(
+        parsed.get("available_days") or 0
+    )
+    st.session_state["rec_desired_types"] = (
+        parsed.get("desired_types") or ["product"]
+    )
+    st.session_state["rec_desired_attributes"] = _join_list(
+        parsed.get("desired_attributes")
+    )
+    st.session_state["rec_restrictions"] = _join_list(
+        parsed.get("restrictions")
+    )
+
+
+def _source_text_for_history(parsed: dict) -> str:
+    pasted = st.session_state.get("rec_briefing_paste", "").strip()
+    files = parsed.get("source_files") or []
+    parts = []
+    if files:
+        parts.append("Arquivos: " + ", ".join(files))
+    if pasted:
+        parts.append(pasted)
+    if not pasted:
+        parts.append(parsed.get("source_summary") or "")
+    return "\n\n".join(part for part in parts if part)
+
+
+_set_default_state()
+
+st.subheader("1. Envie o briefing")
+
+uploaded_briefings = st.file_uploader(
+    "Arquivos do atendimento",
+    type=[
+        "pdf",
+        "txt",
+        "md",
+        "json",
+        "html",
+        "xml",
+        "doc",
+        "docx",
+        "rtf",
+        "odt",
+        "ppt",
+        "pptx",
+        "csv",
+        "tsv",
+        "xls",
+        "xlsx",
+        "eml",
+    ],
+    accept_multiple_files=True,
+    help=(
+        "Você pode enviar briefing, e-mail exportado, apresentação, "
+        "planilha, PDF ou documento."
+    ),
+    key="recommendation_brief_files",
+)
+
+st.text_area(
+    "Texto do briefing ou e-mail",
+    height=170,
+    placeholder=(
+        "Cole aqui o briefing redigido pelo atendimento. "
+        "Também pode complementar os arquivos enviados."
+    ),
+    key="rec_briefing_paste",
+)
+
+read_briefing = st.button(
+    "Ler briefing e preencher campos",
+    type="primary",
+    use_container_width=True,
+)
+
+if read_briefing:
+    if not uploaded_briefings and not st.session_state[
+        "rec_briefing_paste"
+    ].strip():
+        st.error("Envie um arquivo ou cole o briefing.")
+    else:
+        raw_files = [
+            (file.name, file.getvalue(), file.type or None)
+            for file in uploaded_briefings
+        ]
+
+        try:
+            docs = prepare_documents(raw_files)
+
+            with st.spinner(
+                "Lendo documentos e organizando o briefing..."
+            ):
+                parsed_model = parse_recommendation_sources(
+                    docs,
+                    pasted_text=st.session_state[
+                        "rec_briefing_paste"
+                    ],
+                    api_key=gemini_key,
+                    model=model,
+                )
+                parsed = parsed_model.model_dump()
+
+            _apply_parsed_brief(parsed)
+            st.session_state["recommendation_prefill"] = parsed
+            st.session_state["recommendation_source_text"] = (
+                _source_text_for_history(parsed)
+            )
+            st.success(
+                "Briefing lido. Revise os campos preenchidos abaixo."
+            )
+
+        except Exception as exc:
+            st.exception(exc)
+
+prefill = st.session_state.get("recommendation_prefill")
+
+if prefill:
+    with st.expander(
+        "Entendimento da IA e pendências",
+        expanded=True,
+    ):
+        st.write(prefill.get("source_summary") or "")
+
+        confidence = float(prefill.get("confidence") or 0)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Confiança", f"{confidence * 100:.0f}%")
+        c2.metric(
+            "Campos ausentes",
+            len(prefill.get("missing_fields") or []),
+        )
+        c3.metric(
+            "Perguntas abertas",
+            len(prefill.get("open_questions") or []),
+        )
+
+        missing = prefill.get("missing_fields") or []
+        questions = prefill.get("open_questions") or []
+
+        if missing:
+            st.warning(
+                "Ainda não identificados: " + ", ".join(missing)
+            )
+
+        if questions:
+            st.info(
+                "Pontos para confirmar com o atendimento:\n\n- "
+                + "\n- ".join(questions)
+            )
+
+st.divider()
+st.subheader("2. Revise e complete")
+
+with st.form("recommendation_form"):
+    project_name = st.text_input(
+        "Nome do projeto",
+        key="rec_project_name",
+    )
+
+    col_context_1, col_context_2 = st.columns(2)
+
+    with col_context_1:
+        objective = st.text_area(
+            "Objetivo principal",
+            height=110,
+            key="rec_objective",
+        )
+
+    with col_context_2:
+        audience_profile = st.text_area(
+            "Perfil do público",
+            height=110,
+            key="rec_audience_profile",
+        )
 
     col1, col2, col3 = st.columns(3)
 
@@ -86,47 +336,82 @@ with st.form("recommendation_form"):
         budget_total = st.number_input(
             "Budget total",
             min_value=0.0,
-            value=0.0,
             step=1000.0,
+            key="rec_budget_total",
         )
 
     with col2:
         quantity = st.number_input(
             "Quantidade / público",
             min_value=0,
-            value=0,
             step=1,
+            key="rec_quantity",
         )
 
     with col3:
         available_days = st.number_input(
             "Prazo disponível em dias",
             min_value=0,
-            value=0,
             step=1,
+            key="rec_available_days",
         )
 
     col4, col5, col6 = st.columns(3)
 
     with col4:
-        city = st.text_input("Cidade")
+        city = st.text_input(
+            "Cidade",
+            key="rec_city",
+        )
 
     with col5:
-        state = st.text_input("Estado")
+        state = st.text_input(
+            "Estado",
+            key="rec_state",
+        )
 
     with col6:
-        event_date = st.date_input(
+        event_date_value = st.date_input(
             "Data do evento",
-            value=None,
+            key="rec_event_date",
             min_value=date.today(),
         )
 
     desired_types = st.multiselect(
         "O que pode entrar na recomendação?",
         options=list(type_labels.keys()),
-        default=["product"],
         format_func=lambda value: type_labels[value],
+        key="rec_desired_types",
     )
+
+    col_attributes, col_restrictions = st.columns(2)
+
+    with col_attributes:
+        desired_attributes_text = st.text_input(
+            "Atributos desejados",
+            placeholder=(
+                "Ex.: tecnológico, sustentável, colecionável"
+            ),
+            key="rec_desired_attributes",
+        )
+
+    with col_restrictions:
+        restrictions_text = st.text_input(
+            "Restrições",
+            placeholder=(
+                "Ex.: sem eletrônicos, produção nacional"
+            ),
+            key="rec_restrictions",
+        )
+
+    if budget_total and quantity:
+        st.caption(
+            "Budget bruto por pessoa: "
+            + format_pt_br_number(
+                budget_total / quantity,
+                prefix="R$ ",
+            )
+        )
 
     submitted = st.form_submit_button(
         "Gerar recomendação",
@@ -135,64 +420,88 @@ with st.form("recommendation_form"):
     )
 
 if submitted:
-    if not briefing_text.strip():
-        st.error("Descreva o briefing.")
+    source_text = st.session_state.get(
+        "recommendation_source_text",
+        "",
+    )
+    pasted_text = st.session_state.get(
+        "rec_briefing_paste",
+        "",
+    ).strip()
+
+    if not source_text and not pasted_text and not objective:
+        st.error(
+            "Envie um briefing, cole um texto ou descreva o objetivo."
+        )
         st.stop()
 
-    explicit_context = f"""
+    try:
+        parsed = dict(
+            st.session_state.get("recommendation_prefill") or {}
+        )
+
+        if not parsed:
+            manual_context = f"""
 Nome do projeto: {project_name or 'não informado'}
-Budget total: {budget_total if budget_total else 'não informado'}
-Quantidade ou público: {quantity if quantity else 'não informado'}
+Objetivo: {objective or 'não informado'}
+Perfil do público: {audience_profile or 'não informado'}
+Budget total: {budget_total or 'não informado'}
+Quantidade ou público: {quantity or 'não informado'}
 Prazo disponível em dias: {
-    available_days if available_days else 'não informado'
+    available_days or 'não informado'
 }
 Cidade: {city or 'não informada'}
 Estado: {state or 'não informado'}
 Data do evento: {
-    event_date.isoformat() if event_date else 'não informada'
+    event_date_value.isoformat()
+    if event_date_value else 'não informada'
 }
 Tipos permitidos: {', '.join(desired_types)}
+Atributos desejados: {desired_attributes_text}
+Restrições: {restrictions_text}
 
 Briefing:
-{briefing_text}
+{pasted_text or objective}
 """
+            with st.spinner("Interpretando o briefing..."):
+                parsed = parse_recommendation_brief(
+                    manual_context,
+                    api_key=gemini_key,
+                    model=model,
+                ).model_dump()
 
-    try:
-        with st.spinner("Interpretando briefing e consultando a base..."):
-            parsed = parse_recommendation_brief(
-                explicit_context,
-                api_key=gemini_key,
-                model=model,
-            ).model_dump()
+        # O que o usuário revisou no formulário tem prioridade.
+        parsed["project_name"] = project_name or None
+        parsed["objective"] = objective or None
+        parsed["audience_profile"] = audience_profile or None
+        parsed["budget_total_brl"] = budget_total or None
+        parsed["audience_quantity"] = quantity or None
+        parsed["available_days"] = available_days or None
+        parsed["location_city"] = city or None
+        parsed["location_state"] = state or None
+        parsed["event_date"] = (
+            event_date_value.isoformat()
+            if event_date_value
+            else None
+        )
+        parsed["desired_types"] = desired_types
+        parsed["desired_attributes"] = _split_list(
+            desired_attributes_text
+        )
+        parsed["restrictions"] = _split_list(
+            restrictions_text
+        )
 
-            # Campos preenchidos no formulário têm prioridade.
-            if project_name:
-                parsed["project_name"] = project_name
-            if budget_total:
-                parsed["budget_total_brl"] = budget_total
-            if quantity:
-                parsed["audience_quantity"] = quantity
-            if available_days:
-                parsed["available_days"] = available_days
-            if city:
-                parsed["location_city"] = city
-            if state:
-                parsed["location_state"] = state
-            if event_date:
-                parsed["event_date"] = event_date.isoformat()
-            if desired_types:
-                parsed["desired_types"] = desired_types
+        if budget_total and quantity:
+            parsed["budget_unit_brl"] = (
+                budget_total / quantity
+            )
+        else:
+            parsed["budget_unit_brl"] = None
 
-            if (
-                parsed.get("budget_total_brl")
-                and parsed.get("audience_quantity")
-            ):
-                parsed["budget_unit_brl"] = (
-                    parsed["budget_total_brl"]
-                    / parsed["audience_quantity"]
-                )
+        candidates = fetch_recommendation_candidates(client)
 
-            candidates = fetch_recommendation_candidates(client)
+        with st.spinner("Consultando e pontuando a base..."):
             results = score_candidates(
                 candidates,
                 parsed,
@@ -201,7 +510,15 @@ Briefing:
 
         st.session_state["recommendation_brief"] = parsed
         st.session_state["recommendation_results"] = results
-        st.session_state["recommendation_source_text"] = briefing_text
+
+        if not st.session_state.get(
+            "recommendation_source_text"
+        ):
+            st.session_state["recommendation_source_text"] = (
+                pasted_text
+                or parsed.get("source_summary")
+                or objective
+            )
 
     except Exception as exc:
         st.exception(exc)
@@ -211,8 +528,9 @@ results = st.session_state.get("recommendation_results")
 
 if brief:
     st.divider()
-    st.subheader("Entendimento do briefing")
-    st.write(brief.get("source_summary"))
+    st.subheader("3. Entendimento final")
+
+    st.write(brief.get("source_summary") or "")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric(
@@ -232,7 +550,9 @@ if brief:
     m3.metric(
         "Público",
         (
-            f"{int(brief['audience_quantity']):,}".replace(",", ".")
+            f"{int(brief['audience_quantity']):,}".replace(
+                ",", "."
+            )
             if brief.get("audience_quantity")
             else "Não informado"
         ),
@@ -248,32 +568,35 @@ if brief:
 
 if results is not None:
     st.divider()
-    st.subheader("Recomendações")
+    st.subheader("4. Recomendações")
 
     if results.empty:
         st.warning(
             "A base ainda não possui itens compatíveis com os filtros."
         )
     else:
-        type_labels_reverse = type_labels
-
         for _, row in results.iterrows():
             title = (
                 f"{int(row['rank'])}. {row['name']} "
                 f"— {row['total_score']:.0f}/100"
             )
-            with st.expander(title, expanded=int(row["rank"]) <= 3):
+
+            with st.expander(
+                title,
+                expanded=int(row["rank"]) <= 3,
+            ):
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric(
                     "Tipo",
-                    type_labels_reverse.get(
+                    type_labels.get(
                         row.get("item_type"),
                         row.get("item_type"),
                     ),
                 )
                 c2.metric(
                     "Fornecedor",
-                    row.get("supplier_name") or "Não informado",
+                    row.get("supplier_name")
+                    or "Não informado",
                 )
                 c3.metric(
                     "Estimativa total",
@@ -283,7 +606,10 @@ if results is not None:
                             "BRL": "R$ ",
                             "USD": "US$ ",
                             "EUR": "€ ",
-                        }.get(str(row.get("currency") or ""), ""),
+                        }.get(
+                            str(row.get("currency") or ""),
+                            "",
+                        ),
                     ) or "Não calculada",
                 )
                 c4.metric(
@@ -294,7 +620,10 @@ if results is not None:
                             "BRL": "R$ ",
                             "USD": "US$ ",
                             "EUR": "€ ",
-                        }.get(str(row.get("currency") or ""), ""),
+                        }.get(
+                            str(row.get("currency") or ""),
+                            "",
+                        ),
                     ) or "Não informado",
                 )
 
@@ -345,8 +674,9 @@ if results is not None:
                     results_df=results,
                 )
                 st.success(
-                    f"Consulta salva com {saved['results_saved']} "
-                    f"resultados. ID: {saved['query_id']}"
+                    f"Consulta salva com "
+                    f"{saved['results_saved']} resultados. "
+                    f"ID: {saved['query_id']}"
                 )
             except Exception as exc:
                 st.exception(exc)

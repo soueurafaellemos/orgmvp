@@ -204,28 +204,42 @@ Não invente informações ausentes.
 RECOMMENDATION_BRIEF_PROMPT = """
 Você estrutura uma consulta para um recomendador de pré-produção de eventos.
 
+A fonte pode ser um briefing formal, e-mail, PDF, apresentação, planilha,
+documento ou texto colado pelo atendimento.
+
 A consulta pode buscar:
 - product: brindes e produtos físicos;
 - activation: soluções, serviços, simuladores e ativações;
 - venue: locais e espaços para eventos.
 
-Use somente o texto fornecido. Não invente budget, quantidade, cidade, prazo,
-público ou objetivo.
+Use somente as fontes enviadas. Não invente budget, quantidade, cidade, prazo,
+público, data ou objetivo.
 
 Extraia:
+- arquivos de origem;
 - nome do projeto;
 - objetivo;
-- público;
+- perfil do público;
 - quantidade;
 - budget total e unitário;
 - cidade e estado;
-- data;
+- data do evento em AAAA-MM-DD, somente quando inequívoca;
 - prazo disponível em dias;
 - tipos desejados;
 - atributos desejados;
 - restrições;
 - palavras-chave úteis para busca.
 
-Quando o usuário pedir algo amplo, desired_types pode conter mais de um tipo.
-Palavras-chave devem ser curtas e relacionadas ao conteúdo procurado.
+REGRAS:
+1. Diferencie budget total de budget unitário.
+2. Não transforme estimativa, sugestão ou hipótese em decisão confirmada.
+3. Se o documento trouxer mais de uma quantidade ou budget conflitante,
+   registre a dúvida em open_questions.
+4. Campos importantes ausentes devem aparecer em missing_fields.
+5. open_questions deve conter perguntas curtas que o atendimento precisa
+   responder antes de uma recomendação mais segura.
+6. Quando o pedido for amplo, desired_types pode conter mais de um tipo.
+7. Palavras-chave devem ser curtas e relacionadas ao conteúdo procurado.
+8. source_summary deve consolidar o entendimento em linguagem profissional,
+   sem acrescentar informações externas.
 """

@@ -474,3 +474,45 @@ def parse_recommendation_brief(
         schema=RecommendationBrief,
         context="consulta do recomendador",
     )
+
+
+
+def parse_recommendation_sources(
+    docs: list[InputDocument],
+    *,
+    pasted_text: str,
+    api_key: str | None,
+    model: str,
+) -> RecommendationBrief:
+    client = get_client(api_key)
+
+    all_docs = list(docs)
+    if pasted_text.strip():
+        all_docs.append(
+            InputDocument(
+                name="briefing_colado_usuario.txt",
+                data=pasted_text.strip().encode("utf-8"),
+                mime_type="text/plain",
+            )
+        )
+
+    if not all_docs:
+        raise ValueError(
+            "Envie ao menos um arquivo ou cole o briefing."
+        )
+
+    result = _structured_call(
+        client,
+        model=model,
+        prompt=(
+            RECOMMENDATION_BRIEF_PROMPT
+            + "\n\nLeia todas as fontes, consolide as informações e "
+              "preencha o formulário da consulta."
+        ),
+        docs=all_docs,
+        schema=RecommendationBrief,
+        context="preenchimento automático do briefing",
+    )
+
+    result.source_files = [doc.name for doc in docs]
+    return result
