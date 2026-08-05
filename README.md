@@ -559,3 +559,37 @@ upload ou pelo botão da Administração.
 - upload de acervo expandido para os três tipos;
 - exclusão de mídia continua restrita à Administração;
 - não exige novo SQL.
+
+
+## V16 — Fase 6: enriquecimento inteligente
+
+- encontra brindes, ativações e locais já cadastrados;
+- preenche automaticamente campos vazios;
+- trata “Não informado” como campo vazio;
+- une listas sem repetir valores;
+- preserva valores conflitantes no modo recomendado;
+- permite priorizar o arquivo mais recente;
+- permite adicionar somente itens novos;
+- registra histórico completo de cada enriquecimento;
+- mostra diferenças encontradas após o salvamento;
+- exibe histórico de enriquecimento na ficha do item;
+- evita duplicar custos iguais em ativações;
+- fornecedores passam a ser enriquecidos sem apagar dados existentes.
+
+Antes de usar, execute:
+
+`supabase_patch_enriquecimento_inteligente_v1.sql`
+
+
+## V17 — Fase 6.1 integrada à Fase 6
+
+- enriquecimento textual e estrutural da V16 incluído;
+- extração automática de imagens representativas de PDFs;
+- recorte por coordenadas visuais retornadas pela leitura inteligente;
+- fallback por blocos de imagem embutidos no PDF;
+- associação da imagem ao brinde, ativação ou local existente;
+- primeira imagem vira capa quando o item ainda não possui imagem principal;
+- deduplicação por SHA-256;
+- rastreabilidade de arquivo, página, recorte, método e confiança;
+- recortes ambíguos ficam pendentes para upload manual;
+- use apenas `supabase_patch_fase_6_1_completa_v1.sql`; não execute antes o SQL isolado da V16.

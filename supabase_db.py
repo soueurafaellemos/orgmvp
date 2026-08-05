@@ -13,6 +13,12 @@ import pandas as pd
 from supabase import Client, create_client
 
 from document_io import InputDocument
+from enrichment_engine import (
+    is_blank as enrichment_is_blank,
+    merge_record,
+)
+from media_library import upload_generated_media_asset
+from pdf_visuals import prepare_visual_assignments
 
 
 PRODUCT_COLUMNS = {
@@ -316,9 +322,6 @@ def upsert_supplier(
         "raw_data": _json_safe(supplier),
     }
 
-    # Somente grava cobertura quando ela estiver presente no material
-    # ou tiver sido preenchida pelo usuário. Isso evita apagar um cadastro
-    # territorial já enriquecido em uma importação futura.
     scalar_coverage_fields = (
         "base_city",
         "base_state",
@@ -357,23 +360,45 @@ def upsert_supplier(
         if value:
             payload[field] = value
 
-    response = (
-        client.table("suppliers")
-        .upsert(payload, on_conflict="normalized_name")
-        .execute()
-    )
-
-    if response.data:
-        return response.data[0]["id"]
-
     lookup = (
         client.table("suppliers")
-        .select("id")
+        .select("*")
         .eq("normalized_name", normalized)
         .limit(1)
         .execute()
     )
-    return lookup.data[0]["id"] if lookup.data else None
+
+    if lookup.data:
+        existing = lookup.data[0]
+        result = merge_record(
+            existing,
+            payload,
+            allowed_fields=set(payload),
+            strategy="enrich_safe",
+        )
+        changes = result["applied_changes"]
+
+        if changes:
+            (
+                client.table("suppliers")
+                .update(changes)
+                .eq("id", existing["id"])
+                .execute()
+            )
+
+        return existing["id"]
+
+    response = (
+        client.table("suppliers")
+        .insert(payload)
+        .execute()
+    )
+
+    return (
+        response.data[0]["id"]
+        if response.data
+        else None
+    )
 
 
 def _supplier_maps(
@@ -473,14 +498,14 @@ def create_import(
     return import_id, file_map
 
 
-def _existing_product(
+def _find_existing_product(
     client: Client,
     *,
     supplier_id: str | None,
     sku: str | None,
     name: str,
-) -> bool:
-    query = client.table("products").select("id").limit(1)
+) -> tuple[dict | None, str]:
+    query = client.table("products").select("*").limit(1)
 
     if supplier_id:
         query = query.eq("supplier_id", supplier_id)
@@ -489,54 +514,277 @@ def _existing_product(
 
     if sku and str(sku).strip():
         query = query.eq("sku", str(sku).strip())
+        method = "supplier_and_sku"
     else:
         query = query.eq("name", name)
+        method = "supplier_and_name"
 
-    return bool(query.execute().data)
+    response = query.execute()
+    return (
+        response.data[0] if response.data else None,
+        method,
+    )
 
 
-def _existing_activation(
+def _find_existing_activation(
     client: Client,
     *,
     supplier_id: str | None,
     name: str,
     project_name: str | None,
-) -> bool:
+) -> tuple[dict | None, str]:
     query = (
         client.table("activation_solutions")
-        .select("id")
+        .select("*")
         .eq("name", name)
         .limit(1)
     )
+
     if supplier_id:
         query = query.eq("supplier_id", supplier_id)
     else:
         query = query.is_("supplier_id", "null")
+
     if project_name:
         query = query.eq("project_name", project_name)
-    return bool(query.execute().data)
+        method = "supplier_name_and_project"
+    else:
+        method = "supplier_and_name"
+
+    response = query.execute()
+    return (
+        response.data[0] if response.data else None,
+        method,
+    )
 
 
-def _existing_venue(
+def _find_existing_venue(
     client: Client,
     *,
     operator_id: str | None,
     name: str,
     city: str | None,
-) -> bool:
+) -> tuple[dict | None, str]:
     query = (
         client.table("venues")
-        .select("id")
+        .select("*")
         .eq("name", name)
         .limit(1)
     )
+
     if operator_id:
         query = query.eq("operator_id", operator_id)
     else:
         query = query.is_("operator_id", "null")
+
     if city:
         query = query.eq("city", city)
+        method = "operator_name_and_city"
+    else:
+        method = "operator_and_name"
+
+    response = query.execute()
+    return (
+        response.data[0] if response.data else None,
+        method,
+    )
+
+
+def _record_enrichment_event(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+    import_id: str,
+    source_file_id: str | None,
+    source_file: str | None,
+    source_page: int | None,
+    match_method: str,
+    strategy: str,
+    existing: dict,
+    incoming: dict,
+    result: dict,
+) -> None:
+    conflicts = result.get("conflicts") or []
+
+    payload = {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "import_id": import_id,
+        "source_file_id": source_file_id,
+        "source_file": source_file,
+        "source_page": _json_safe(source_page),
+        "match_method": match_method,
+        "strategy": strategy,
+        "fields_filled": result.get("filled_fields") or [],
+        "fields_updated": result.get("updated_fields") or [],
+        "fields_merged": result.get("merged_fields") or [],
+        "conflict_fields": [
+            str(item.get("field"))
+            for item in conflicts
+            if item.get("field")
+        ],
+        "before_data": _json_safe(existing),
+        "incoming_data": _json_safe(incoming),
+        "applied_changes": _json_safe(
+            result.get("applied_changes") or {}
+        ),
+        "conflicts": _json_safe(conflicts),
+    }
+
+    (
+        client.table("knowledge_enrichment_events")
+        .insert(payload)
+        .execute()
+    )
+
+
+def _update_import_result(
+    client: Client,
+    *,
+    import_id: str,
+    inserted: int,
+    enriched: int,
+    conflict_records: int,
+    skipped: int,
+    visual_assets_added: int = 0,
+    visual_assets_duplicate: int = 0,
+    visual_assets_pending: int = 0,
+) -> None:
+    status = (
+        "importado_com_conflitos"
+        if conflict_records
+        else "importado"
+    )
+
+    (
+        client.table("imports")
+        .update(
+            {
+                "status": status,
+                "imported_records": inserted + enriched,
+                "inserted_records": inserted,
+                "enriched_records": enriched,
+                "conflict_records": conflict_records,
+                "skipped_records": skipped,
+                "visual_assets_added": visual_assets_added,
+                "visual_assets_duplicate": visual_assets_duplicate,
+                "visual_assets_pending": visual_assets_pending,
+            }
+        )
+        .eq("id", import_id)
+        .execute()
+    )
+
+
+def _strategy_or_legacy(
+    existing_strategy: str,
+    skip_duplicates: bool | None,
+) -> str:
+    if skip_duplicates is None:
+        return existing_strategy
+
+    return "new_only" if skip_duplicates else "prefer_new"
+
+
+def _conflict_rows(
+    *,
+    entity_type: str,
+    entity_id: str,
+    item_name: str,
+    conflicts: list[dict],
+) -> list[dict]:
+    rows = []
+
+    for item in conflicts:
+        rows.append(
+            {
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "item_name": item_name,
+                "field": item.get("field"),
+                "existing_value": item.get(
+                    "existing_value"
+                ),
+                "incoming_value": item.get(
+                    "incoming_value"
+                ),
+                "action": item.get("action"),
+            }
+        )
+
+    return rows
+
+
+def _activation_cost_exists(
+    client: Client,
+    *,
+    solution_id: str,
+    description: str,
+    amount: Any,
+) -> bool:
+    query = (
+        client.table("activation_costs")
+        .select("id")
+        .eq("solution_id", solution_id)
+        .eq("description", description)
+        .limit(1)
+    )
+
+    if not _is_missing(amount):
+        query = query.eq("amount", amount)
+
     return bool(query.execute().data)
+
+
+
+def _record_has_pdf_visual_source(raw: dict) -> bool:
+    source_file = str(raw.get("source_file") or "").lower().strip()
+    source_page = raw.get("source_page")
+    return source_file.endswith(".pdf") and not enrichment_is_blank(
+        source_page
+    )
+
+
+def _attach_prepared_visual(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+    visual,
+    source_file_id: str | None,
+) -> str:
+    if visual is None:
+        return "pending"
+
+    result = upload_generated_media_asset(
+        client,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        title=visual.title,
+        description=visual.description,
+        file_name=visual.file_name,
+        file_bytes=visual.file_bytes,
+        mime_type=visual.mime_type,
+        content_sha256=visual.content_sha256,
+        source_file_id=source_file_id,
+        source_file=visual.source_file,
+        source_page=visual.source_page,
+        crop_box=visual.crop_box,
+        visual_method=visual.method,
+        visual_confidence=visual.confidence,
+    )
+    return str(result.get("status") or "inserted")
+
+
+def _count_visual_status(status: str, counters: dict[str, int]) -> None:
+    if status == "inserted":
+        counters["added"] += 1
+    elif status == "duplicate":
+        counters["duplicate"] += 1
+    else:
+        counters["pending"] += 1
+
 
 
 def save_catalog(
@@ -548,12 +796,19 @@ def save_catalog(
     alerts_df: pd.DataFrame,
     classification: dict | None,
     source_documents: list[InputDocument],
-    skip_duplicates: bool = True,
+    existing_strategy: str = "enrich_safe",
+    skip_duplicates: bool | None = None,
+    auto_extract_visuals: bool = True,
 ) -> dict:
+    strategy = _strategy_or_legacy(existing_strategy, skip_duplicates)
     products = dataframe_records(products_df)
+    visuals = (
+        prepare_visual_assignments(products, source_documents)
+        if auto_extract_visuals
+        else [None] * len(products)
+    )
     suppliers = dataframe_records(suppliers_df)
     supplier_map, supplier_count = _supplier_maps(client, suppliers)
-
     first_supplier_id = next(iter(supplier_map.values()), None)
     import_id, file_map = create_import(
         client,
@@ -569,42 +824,113 @@ def save_catalog(
         warnings=dataframe_records(alerts_df),
     )
 
-    inserted = 0
-    duplicates = 0
+    inserted = enriched = skipped = conflict_records = 0
+    fields_filled = fields_updated = 0
+    visual_counts = {"added": 0, "duplicate": 0, "pending": 0}
+    conflict_rows: list[dict] = []
 
-    for raw in products:
+    for row_index, raw in enumerate(products):
         supplier_id = _supplier_id_for_record(raw, supplier_map)
-        if skip_duplicates and _existing_product(
+        item_name = raw.get("name") or "Sem nome"
+        existing, match_method = _find_existing_product(
             client,
             supplier_id=supplier_id,
             sku=raw.get("sku"),
-            name=raw.get("name") or "Sem nome",
-        ):
-            duplicates += 1
-            continue
-
+            name=item_name,
+        )
         payload = _prepare_record(raw, PRODUCT_COLUMNS)
         payload["supplier_id"] = supplier_id
         payload["import_id"] = import_id
-        payload["source_file_id"] = file_map.get(
-            str(raw.get("source_file") or "")
-        )
-        client.table("products").insert(payload).execute()
-        inserted += 1
+        payload["source_file_id"] = file_map.get(str(raw.get("source_file") or ""))
+        entity_id = None
 
-    client.table("imports").update(
-        {
-            "status": "importado",
-            "imported_records": inserted,
-        }
-    ).eq("id", import_id).execute()
+        if not existing:
+            response = client.table("products").insert(payload).execute()
+            if response.data:
+                entity_id = response.data[0]["id"]
+                inserted += 1
+        elif strategy == "new_only":
+            skipped += 1
+            continue
+        else:
+            entity_id = existing["id"]
+            result = merge_record(
+                existing,
+                payload,
+                allowed_fields=PRODUCT_COLUMNS,
+                strategy=strategy,
+            )
+            changes = result["applied_changes"]
+            conflicts = result["conflicts"]
+            if changes:
+                client.table("products").update(changes).eq("id", entity_id).execute()
+                enriched += 1
+            if conflicts:
+                conflict_records += 1
+                conflict_rows.extend(_conflict_rows(
+                    entity_type="product",
+                    entity_id=entity_id,
+                    item_name=item_name,
+                    conflicts=conflicts,
+                ))
+            fields_filled += len(result["filled_fields"])
+            fields_updated += len(result["updated_fields"])
+            _record_enrichment_event(
+                client,
+                entity_type="product",
+                entity_id=entity_id,
+                import_id=import_id,
+                source_file_id=payload.get("source_file_id"),
+                source_file=raw.get("source_file"),
+                source_page=raw.get("source_page"),
+                match_method=match_method,
+                strategy=strategy,
+                existing=existing,
+                incoming=payload,
+                result=result,
+            )
+            if not changes and not conflicts:
+                skipped += 1
 
+        if (
+            entity_id
+            and auto_extract_visuals
+            and _record_has_pdf_visual_source(raw)
+        ):
+            status = _attach_prepared_visual(
+                client,
+                entity_type="product",
+                entity_id=entity_id,
+                visual=visuals[row_index],
+                source_file_id=payload.get("source_file_id"),
+            )
+            _count_visual_status(status, visual_counts)
+
+    _update_import_result(
+        client,
+        import_id=import_id,
+        inserted=inserted,
+        enriched=enriched,
+        conflict_records=conflict_records,
+        skipped=skipped,
+        visual_assets_added=visual_counts["added"],
+        visual_assets_duplicate=visual_counts["duplicate"],
+        visual_assets_pending=visual_counts["pending"],
+    )
     return {
         "import_id": import_id,
         "suppliers_saved": supplier_count,
         "records_inserted": inserted,
-        "duplicates_skipped": duplicates,
+        "records_enriched": enriched,
+        "records_with_conflicts": conflict_records,
+        "duplicates_skipped": skipped,
+        "fields_filled": fields_filled,
+        "fields_updated": fields_updated,
+        "conflicts": conflict_rows,
         "costs_inserted": 0,
+        "visual_assets_added": visual_counts["added"],
+        "visual_assets_duplicate": visual_counts["duplicate"],
+        "visual_assets_pending": visual_counts["pending"],
     }
 
 
@@ -618,13 +944,20 @@ def save_activations(
     alerts_df: pd.DataFrame,
     classification: dict | None,
     source_documents: list[InputDocument],
-    skip_duplicates: bool = True,
+    existing_strategy: str = "enrich_safe",
+    skip_duplicates: bool | None = None,
+    auto_extract_visuals: bool = True,
 ) -> dict:
+    strategy = _strategy_or_legacy(existing_strategy, skip_duplicates)
     solutions = dataframe_records(solutions_df)
+    visuals = (
+        prepare_visual_assignments(solutions, source_documents)
+        if auto_extract_visuals
+        else [None] * len(solutions)
+    )
     costs = dataframe_records(costs_df)
     suppliers = dataframe_records(suppliers_df)
     supplier_map, supplier_count = _supplier_maps(client, suppliers)
-
     first_supplier_id = next(iter(supplier_map.values()), None)
     import_id, file_map = create_import(
         client,
@@ -641,51 +974,109 @@ def save_activations(
         warnings=dataframe_records(alerts_df),
     )
 
-    inserted = 0
-    duplicates = 0
-    costs_inserted = 0
+    inserted = enriched = skipped = conflict_records = 0
+    fields_filled = fields_updated = costs_inserted = 0
+    visual_counts = {"added": 0, "duplicate": 0, "pending": 0}
+    conflict_rows: list[dict] = []
     local_to_database: dict[str, str] = {}
 
-    for raw in solutions:
+    for row_index, raw in enumerate(solutions):
         supplier_id = _supplier_id_for_record(raw, supplier_map)
-        if skip_duplicates and _existing_activation(
+        item_name = raw.get("name") or "Sem nome"
+        existing, match_method = _find_existing_activation(
             client,
             supplier_id=supplier_id,
-            name=raw.get("name") or "Sem nome",
+            name=item_name,
             project_name=raw.get("project_name"),
-        ):
-            duplicates += 1
-            continue
-
+        )
         payload = _prepare_record(raw, ACTIVATION_COLUMNS)
         payload["supplier_id"] = supplier_id
         payload["import_id"] = import_id
-        payload["source_file_id"] = file_map.get(
-            str(raw.get("source_file") or "")
-        )
+        payload["source_file_id"] = file_map.get(str(raw.get("source_file") or ""))
+        local_id = str(raw.get("solution_id") or "")
+        database_id = None
 
-        response = (
-            client.table("activation_solutions")
-            .insert(payload)
-            .execute()
-        )
-        if response.data:
-            inserted += 1
-            local_id = str(raw.get("solution_id") or "")
+        if not existing:
+            response = client.table("activation_solutions").insert(payload).execute()
+            if response.data:
+                database_id = response.data[0]["id"]
+                inserted += 1
+        else:
+            database_id = existing["id"]
+            if strategy == "new_only":
+                skipped += 1
+                continue
+            result = merge_record(
+                existing,
+                payload,
+                allowed_fields=ACTIVATION_COLUMNS,
+                strategy=strategy,
+            )
+            changes = result["applied_changes"]
+            conflicts = result["conflicts"]
+            if changes:
+                client.table("activation_solutions").update(changes).eq("id", database_id).execute()
+                enriched += 1
+            if conflicts:
+                conflict_records += 1
+                conflict_rows.extend(_conflict_rows(
+                    entity_type="activation",
+                    entity_id=database_id,
+                    item_name=item_name,
+                    conflicts=conflicts,
+                ))
+            fields_filled += len(result["filled_fields"])
+            fields_updated += len(result["updated_fields"])
+            _record_enrichment_event(
+                client,
+                entity_type="activation",
+                entity_id=database_id,
+                import_id=import_id,
+                source_file_id=payload.get("source_file_id"),
+                source_file=raw.get("source_file"),
+                source_page=raw.get("source_page"),
+                match_method=match_method,
+                strategy=strategy,
+                existing=existing,
+                incoming=payload,
+                result=result,
+            )
+            if not changes and not conflicts:
+                skipped += 1
+
+        if database_id:
             if local_id:
-                local_to_database[local_id] = response.data[0]["id"]
+                local_to_database[local_id] = database_id
+            if (
+                auto_extract_visuals
+                and _record_has_pdf_visual_source(raw)
+            ):
+                status = _attach_prepared_visual(
+                    client,
+                    entity_type="activation",
+                    entity_id=database_id,
+                    visual=visuals[row_index],
+                    source_file_id=payload.get("source_file_id"),
+                )
+                _count_visual_status(status, visual_counts)
 
     for raw_cost in costs:
-        database_solution_id = local_to_database.get(
-            str(raw_cost.get("solution_id") or "")
-        )
+        database_solution_id = local_to_database.get(str(raw_cost.get("solution_id") or ""))
         if not database_solution_id:
             continue
-
+        description = raw_cost.get("description") or "Custo adicional"
+        amount = _json_safe(raw_cost.get("amount"))
+        if _activation_cost_exists(
+            client,
+            solution_id=database_solution_id,
+            description=description,
+            amount=amount,
+        ):
+            continue
         payload = {
             "solution_id": database_solution_id,
-            "description": raw_cost.get("description") or "Custo adicional",
-            "amount": _json_safe(raw_cost.get("amount")),
+            "description": description,
+            "amount": amount,
             "currency": raw_cost.get("currency") or "Não informado",
             "treatment": raw_cost.get("treatment") or "Não informado",
             "notes": _json_safe(raw_cost.get("notes")),
@@ -696,19 +1087,31 @@ def save_activations(
         client.table("activation_costs").insert(payload).execute()
         costs_inserted += 1
 
-    client.table("imports").update(
-        {
-            "status": "importado",
-            "imported_records": inserted,
-        }
-    ).eq("id", import_id).execute()
-
+    _update_import_result(
+        client,
+        import_id=import_id,
+        inserted=inserted,
+        enriched=enriched,
+        conflict_records=conflict_records,
+        skipped=skipped,
+        visual_assets_added=visual_counts["added"],
+        visual_assets_duplicate=visual_counts["duplicate"],
+        visual_assets_pending=visual_counts["pending"],
+    )
     return {
         "import_id": import_id,
         "suppliers_saved": supplier_count,
         "records_inserted": inserted,
-        "duplicates_skipped": duplicates,
+        "records_enriched": enriched,
+        "records_with_conflicts": conflict_records,
+        "duplicates_skipped": skipped,
+        "fields_filled": fields_filled,
+        "fields_updated": fields_updated,
+        "conflicts": conflict_rows,
         "costs_inserted": costs_inserted,
+        "visual_assets_added": visual_counts["added"],
+        "visual_assets_duplicate": visual_counts["duplicate"],
+        "visual_assets_pending": visual_counts["pending"],
     }
 
 
@@ -721,12 +1124,19 @@ def save_venues(
     alerts_df: pd.DataFrame,
     classification: dict | None,
     source_documents: list[InputDocument],
-    skip_duplicates: bool = True,
+    existing_strategy: str = "enrich_safe",
+    skip_duplicates: bool | None = None,
+    auto_extract_visuals: bool = True,
 ) -> dict:
+    strategy = _strategy_or_legacy(existing_strategy, skip_duplicates)
     venues = dataframe_records(venues_df)
+    visuals = (
+        prepare_visual_assignments(venues, source_documents)
+        if auto_extract_visuals
+        else [None] * len(venues)
+    )
     contacts = dataframe_records(contacts_df)
     supplier_map, supplier_count = _supplier_maps(client, contacts)
-
     first_supplier_id = next(iter(supplier_map.values()), None)
     import_id, file_map = create_import(
         client,
@@ -742,42 +1152,113 @@ def save_venues(
         warnings=dataframe_records(alerts_df),
     )
 
-    inserted = 0
-    duplicates = 0
+    inserted = enriched = skipped = conflict_records = 0
+    fields_filled = fields_updated = 0
+    visual_counts = {"added": 0, "duplicate": 0, "pending": 0}
+    conflict_rows: list[dict] = []
 
-    for raw in venues:
+    for row_index, raw in enumerate(venues):
         operator_id = _supplier_id_for_record(raw, supplier_map)
-        if skip_duplicates and _existing_venue(
+        item_name = raw.get("name") or "Sem nome"
+        existing, match_method = _find_existing_venue(
             client,
             operator_id=operator_id,
-            name=raw.get("name") or "Sem nome",
+            name=item_name,
             city=raw.get("city"),
-        ):
-            duplicates += 1
-            continue
-
+        )
         payload = _prepare_record(raw, VENUE_COLUMNS)
         payload["operator_id"] = operator_id
         payload["import_id"] = import_id
-        payload["source_file_id"] = file_map.get(
-            str(raw.get("source_file") or "")
-        )
-        client.table("venues").insert(payload).execute()
-        inserted += 1
+        payload["source_file_id"] = file_map.get(str(raw.get("source_file") or ""))
+        entity_id = None
 
-    client.table("imports").update(
-        {
-            "status": "importado",
-            "imported_records": inserted,
-        }
-    ).eq("id", import_id).execute()
+        if not existing:
+            response = client.table("venues").insert(payload).execute()
+            if response.data:
+                entity_id = response.data[0]["id"]
+                inserted += 1
+        elif strategy == "new_only":
+            skipped += 1
+            continue
+        else:
+            entity_id = existing["id"]
+            result = merge_record(
+                existing,
+                payload,
+                allowed_fields=VENUE_COLUMNS,
+                strategy=strategy,
+            )
+            changes = result["applied_changes"]
+            conflicts = result["conflicts"]
+            if changes:
+                client.table("venues").update(changes).eq("id", entity_id).execute()
+                enriched += 1
+            if conflicts:
+                conflict_records += 1
+                conflict_rows.extend(_conflict_rows(
+                    entity_type="venue",
+                    entity_id=entity_id,
+                    item_name=item_name,
+                    conflicts=conflicts,
+                ))
+            fields_filled += len(result["filled_fields"])
+            fields_updated += len(result["updated_fields"])
+            _record_enrichment_event(
+                client,
+                entity_type="venue",
+                entity_id=entity_id,
+                import_id=import_id,
+                source_file_id=payload.get("source_file_id"),
+                source_file=raw.get("source_file"),
+                source_page=raw.get("source_page"),
+                match_method=match_method,
+                strategy=strategy,
+                existing=existing,
+                incoming=payload,
+                result=result,
+            )
+            if not changes and not conflicts:
+                skipped += 1
 
+        if (
+            entity_id
+            and auto_extract_visuals
+            and _record_has_pdf_visual_source(raw)
+        ):
+            status = _attach_prepared_visual(
+                client,
+                entity_type="venue",
+                entity_id=entity_id,
+                visual=visuals[row_index],
+                source_file_id=payload.get("source_file_id"),
+            )
+            _count_visual_status(status, visual_counts)
+
+    _update_import_result(
+        client,
+        import_id=import_id,
+        inserted=inserted,
+        enriched=enriched,
+        conflict_records=conflict_records,
+        skipped=skipped,
+        visual_assets_added=visual_counts["added"],
+        visual_assets_duplicate=visual_counts["duplicate"],
+        visual_assets_pending=visual_counts["pending"],
+    )
     return {
         "import_id": import_id,
         "suppliers_saved": supplier_count,
         "records_inserted": inserted,
-        "duplicates_skipped": duplicates,
+        "records_enriched": enriched,
+        "records_with_conflicts": conflict_records,
+        "duplicates_skipped": skipped,
+        "fields_filled": fields_filled,
+        "fields_updated": fields_updated,
+        "conflicts": conflict_rows,
         "costs_inserted": 0,
+        "visual_assets_added": visual_counts["added"],
+        "visual_assets_duplicate": visual_counts["duplicate"],
+        "visual_assets_pending": visual_counts["pending"],
     }
 
 
@@ -984,6 +1465,30 @@ KNOWLEDGE_ENTITY_TABLES = {
     "activation": "activation_solutions",
     "venue": "venues",
 }
+
+
+def fetch_enrichment_history(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+    limit: int = 20,
+) -> pd.DataFrame:
+    response = (
+        client.table("knowledge_enrichment_events")
+        .select(
+            "id,entity_type,entity_id,import_id,"
+            "source_file,source_page,match_method,strategy,"
+            "fields_filled,fields_updated,fields_merged,"
+            "conflict_fields,conflicts,created_at"
+        )
+        .eq("entity_type", entity_type)
+        .eq("entity_id", entity_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return pd.DataFrame(response.data or [])
 
 
 def fetch_knowledge_item(

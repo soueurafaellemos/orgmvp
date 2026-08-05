@@ -443,6 +443,130 @@ def upload_media_asset(
         raise
 
 
+
+def _has_primary_media(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+) -> bool:
+    response = (
+        client.table("media_assets")
+        .select("id")
+        .eq("entity_type", entity_type)
+        .eq("entity_id", entity_id)
+        .eq("is_primary", True)
+        .limit(1)
+        .execute()
+    )
+    return bool(response.data)
+
+
+def upload_generated_media_asset(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+    title: str,
+    description: str,
+    file_name: str,
+    file_bytes: bytes,
+    mime_type: str,
+    content_sha256: str,
+    source_file_id: str | None,
+    source_file: str,
+    source_page: int,
+    crop_box: dict,
+    visual_method: str,
+    visual_confidence: float,
+) -> dict:
+    existing = (
+        client.table("media_assets")
+        .select("*")
+        .eq("entity_type", entity_type)
+        .eq("entity_id", entity_id)
+        .eq("content_sha256", content_sha256)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return {
+            "status": "duplicate",
+            "asset": existing.data[0],
+        }
+
+    ensure_media_bucket(client)
+    is_primary = not _has_primary_media(
+        client,
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+    safe_name = _safe_filename(file_name)
+    storage_path = (
+        f"{entity_type}/{entity_id}/automatic/"
+        f"{content_sha256[:16]}_{safe_name}"
+    )
+
+    (
+        client.storage
+        .from_(MEDIA_BUCKET)
+        .upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={
+                "content-type": mime_type,
+                "cache-control": "3600",
+                "upsert": "false",
+            },
+        )
+    )
+
+    payload = {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "asset_type": (
+            "main_image" if is_primary else "gallery_image"
+        ),
+        "title": title,
+        "description": description,
+        "storage_bucket": MEDIA_BUCKET,
+        "storage_path": storage_path,
+        "file_name": file_name,
+        "mime_type": mime_type,
+        "file_size_bytes": len(file_bytes),
+        "is_primary": is_primary,
+        "content_sha256": content_sha256,
+        "source_file_id": source_file_id,
+        "source_file": source_file,
+        "source_page": source_page,
+        "crop_box": crop_box,
+        "auto_generated": True,
+        "visual_method": visual_method,
+        "visual_confidence": visual_confidence,
+        "metadata": {
+            "source": "automatic_pdf_crop",
+            "review_recommended": True,
+        },
+    }
+
+    try:
+        response = (
+            client.table("media_assets")
+            .insert(payload)
+            .execute()
+        )
+        return {
+            "status": "inserted",
+            "asset": response.data[0] if response.data else payload,
+        }
+    except Exception:
+        try:
+            client.storage.from_(MEDIA_BUCKET).remove([storage_path])
+        except Exception:
+            pass
+        raise
+
+
 def add_external_media_link(
     client: Client,
     *,

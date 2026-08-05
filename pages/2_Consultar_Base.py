@@ -30,6 +30,7 @@ from exporters import format_pt_br_number
 from knowledge_details import render_complete_record
 from supabase_db import (
     database_counts,
+    fetch_enrichment_history,
     fetch_knowledge_item,
     fetch_recommendation_candidates,
     get_supabase_client,
@@ -953,6 +954,79 @@ if selected_indexes:
         entity_type,
         complete_record,
     )
+
+    try:
+        enrichment_history = fetch_enrichment_history(
+            client,
+            entity_type=entity_type,
+            entity_id=entity_id,
+        )
+    except Exception:
+        enrichment_history = pd.DataFrame()
+
+    if not enrichment_history.empty:
+        with st.expander(
+            "Histórico de enriquecimento",
+            expanded=False,
+        ):
+            for _, event in enrichment_history.iterrows():
+                strategy_label = {
+                    "enrich_safe": (
+                        "Lacunas preenchidas e diferenças "
+                        "preservadas"
+                    ),
+                    "prefer_new": (
+                        "Arquivo mais recente priorizado"
+                    ),
+                }.get(
+                    str(event.get("strategy")),
+                    str(event.get("strategy") or ""),
+                )
+
+                st.write(
+                    f"**{strategy_label}**"
+                )
+                source = str(
+                    event.get("source_file")
+                    or "Fonte não informada"
+                )
+                page = event.get("source_page")
+                source_text = source
+                if pd.notna(page):
+                    source_text += f" · página {int(page)}"
+
+                st.caption(source_text)
+
+                history_metrics = st.columns(4)
+                history_metrics[0].metric(
+                    "Preenchidos",
+                    len(
+                        event.get("fields_filled")
+                        or []
+                    ),
+                )
+                history_metrics[1].metric(
+                    "Atualizados",
+                    len(
+                        event.get("fields_updated")
+                        or []
+                    ),
+                )
+                history_metrics[2].metric(
+                    "Listas unidas",
+                    len(
+                        event.get("fields_merged")
+                        or []
+                    ),
+                )
+                history_metrics[3].metric(
+                    "Diferenças",
+                    len(
+                        event.get("conflict_fields")
+                        or []
+                    ),
+                )
+                st.divider()
 
     st.markdown("### Imagens e arquivos")
 

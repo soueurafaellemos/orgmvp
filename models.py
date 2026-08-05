@@ -13,6 +13,15 @@ PriceStatus = Literal[
 ]
 
 
+class VisualCrop(BaseModel):
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+    confidence: float = Field(default=0.8, ge=0, le=1)
+    notes: str | None = None
+
+
 class SupplierContact(BaseModel):
     supplier_name: str | None = None
     website_url: str | None = None
@@ -108,6 +117,7 @@ class DocumentClassification(BaseModel):
 class CatalogProduct(BaseModel):
     source_file: str
     source_page: int | None = None
+    visual_crop: VisualCrop | None = None
     supplier_name: str | None = None
     category: str | None = None
     sku: str | None = None
@@ -174,6 +184,7 @@ class CostComponent(BaseModel):
 class ActivationFallbackItem(BaseModel):
     source_file: str
     source_page: int | None = None
+    visual_crop: VisualCrop | None = None
     supplier_name: str | None = None
     client_brand: str | None = None
     project_name: str | None = None
@@ -209,6 +220,7 @@ class ActivationFallbackBatch(BaseModel):
 class ActivationSolution(BaseModel):
     source_file: str
     source_page: int | None = None
+    visual_crop: VisualCrop | None = None
     supplier_name: str | None = None
     client_brand: str | None = None
     project_name: str | None = None
@@ -275,6 +287,7 @@ class ActivationBatch(BaseModel):
 class VenueSpace(BaseModel):
     source_file: str
     source_page: int | None = None
+    visual_crop: VisualCrop | None = None
     operator_name: str | None = None
 
     name: str

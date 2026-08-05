@@ -12,6 +12,7 @@ from branding import (
 )
 
 from runtime_ui import report_service_error, require_app_access
+from enrichment_engine import STRATEGY_LABELS
 
 from document_io import (
     InputDocument,
@@ -301,6 +302,8 @@ def _database_save_controls(
     key: str,
     label: str,
     save_action,
+    allow_enrichment: bool = True,
+    allow_visuals: bool = True,
 ):
     st.divider()
     st.subheader("Adicionar à base de conhecimento")
@@ -312,15 +315,58 @@ def _database_save_controls(
         )
         return
 
-    skip_duplicates = st.checkbox(
-        "Ignorar itens já existentes",
-        value=True,
-        key=f"skip_duplicates_{key}",
-        help=(
-            "Compara fornecedor e nome ou SKU antes de inserir. "
-            "Mantém a base mais limpa durante os testes."
-        ),
-    )
+    label_to_strategy = {
+        label: strategy
+        for strategy, label in STRATEGY_LABELS.items()
+    }
+
+    if allow_visuals:
+        auto_extract_visuals = st.checkbox(
+            "Extrair e associar imagens automaticamente dos PDFs",
+            value=True,
+            key=f"auto_visuals_{key}",
+            help=(
+                "A NAVE tenta recortar a imagem representativa de cada item "
+                "e adicioná-la ao acervo. Recortes ambíguos ficam pendentes "
+                "para revisão manual."
+            ),
+        )
+        if auto_extract_visuals:
+            st.caption(
+                "A primeira imagem associada ao item será usada como capa. "
+                "A NAVE evita adicionar novamente imagens idênticas."
+            )
+    else:
+        auto_extract_visuals = False
+
+    if allow_enrichment:
+        selected_label = st.selectbox(
+            "Quando a NAVE encontrar um item já cadastrado",
+            options=list(label_to_strategy.keys()),
+            index=0,
+            key=f"existing_strategy_{key}",
+        )
+        existing_strategy = label_to_strategy[selected_label]
+
+        if existing_strategy == "enrich_safe":
+            st.caption(
+                "A NAVE preenche campos vazios, une listas e mantém "
+                "o valor atual quando encontra uma diferença. "
+                "As diferenças ficam registradas para revisão."
+            )
+        elif existing_strategy == "prefer_new":
+            st.warning(
+                "As informações diferentes do novo arquivo passarão "
+                "a substituir os valores atuais. O histórico anterior "
+                "continuará registrado."
+            )
+        else:
+            st.caption(
+                "Itens já cadastrados serão mantidos sem alteração. "
+                "Somente registros novos serão adicionados."
+            )
+    else:
+        existing_strategy = "enrich_safe"
 
     if st.button(
         label,
@@ -329,41 +375,140 @@ def _database_save_controls(
         key=f"save_database_{key}",
     ):
         try:
-            with st.spinner("Adicionando informações à base..."):
-                result = save_action(skip_duplicates)
+            with st.spinner(
+                "Comparando e atualizando a base..."
+            ):
+                result = save_action(
+                    existing_strategy,
+                    auto_extract_visuals,
+                )
 
-            st.session_state[f"database_result_{key}"] = result
-            st.success("Informações adicionadas à base de conhecimento.")
+            st.session_state[
+                f"database_result_{key}"
+            ] = result
+            st.success(
+                "Base de conhecimento processada."
+            )
 
         except Exception as exc:
             report_service_error(
-                "salvamento na base de conhecimento",
+                "salvamento e enriquecimento da base",
                 user_message=(
-                    "Não foi possível adicionar as informações "
-                    "à base neste momento."
+                    "Não foi possível processar as informações "
+                    "na base neste momento."
                 ),
                 exception=exc,
             )
 
-    result = st.session_state.get(f"database_result_{key}")
-    if result:
-        metric1, metric2, metric3, metric4 = st.columns(4)
-        metric1.metric(
-            "Itens adicionados",
-            result.get("records_inserted", 0),
+    result = st.session_state.get(
+        f"database_result_{key}"
+    )
+    if not result:
+        return
+
+    metric1, metric2, metric3, metric4, metric5 = st.columns(
+        5
+    )
+    metric1.metric(
+        "Itens novos",
+        result.get("records_inserted", 0),
+    )
+    metric2.metric(
+        "Itens enriquecidos",
+        result.get("records_enriched", 0),
+    )
+    metric3.metric(
+        "Com diferenças",
+        result.get(
+            "records_with_conflicts",
+            0,
+        ),
+    )
+    metric4.metric(
+        "Sem alteração",
+        result.get("duplicates_skipped", 0),
+    )
+    metric5.metric(
+        "Campos preenchidos",
+        result.get("fields_filled", 0),
+    )
+
+    if allow_visuals:
+        visual1, visual2, visual3 = st.columns(3)
+        visual1.metric(
+            "Imagens adicionadas",
+            result.get("visual_assets_added", 0),
         )
-        metric2.metric(
-            "Duplicidades ignoradas",
-            result.get("duplicates_skipped", 0),
+        visual2.metric(
+            "Imagens já existentes",
+            result.get("visual_assets_duplicate", 0),
         )
-        metric3.metric(
-            "Fornecedores relacionados",
-            result.get("suppliers_saved", 0),
+        visual3.metric(
+            "Recortes para revisar",
+            result.get("visual_assets_pending", 0),
         )
-        metric4.metric(
-            "Custos adicionados",
-            result.get("costs_inserted", 0),
+
+        if result.get("visual_assets_pending", 0):
+            st.info(
+                "Algumas páginas não permitiram isolar a imagem com segurança. "
+                "Esses itens podem receber a imagem manualmente na Base de conhecimento."
+            )
+
+    if result.get("fields_updated", 0):
+        st.caption(
+            f"Campos substituídos pelo arquivo mais recente: "
+            f"{result.get('fields_updated', 0)}."
         )
+
+    conflicts = result.get("conflicts") or []
+
+    if conflicts:
+        st.warning(
+            "A NAVE encontrou informações diferentes entre "
+            "o cadastro e o novo material."
+        )
+
+        conflict_df = pd.DataFrame(conflicts).rename(
+            columns={
+                "item_name": "Item",
+                "field": "Campo",
+                "existing_value": "Valor atual",
+                "incoming_value": "Novo valor",
+                "action": "Tratamento",
+            }
+        )
+
+        treatment_labels = {
+            "kept_existing_value": (
+                "Valor atual mantido"
+            ),
+            "updated_with_new_value": (
+                "Atualizado com o novo valor"
+            ),
+        }
+        conflict_df["Tratamento"] = (
+            conflict_df["Tratamento"]
+            .map(treatment_labels)
+            .fillna(conflict_df["Tratamento"])
+        )
+
+        with st.expander(
+            "Ver diferenças encontradas",
+            expanded=True,
+        ):
+            st.dataframe(
+                conflict_df[
+                    [
+                        "Item",
+                        "Campo",
+                        "Valor atual",
+                        "Novo valor",
+                        "Tratamento",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 if run:
@@ -572,6 +717,7 @@ if result_type == "catalog":
             hide_index=True,
             key="catalog_editor_v4",
             column_config={
+                "visual_crop": None,
                 "supplier_website": st.column_config.LinkColumn(
                     "Site do fornecedor"
                 ),
@@ -657,7 +803,7 @@ if result_type == "catalog":
     _database_save_controls(
         key="catalog",
         label="Adicionar brindes à base",
-        save_action=lambda skip: save_catalog(
+        save_action=lambda strategy, auto_visuals: save_catalog(
             database_client,
             products_df=technical,
             suppliers_df=suppliers,
@@ -665,7 +811,8 @@ if result_type == "catalog":
             alerts_df=alerts,
             classification=_classification_dict(),
             source_documents=docs,
-            skip_duplicates=skip,
+            existing_strategy=strategy,
+            auto_extract_visuals=auto_visuals,
         ),
     )
 
@@ -699,6 +846,7 @@ if result_type == "activation":
             hide_index=True,
             key="activation_editor_v4",
             column_config={
+                "visual_crop": None,
                 "supplier_website": st.column_config.LinkColumn(
                     "Site do fornecedor"
                 ),
@@ -788,7 +936,7 @@ if result_type == "activation":
     _database_save_controls(
         key="activation",
         label="Adicionar soluções à base",
-        save_action=lambda skip: save_activations(
+        save_action=lambda strategy, auto_visuals: save_activations(
             database_client,
             solutions_df=technical,
             costs_df=costs,
@@ -797,7 +945,8 @@ if result_type == "activation":
             alerts_df=alerts,
             classification=_classification_dict(),
             source_documents=docs,
-            skip_duplicates=skip,
+            existing_strategy=strategy,
+            auto_extract_visuals=auto_visuals,
         ),
     )
 
@@ -829,6 +978,7 @@ if result_type == "venue":
             hide_index=True,
             key="venue_editor_v5",
             column_config={
+                "visual_crop": None,
                 "contact_website": st.column_config.LinkColumn(
                     "Site do local"
                 ),
@@ -938,7 +1088,7 @@ if result_type == "venue":
     _database_save_controls(
         key="venue",
         label="Adicionar locais à base",
-        save_action=lambda skip: save_venues(
+        save_action=lambda strategy, auto_visuals: save_venues(
             database_client,
             venues_df=technical,
             contacts_df=contacts,
@@ -946,7 +1096,8 @@ if result_type == "venue":
             alerts_df=alerts,
             classification=_classification_dict(),
             source_documents=docs,
-            skip_duplicates=skip,
+            existing_strategy=strategy,
+            auto_extract_visuals=auto_visuals,
         ),
     )
 
@@ -979,10 +1130,12 @@ if result_type == "briefing":
     _database_save_controls(
         key="briefing",
         label="Adicionar briefing e projeto à base",
-        save_action=lambda skip: save_briefing(
+        save_action=lambda strategy, auto_visuals: save_briefing(
             database_client,
             briefing=briefing.model_dump(),
             classification=_classification_dict(),
             source_documents=docs,
         ),
+        allow_enrichment=False,
+        allow_visuals=False,
     )

@@ -65,6 +65,15 @@ Preço:
 
 Registre página e arquivo de origem. evidence deve ser um trecho curto.
 Não trate serviço, software, simulador ou operação como produto físico.
+
+
+IMAGEM REPRESENTATIVA:
+- Para cada item, localize a fotografia, render ou ilustração principal que representa aquele registro na página.
+- Quando existir uma imagem clara, preencha visual_crop com coordenadas normalizadas da página inteira: x, y, width e height entre 0 e 1.
+- O ponto x=0, y=0 é o canto superior esquerdo.
+- Enquadre somente o objeto, espaço ou ativação; exclua títulos, preços, logos, rodapés e textos sempre que possível.
+- Use confidence para indicar a segurança do recorte.
+- Quando não houver uma imagem individual claramente associada ao item, retorne visual_crop=null.
 """ + SUPPLIER_CONTACT_RULES
 
 ACTIVATION_SYSTEM_PROMPT = """
@@ -98,6 +107,15 @@ REGRAS GLOBAIS:
   daquele item.
 
 Use somente a fonte. evidence deve ser um trecho curto.
+
+
+IMAGEM REPRESENTATIVA:
+- Para cada item, localize a fotografia, render ou ilustração principal que representa aquele registro na página.
+- Quando existir uma imagem clara, preencha visual_crop com coordenadas normalizadas da página inteira: x, y, width e height entre 0 e 1.
+- O ponto x=0, y=0 é o canto superior esquerdo.
+- Enquadre somente o objeto, espaço ou ativação; exclua títulos, preços, logos, rodapés e textos sempre que possível.
+- Use confidence para indicar a segurança do recorte.
+- Quando não houver uma imagem individual claramente associada ao item, retorne visual_crop=null.
 """ + SUPPLIER_CONTACT_RULES
 
 BRIEFING_SYSTEM_PROMPT = """
@@ -165,6 +183,15 @@ CONTATO:
 
 Quando um campo relevante estiver ausente, retorne null e registre em
 missing_fields. evidence deve ser um trecho curto da fonte.
+
+
+IMAGEM REPRESENTATIVA:
+- Para cada item, localize a fotografia, render ou ilustração principal que representa aquele registro na página.
+- Quando existir uma imagem clara, preencha visual_crop com coordenadas normalizadas da página inteira: x, y, width e height entre 0 e 1.
+- O ponto x=0, y=0 é o canto superior esquerdo.
+- Enquadre somente o objeto, espaço ou ativação; exclua títulos, preços, logos, rodapés e textos sempre que possível.
+- Use confidence para indicar a segurança do recorte.
+- Quando não houver uma imagem individual claramente associada ao item, retorne visual_crop=null.
 """
 
 
@@ -204,6 +231,15 @@ Para cada item, procure:
 
 Não retorne items vazio quando o documento contiver itens comerciais.
 Não invente informações ausentes.
+
+
+IMAGEM REPRESENTATIVA:
+- Para cada item, localize a fotografia, render ou ilustração principal que representa aquele registro na página.
+- Quando existir uma imagem clara, preencha visual_crop com coordenadas normalizadas da página inteira: x, y, width e height entre 0 e 1.
+- O ponto x=0, y=0 é o canto superior esquerdo.
+- Enquadre somente o objeto, espaço ou ativação; exclua títulos, preços, logos, rodapés e textos sempre que possível.
+- Use confidence para indicar a segurança do recorte.
+- Quando não houver uma imagem individual claramente associada ao item, retorne visual_crop=null.
 """
 
 

@@ -29,6 +29,18 @@ def _join(values) -> str:
     return " | ".join(values or [])
 
 
+def _serialize_visual_crop(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def _prefix(currency) -> str:
     return {
         "BRL": "R$ ",
@@ -245,6 +257,9 @@ def merge_catalog_batches(batches):
 
         for product in batch.products:
             row = product.model_dump()
+            row["visual_crop"] = _serialize_visual_crop(
+                row.get("visual_crop")
+            )
             row["supplier_name"] = (
                 product.supplier_name or batch.supplier_name
             )
@@ -347,6 +362,9 @@ def merge_activation_batches(batches):
 
         for solution_index, solution in enumerate(batch.solutions, 1):
             row = solution.model_dump()
+            row["visual_crop"] = _serialize_visual_crop(
+                row.get("visual_crop")
+            )
             row["supplier_name"] = (
                 solution.supplier_name or batch.supplier_name
             )
@@ -492,6 +510,9 @@ def merge_venue_batches(batches):
 
         for venue in batch.venues:
             row = venue.model_dump()
+            row["visual_crop"] = _serialize_visual_crop(
+                row.get("visual_crop")
+            )
             row["operator_name"] = (
                 venue.operator_name or batch.operator_name
             )

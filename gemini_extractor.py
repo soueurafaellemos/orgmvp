@@ -294,6 +294,7 @@ def _fallback_to_activation_batch(
             ActivationSolution(
                 source_file=item.source_file,
                 source_page=item.source_page,
+                visual_crop=item.visual_crop,
                 supplier_name=(
                     item.supplier_name or fallback.supplier_name
                 ),
