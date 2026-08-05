@@ -365,6 +365,10 @@ def render_sidebar() -> None:
         )
         st.page_link(
             "streamlit_app.py",
+            label="Início",
+        )
+        st.page_link(
+            "pages/1_Organizar_Conhecimento.py",
             label="Organizar conhecimento",
         )
         st.page_link(
