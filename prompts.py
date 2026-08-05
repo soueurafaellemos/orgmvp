@@ -202,7 +202,7 @@ Não invente informações ausentes.
 
 
 RECOMMENDATION_BRIEF_PROMPT = """
-Você estrutura uma consulta para um recomendador de pré-produção de eventos.
+Você estrutura e diagnostica um briefing para pré-produção de eventos.
 
 A fonte pode ser um briefing formal, e-mail, PDF, apresentação, planilha,
 documento ou texto colado pelo atendimento.
@@ -213,9 +213,9 @@ A consulta pode buscar:
 - venue: locais e espaços para eventos.
 
 Use somente as fontes enviadas. Não invente budget, quantidade, cidade, prazo,
-público, data ou objetivo.
+público, data, objetivo ou decisão.
 
-Extraia:
+EXTRAÇÃO:
 - arquivos de origem;
 - nome do projeto;
 - objetivo;
@@ -230,16 +230,37 @@ Extraia:
 - restrições;
 - palavras-chave úteis para busca.
 
+DIAGNÓSTICO:
+Crie diagnostic_items para lacunas, ambiguidades e provocações úteis.
+
+Use as prioridades:
+- Crítica: impede validar viabilidade, budget, prazo, escala ou aderência.
+- Importante: não impede totalmente, mas pode alterar significativamente a
+  recomendação, cotação, logística ou operação.
+- Enriquecimento: pergunta estratégica ou criativa que pode tornar a solução
+  mais relevante, mensurável ou duradoura.
+
+Cada item deve trazer:
+- categoria;
+- título curto;
+- constatação objetiva baseada no material;
+- pergunta clara para avançar;
+- responsável mais adequado para conduzir a resposta;
+- impacto principal;
+- se bloqueia uma recomendação segura;
+- apoio da fonte, quando houver.
+
 REGRAS:
 1. Diferencie budget total de budget unitário.
 2. Não transforme estimativa, sugestão ou hipótese em decisão confirmada.
-3. Se o documento trouxer mais de uma quantidade ou budget conflitante,
-   registre a dúvida em open_questions.
-4. Campos importantes ausentes devem aparecer em missing_fields.
-5. open_questions deve conter perguntas curtas que o atendimento precisa
-   responder antes de uma recomendação mais segura.
-6. Quando o pedido for amplo, desired_types pode conter mais de um tipo.
-7. Palavras-chave devem ser curtas e relacionadas ao conteúdo procurado.
-8. source_summary deve consolidar o entendimento em linguagem profissional,
-   sem acrescentar informações externas.
+3. Se houver valores, datas ou quantidades conflitantes, registre a dúvida.
+4. Campos essenciais ausentes devem aparecer em missing_fields.
+5. open_questions deve conter perguntas curtas e acionáveis.
+6. Não crie perguntas genéricas quando a resposta já estiver na fonte.
+7. Não trate uma provocação criativa como pendência crítica.
+8. Quando o pedido for amplo, desired_types pode conter mais de um tipo.
+9. Palavras-chave devem ser curtas e relacionadas ao conteúdo procurado.
+10. source_summary deve consolidar o entendimento profissionalmente.
+11. diagnostic_summary deve resumir a qualidade do briefing sem dar uma nota.
+12. recommended_next_step deve indicar a ação prática seguinte.
 """

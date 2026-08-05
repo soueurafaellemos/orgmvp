@@ -355,6 +355,56 @@ class ProjectBriefing(BaseModel):
 
 
 
+class BriefingDiagnosticItem(BaseModel):
+    severity: Literal[
+        "Crítica",
+        "Importante",
+        "Enriquecimento",
+    ]
+    category: Literal[
+        "Objetivo",
+        "Público",
+        "Quantidade",
+        "Budget",
+        "Prazo",
+        "Data",
+        "Localização",
+        "Distribuição",
+        "Logística",
+        "Operação",
+        "Experiência",
+        "Mensuração",
+        "Sustentabilidade",
+        "Compliance",
+        "Escopo",
+        "Outro",
+    ]
+    title: str
+    finding: str
+    question: str
+    responsible: Literal[
+        "Atendimento",
+        "Cliente",
+        "Criação",
+        "Produção",
+        "Fornecedor",
+        "A definir",
+    ] = "Atendimento"
+    impact: Literal[
+        "Budget",
+        "Prazo",
+        "Logística",
+        "Escala",
+        "Aderência",
+        "Experiência",
+        "Mensuração",
+        "Risco",
+        "Outro",
+    ] = "Outro"
+    blocks_recommendation: bool = False
+    source_support: str | None = None
+
+
 class RecommendationBrief(BaseModel):
     source_files: list[str] = Field(default_factory=list)
     project_name: str | None = None
@@ -375,5 +425,10 @@ class RecommendationBrief(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
+    diagnostic_items: list[BriefingDiagnosticItem] = Field(
+        default_factory=list
+    )
+    diagnostic_summary: str | None = None
+    recommended_next_step: str | None = None
     source_summary: str
     confidence: float = Field(ge=0, le=1)

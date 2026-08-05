@@ -7,6 +7,10 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from briefing_diagnostic import (
+    build_diagnostic,
+    generate_service_agenda,
+)
 from document_io import prepare_documents
 from exporters import format_pt_br_number
 from gemini_extractor import (
@@ -104,6 +108,8 @@ def _set_default_state() -> None:
         "rec_desired_attributes": "",
         "rec_restrictions": "",
         "rec_briefing_paste": "",
+        "recommendation_diagnostic": None,
+        "recommendation_service_agenda": "",
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -259,54 +265,145 @@ if read_briefing:
                 parsed = parsed_model.model_dump()
 
             _apply_parsed_brief(parsed)
+            diagnostic = build_diagnostic(parsed)
+            service_agenda = generate_service_agenda(
+                parsed,
+                diagnostic,
+            )
+
             st.session_state["recommendation_prefill"] = parsed
+            st.session_state["recommendation_diagnostic"] = diagnostic
+            st.session_state["recommendation_service_agenda"] = (
+                service_agenda
+            )
             st.session_state["recommendation_source_text"] = (
                 _source_text_for_history(parsed)
             )
             st.success(
-                "Briefing lido. Revise os campos preenchidos abaixo."
+                "Briefing lido. Revise o diagnóstico e os campos abaixo."
             )
 
         except Exception as exc:
             st.exception(exc)
 
 prefill = st.session_state.get("recommendation_prefill")
+diagnostic = st.session_state.get("recommendation_diagnostic")
 
-if prefill:
-    with st.expander(
-        "Entendimento da IA e pendências",
-        expanded=True,
-    ):
-        st.write(prefill.get("source_summary") or "")
+if prefill and diagnostic:
+    st.divider()
+    st.subheader("2. Diagnóstico do briefing")
 
-        confidence = float(prefill.get("confidence") or 0)
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Confiança", f"{confidence * 100:.0f}%")
-        c2.metric(
-            "Campos ausentes",
-            len(prefill.get("missing_fields") or []),
-        )
-        c3.metric(
-            "Perguntas abertas",
-            len(prefill.get("open_questions") or []),
-        )
+    status = diagnostic.get("readiness_status")
+    score = int(diagnostic.get("completeness_score") or 0)
+    issues = diagnostic.get("issues") or []
+    critical = [
+        item for item in issues
+        if item.get("severity") == "Crítica"
+    ]
+    important = [
+        item for item in issues
+        if item.get("severity") == "Importante"
+    ]
+    enrichment = [
+        item for item in issues
+        if item.get("severity") == "Enriquecimento"
+    ]
 
-        missing = prefill.get("missing_fields") or []
-        questions = prefill.get("open_questions") or []
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Completude", f"{score}%")
+    c2.metric("Status", status)
+    c3.metric("Pendências críticas", len(critical))
+    c4.metric(
+        "Confiança da leitura",
+        f"{float(prefill.get('confidence') or 0) * 100:.0f}%",
+    )
 
-        if missing:
-            st.warning(
-                "Ainda não identificados: " + ", ".join(missing)
+    st.progress(score / 100)
+    st.write(diagnostic.get("diagnostic_summary") or "")
+
+    if status == "Pronto para recomendar":
+        st.success(diagnostic.get("recommended_next_step") or "")
+    elif status == "Recomendação possível com ressalvas":
+        st.warning(diagnostic.get("recommended_next_step") or "")
+    else:
+        st.error(diagnostic.get("recommended_next_step") or "")
+
+    tab_critical, tab_important, tab_enrichment = st.tabs(
+        [
+            f"Críticas ({len(critical)})",
+            f"Importantes ({len(important)})",
+            f"Enriquecimento ({len(enrichment)})",
+        ]
+    )
+
+    def render_issues(items, empty_message):
+        if not items:
+            st.success(empty_message)
+            return
+
+        for item in items:
+            blocking = (
+                " · Bloqueia recomendação segura"
+                if item.get("blocks_recommendation")
+                else ""
             )
-
-        if questions:
-            st.info(
-                "Pontos para confirmar com o atendimento:\n\n- "
-                + "\n- ".join(questions)
+            st.markdown(
+                f"**{item.get('title')}**  \n"
+                f"`{item.get('category')}` · "
+                f"Responsável: **{item.get('responsible')}** · "
+                f"Impacto: **{item.get('impact')}**{blocking}"
             )
+            st.write(item.get("finding") or "")
+            st.info(item.get("question") or "")
+            if item.get("source_support"):
+                st.caption(
+                    "Apoio da fonte: "
+                    + str(item.get("source_support"))
+                )
+            st.divider()
+
+    with tab_critical:
+        render_issues(
+            critical,
+            "Nenhuma pendência crítica identificada.",
+        )
+
+    with tab_important:
+        render_issues(
+            important,
+            "Nenhuma pendência importante identificada.",
+        )
+
+    with tab_enrichment:
+        render_issues(
+            enrichment,
+            "Nenhuma provocação adicional identificada.",
+        )
+
+    agenda = st.session_state.get(
+        "recommendation_service_agenda",
+        "",
+    )
+
+    st.download_button(
+        "Baixar pauta para atendimento",
+        data=agenda.encode("utf-8"),
+        file_name="pauta_complementacao_briefing.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+
+    with st.expander("Visualizar pauta completa"):
+        st.text_area(
+            "Pauta",
+            value=agenda,
+            height=340,
+            disabled=True,
+            label_visibility="collapsed",
+        )
 
 st.divider()
-st.subheader("2. Revise e complete")
+st.subheader("3. Revise e complete")
 
 with st.form("recommendation_form"):
     project_name = st.text_input(
@@ -413,13 +510,22 @@ with st.form("recommendation_form"):
             )
         )
 
-    submitted = st.form_submit_button(
-        "Gerar recomendação",
-        type="primary",
-        use_container_width=True,
-    )
+    submit_col1, submit_col2 = st.columns(2)
 
-if submitted:
+    with submit_col1:
+        diagnose_submitted = st.form_submit_button(
+            "Atualizar diagnóstico",
+            use_container_width=True,
+        )
+
+    with submit_col2:
+        submitted = st.form_submit_button(
+            "Gerar recomendação",
+            type="primary",
+            use_container_width=True,
+        )
+
+if diagnose_submitted or submitted:
     source_text = st.session_state.get(
         "recommendation_source_text",
         "",
@@ -499,17 +605,38 @@ Briefing:
         else:
             parsed["budget_unit_brl"] = None
 
-        candidates = fetch_recommendation_candidates(client)
+        updated_diagnostic = build_diagnostic(parsed)
+        updated_agenda = generate_service_agenda(
+            parsed,
+            updated_diagnostic,
+        )
 
-        with st.spinner("Consultando e pontuando a base..."):
-            results = score_candidates(
-                candidates,
-                parsed,
-                limit=12,
+        st.session_state["recommendation_prefill"] = parsed
+        st.session_state["recommendation_diagnostic"] = (
+            updated_diagnostic
+        )
+        st.session_state["recommendation_service_agenda"] = (
+            updated_agenda
+        )
+
+        if diagnose_submitted and not submitted:
+            st.session_state["recommendation_brief"] = None
+            st.session_state["recommendation_results"] = None
+            st.success(
+                "Diagnóstico atualizado com os campos revisados."
             )
+        else:
+            candidates = fetch_recommendation_candidates(client)
 
-        st.session_state["recommendation_brief"] = parsed
-        st.session_state["recommendation_results"] = results
+            with st.spinner("Consultando e pontuando a base..."):
+                results = score_candidates(
+                    candidates,
+                    parsed,
+                    limit=12,
+                )
+
+            st.session_state["recommendation_brief"] = parsed
+            st.session_state["recommendation_results"] = results
 
         if not st.session_state.get(
             "recommendation_source_text"
@@ -528,7 +655,7 @@ results = st.session_state.get("recommendation_results")
 
 if brief:
     st.divider()
-    st.subheader("3. Entendimento final")
+    st.subheader("4. Entendimento final")
 
     st.write(brief.get("source_summary") or "")
 
@@ -568,7 +695,7 @@ if brief:
 
 if results is not None:
     st.divider()
-    st.subheader("4. Recomendações")
+    st.subheader("5. Recomendações")
 
     if results.empty:
         st.warning(
