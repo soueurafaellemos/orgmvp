@@ -489,6 +489,15 @@ def render_sidebar() -> None:
         )
 
         st.markdown(
+            '<div class="nave-sidebar-section">Qualidade da base</div>',
+            unsafe_allow_html=True,
+        )
+        st.page_link(
+            "pages/7_Revisar_Duplicidades.py",
+            label="Revisar duplicidades",
+        )
+
+        st.markdown(
             '<div class="nave-sidebar-section">Sistema</div>',
             unsafe_allow_html=True,
         )

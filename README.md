@@ -629,3 +629,35 @@ Antes de usar, execute:
 - o logo é carregado do asset vetorial já utilizado pela interface;
 - significado e tagline permanecem abaixo da assinatura;
 - a atualização faz parte do mesmo pacote da V18.
+
+
+## V18.2 — tela de login centralizada
+
+- composição do login centralizada;
+- logo reduzido e com largura controlada;
+- significado e tagline aproximados do formulário;
+- formulário estilizado diretamente, sem wrapper HTML quebrado;
+- botão azul-marinho com texto branco;
+- hover ciano com texto escuro;
+- adaptação para desktop e telas menores;
+- não exige SQL.
+
+
+## V19 — Fase 6.2: correspondência inteligente
+
+- mantém a correção da tela de login da V18.2;
+- reconhece nomes equivalentes mesmo com pequenas variações;
+- usa fornecedor, projeto, cidade, SKU, categoria e tipo como
+  proteções adicionais;
+- correspondências de alta confiança enriquecem o cadastro existente;
+- correspondências intermediárias entram em uma fila de revisão;
+- o registro novo e suas imagens permanecem preservados até a decisão;
+- revisão protegida pela senha administrativa;
+- permite unir cadastros ou confirmar que são itens distintos;
+- ao unir, transfere imagens, arquivos e custos de ativações;
+- remove mídias repetidas;
+- mantém uma trilha da decisão na tabela de revisão.
+
+Antes de usar, execute:
+
+`supabase_patch_correspondencia_inteligente_v1.sql`

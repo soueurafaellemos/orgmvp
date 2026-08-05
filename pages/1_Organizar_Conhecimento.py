@@ -488,6 +488,23 @@ def _database_save_controls(
                 "Esses itens podem receber a imagem manualmente na Base de conhecimento."
             )
 
+    possible_duplicates = result.get(
+        "possible_duplicate_records",
+        0,
+    )
+
+    if possible_duplicates:
+        st.warning(
+            f"{possible_duplicates} item(ns) possuem nomes "
+            "semelhantes a cadastros existentes e precisam "
+            "de revisão antes de a base ser considerada limpa."
+        )
+        st.page_link(
+            "pages/7_Revisar_Duplicidades.py",
+            label="Revisar possíveis duplicidades",
+            use_container_width=True,
+        )
+
     if result.get("fields_updated", 0):
         st.caption(
             f"Campos substituídos pelo arquivo mais recente: "

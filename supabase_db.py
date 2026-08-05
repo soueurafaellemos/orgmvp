@@ -13,6 +13,7 @@ import pandas as pd
 from supabase import Client, create_client
 
 from document_io import InputDocument
+from entity_matching import best_candidate_match
 from enrichment_engine import (
     is_blank as enrichment_is_blank,
     merge_record,
@@ -590,6 +591,568 @@ def _find_existing_venue(
     )
 
 
+def _similar_product_match(
+    client: Client,
+    *,
+    supplier_id: str | None,
+    incoming: dict,
+) -> dict:
+    query = (
+        client.table("products")
+        .select("*")
+        .limit(250)
+    )
+
+    if supplier_id:
+        query = query.eq("supplier_id", supplier_id)
+    else:
+        query = query.is_("supplier_id", "null")
+
+    response = query.execute()
+    return best_candidate_match(
+        "product",
+        incoming,
+        response.data or [],
+    )
+
+
+def _similar_activation_match(
+    client: Client,
+    *,
+    supplier_id: str | None,
+    incoming: dict,
+) -> dict:
+    query = (
+        client.table("activation_solutions")
+        .select("*")
+        .limit(250)
+    )
+
+    if supplier_id:
+        query = query.eq("supplier_id", supplier_id)
+    else:
+        query = query.is_("supplier_id", "null")
+
+    project_name = incoming.get("project_name")
+    if project_name:
+        query = query.eq(
+            "project_name",
+            project_name,
+        )
+
+    response = query.execute()
+    return best_candidate_match(
+        "activation",
+        incoming,
+        response.data or [],
+    )
+
+
+def _similar_venue_match(
+    client: Client,
+    *,
+    operator_id: str | None,
+    incoming: dict,
+) -> dict:
+    query = (
+        client.table("venues")
+        .select("*")
+        .limit(250)
+    )
+
+    if operator_id:
+        query = query.eq("operator_id", operator_id)
+
+    city = incoming.get("city")
+    if city:
+        query = query.eq("city", city)
+
+    response = query.execute()
+    return best_candidate_match(
+        "venue",
+        incoming,
+        response.data or [],
+    )
+
+
+def _create_duplicate_candidate(
+    client: Client,
+    *,
+    entity_type: str,
+    source_entity_id: str,
+    candidate: dict,
+    import_id: str,
+    source_file_id: str | None,
+    source_name: str,
+    similarity_score: float,
+    match_method: str,
+    match_context: dict,
+    original_strategy: str,
+) -> None:
+    payload = {
+        "entity_type": entity_type,
+        "source_entity_id": source_entity_id,
+        "candidate_entity_id": candidate["id"],
+        "import_id": import_id,
+        "source_file_id": source_file_id,
+        "source_name": source_name,
+        "candidate_name": (
+            candidate.get("name")
+            or "Cadastro existente"
+        ),
+        "similarity_score": similarity_score,
+        "match_method": match_method,
+        "match_context": _json_safe(match_context),
+        "original_strategy": original_strategy,
+        "status": "pending",
+    }
+
+    existing_response = (
+        client.table("knowledge_duplicate_candidates")
+        .select("id")
+        .eq("entity_type", entity_type)
+        .eq("source_entity_id", source_entity_id)
+        .eq("status", "pending")
+        .limit(1)
+        .execute()
+    )
+
+    if existing_response.data:
+        (
+            client.table("knowledge_duplicate_candidates")
+            .update(payload)
+            .eq("id", existing_response.data[0]["id"])
+            .execute()
+        )
+    else:
+        (
+            client.table("knowledge_duplicate_candidates")
+            .insert(payload)
+            .execute()
+        )
+
+
+DUPLICATE_ENTITY_TABLES = {
+    "product": "products",
+    "activation": "activation_solutions",
+    "venue": "venues",
+}
+
+DUPLICATE_ENTITY_COLUMNS = {
+    "product": PRODUCT_COLUMNS,
+    "activation": ACTIVATION_COLUMNS,
+    "venue": VENUE_COLUMNS,
+}
+
+
+def _entity_record(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+) -> dict:
+    table = DUPLICATE_ENTITY_TABLES[entity_type]
+
+    response = (
+        client.table(table)
+        .select("*")
+        .eq("id", entity_id)
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else {}
+
+
+def fetch_duplicate_candidates(
+    client: Client,
+    *,
+    status: str = "pending",
+    limit: int = 100,
+) -> pd.DataFrame:
+    response = (
+        client.table("knowledge_duplicate_candidates")
+        .select("*")
+        .eq("status", status)
+        .order("similarity_score", desc=True)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+
+    rows = []
+
+    for review in response.data or []:
+        entity_type = str(review["entity_type"])
+        source = _entity_record(
+            client,
+            entity_type=entity_type,
+            entity_id=str(
+                review["source_entity_id"]
+            ),
+        )
+        candidate = _entity_record(
+            client,
+            entity_type=entity_type,
+            entity_id=str(
+                review["candidate_entity_id"]
+            ),
+        )
+
+        rows.append(
+            {
+                **review,
+                "source_record": source,
+                "candidate_record": candidate,
+                "source_name": (
+                    source.get("name")
+                    or review.get("source_name")
+                ),
+                "candidate_name": (
+                    candidate.get("name")
+                    or review.get("candidate_name")
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _move_media_to_target(
+    client: Client,
+    *,
+    entity_type: str,
+    source_entity_id: str,
+    target_entity_id: str,
+) -> dict:
+    source_response = (
+        client.table("media_assets")
+        .select("*")
+        .eq("entity_type", entity_type)
+        .eq("entity_id", source_entity_id)
+        .execute()
+    )
+    target_response = (
+        client.table("media_assets")
+        .select("*")
+        .eq("entity_type", entity_type)
+        .eq("entity_id", target_entity_id)
+        .execute()
+    )
+
+    source_assets = source_response.data or []
+    target_assets = target_response.data or []
+
+    target_hashes = {
+        str(item.get("content_sha256"))
+        for item in target_assets
+        if item.get("content_sha256")
+    }
+    target_has_primary = any(
+        bool(item.get("is_primary"))
+        for item in target_assets
+    )
+
+    moved = 0
+    duplicates_removed = 0
+
+    for media in source_assets:
+        content_hash = str(
+            media.get("content_sha256") or ""
+        ).strip()
+
+        if content_hash and content_hash in target_hashes:
+            bucket = str(
+                media.get("storage_bucket") or ""
+            ).strip()
+            storage_path = str(
+                media.get("storage_path") or ""
+            ).strip()
+
+            if bucket and storage_path:
+                try:
+                    (
+                        client.storage
+                        .from_(bucket)
+                        .remove([storage_path])
+                    )
+                except Exception:
+                    pass
+
+            (
+                client.table("media_assets")
+                .delete()
+                .eq("id", media["id"])
+                .execute()
+            )
+            duplicates_removed += 1
+            continue
+
+        changes = {
+            "entity_id": target_entity_id,
+        }
+
+        if media.get("is_primary") and target_has_primary:
+            changes["is_primary"] = False
+            if media.get("asset_type") == "main_image":
+                changes["asset_type"] = "gallery_image"
+        elif media.get("is_primary"):
+            target_has_primary = True
+
+        (
+            client.table("media_assets")
+            .update(changes)
+            .eq("id", media["id"])
+            .execute()
+        )
+        moved += 1
+
+        if content_hash:
+            target_hashes.add(content_hash)
+
+    return {
+        "media_moved": moved,
+        "duplicate_media_removed": duplicates_removed,
+    }
+
+
+def _move_activation_costs(
+    client: Client,
+    *,
+    source_entity_id: str,
+    target_entity_id: str,
+) -> dict:
+    response = (
+        client.table("activation_costs")
+        .select("*")
+        .eq("solution_id", source_entity_id)
+        .execute()
+    )
+
+    moved = 0
+    duplicates_removed = 0
+
+    for cost in response.data or []:
+        description = (
+            cost.get("description")
+            or "Custo adicional"
+        )
+        amount = cost.get("amount")
+
+        if _activation_cost_exists(
+            client,
+            solution_id=target_entity_id,
+            description=description,
+            amount=amount,
+        ):
+            (
+                client.table("activation_costs")
+                .delete()
+                .eq("id", cost["id"])
+                .execute()
+            )
+            duplicates_removed += 1
+            continue
+
+        (
+            client.table("activation_costs")
+            .update(
+                {
+                    "solution_id": target_entity_id,
+                }
+            )
+            .eq("id", cost["id"])
+            .execute()
+        )
+        moved += 1
+
+    return {
+        "costs_moved": moved,
+        "duplicate_costs_removed": duplicates_removed,
+    }
+
+
+def resolve_duplicate_as_distinct(
+    client: Client,
+    *,
+    review_id: str,
+) -> dict:
+    response = (
+        client.table("knowledge_duplicate_candidates")
+        .update(
+            {
+                "status": "different",
+                "resolution_strategy": "keep_separate",
+                "resolved_at": (
+                    pd.Timestamp.utcnow().isoformat()
+                ),
+                "resolution_data": {
+                    "decision": "different_entities",
+                },
+            }
+        )
+        .eq("id", review_id)
+        .execute()
+    )
+
+    return (
+        response.data[0]
+        if response.data
+        else {"id": review_id, "status": "different"}
+    )
+
+
+def resolve_duplicate_merge(
+    client: Client,
+    *,
+    review_id: str,
+    strategy: str = "enrich_safe",
+) -> dict:
+    review_response = (
+        client.table("knowledge_duplicate_candidates")
+        .select("*")
+        .eq("id", review_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not review_response.data:
+        raise ValueError(
+            "A correspondência não foi encontrada."
+        )
+
+    review = review_response.data[0]
+    entity_type = str(review["entity_type"])
+    source_entity_id = str(
+        review["source_entity_id"]
+    )
+    target_entity_id = str(
+        review["candidate_entity_id"]
+    )
+
+    source = _entity_record(
+        client,
+        entity_type=entity_type,
+        entity_id=source_entity_id,
+    )
+    target = _entity_record(
+        client,
+        entity_type=entity_type,
+        entity_id=target_entity_id,
+    )
+
+    if not source or not target:
+        raise ValueError(
+            "Um dos cadastros já não está disponível."
+        )
+
+    allowed_fields = DUPLICATE_ENTITY_COLUMNS[
+        entity_type
+    ]
+    merge_result = merge_record(
+        target,
+        source,
+        allowed_fields=allowed_fields,
+        strategy=strategy,
+    )
+
+    changes = merge_result["applied_changes"]
+    table = DUPLICATE_ENTITY_TABLES[entity_type]
+
+    if changes:
+        (
+            client.table(table)
+            .update(changes)
+            .eq("id", target_entity_id)
+            .execute()
+        )
+
+    media_result = _move_media_to_target(
+        client,
+        entity_type=entity_type,
+        source_entity_id=source_entity_id,
+        target_entity_id=target_entity_id,
+    )
+
+    cost_result = {
+        "costs_moved": 0,
+        "duplicate_costs_removed": 0,
+    }
+
+    if entity_type == "activation":
+        cost_result = _move_activation_costs(
+            client,
+            source_entity_id=source_entity_id,
+            target_entity_id=target_entity_id,
+        )
+
+    (
+        client.table(table)
+        .delete()
+        .eq("id", source_entity_id)
+        .execute()
+    )
+
+    resolution_data = {
+        "target_entity_id": target_entity_id,
+        "source_entity_id": source_entity_id,
+        "fields_filled": merge_result[
+            "filled_fields"
+        ],
+        "fields_updated": merge_result[
+            "updated_fields"
+        ],
+        "fields_merged": merge_result[
+            "merged_fields"
+        ],
+        "conflicts": merge_result["conflicts"],
+        **media_result,
+        **cost_result,
+    }
+
+    (
+        client.table("knowledge_duplicate_candidates")
+        .update(
+            {
+                "status": "merged",
+                "resolution_strategy": strategy,
+                "resolved_at": (
+                    pd.Timestamp.utcnow().isoformat()
+                ),
+                "resolution_data": _json_safe(
+                    resolution_data
+                ),
+            }
+        )
+        .eq("id", review_id)
+        .execute()
+    )
+
+    (
+        client.table("knowledge_duplicate_candidates")
+        .update(
+            {
+                "status": "superseded",
+                "resolved_at": (
+                    pd.Timestamp.utcnow().isoformat()
+                ),
+                "resolution_data": {
+                    "reason": (
+                        "source_entity_merged_elsewhere"
+                    ),
+                    "target_entity_id": target_entity_id,
+                },
+            }
+        )
+        .eq("entity_type", entity_type)
+        .eq("source_entity_id", source_entity_id)
+        .eq("status", "pending")
+        .neq("id", review_id)
+        .execute()
+    )
+
+    return resolution_data
+
+
 def _record_enrichment_event(
     client: Client,
     *,
@@ -647,6 +1210,7 @@ def _update_import_result(
     enriched: int,
     conflict_records: int,
     skipped: int,
+    possible_duplicate_records: int = 0,
     visual_assets_added: int = 0,
     visual_assets_duplicate: int = 0,
     visual_assets_pending: int = 0,
@@ -667,6 +1231,9 @@ def _update_import_result(
                 "enriched_records": enriched,
                 "conflict_records": conflict_records,
                 "skipped_records": skipped,
+                "possible_duplicate_records": (
+                    possible_duplicate_records
+                ),
                 "visual_assets_added": visual_assets_added,
                 "visual_assets_duplicate": visual_assets_duplicate,
                 "visual_assets_pending": visual_assets_pending,
@@ -800,16 +1367,28 @@ def save_catalog(
     skip_duplicates: bool | None = None,
     auto_extract_visuals: bool = True,
 ) -> dict:
-    strategy = _strategy_or_legacy(existing_strategy, skip_duplicates)
+    strategy = _strategy_or_legacy(
+        existing_strategy,
+        skip_duplicates,
+    )
     products = dataframe_records(products_df)
     visuals = (
-        prepare_visual_assignments(products, source_documents)
+        prepare_visual_assignments(
+            products,
+            source_documents,
+        )
         if auto_extract_visuals
         else [None] * len(products)
     )
     suppliers = dataframe_records(suppliers_df)
-    supplier_map, supplier_count = _supplier_maps(client, suppliers)
-    first_supplier_id = next(iter(supplier_map.values()), None)
+    supplier_map, supplier_count = _supplier_maps(
+        client,
+        suppliers,
+    )
+    first_supplier_id = next(
+        iter(supplier_map.values()),
+        None,
+    )
     import_id, file_map = create_import(
         client,
         classification=classification,
@@ -825,33 +1404,99 @@ def save_catalog(
     )
 
     inserted = enriched = skipped = conflict_records = 0
+    possible_duplicates = 0
     fields_filled = fields_updated = 0
-    visual_counts = {"added": 0, "duplicate": 0, "pending": 0}
+    visual_counts = {
+        "added": 0,
+        "duplicate": 0,
+        "pending": 0,
+    }
     conflict_rows: list[dict] = []
 
     for row_index, raw in enumerate(products):
-        supplier_id = _supplier_id_for_record(raw, supplier_map)
+        supplier_id = _supplier_id_for_record(
+            raw,
+            supplier_map,
+        )
         item_name = raw.get("name") or "Sem nome"
+
+        payload = _prepare_record(
+            raw,
+            PRODUCT_COLUMNS,
+        )
+        payload["supplier_id"] = supplier_id
+        payload["import_id"] = import_id
+        payload["source_file_id"] = file_map.get(
+            str(raw.get("source_file") or "")
+        )
+
         existing, match_method = _find_existing_product(
             client,
             supplier_id=supplier_id,
             sku=raw.get("sku"),
             name=item_name,
         )
-        payload = _prepare_record(raw, PRODUCT_COLUMNS)
-        payload["supplier_id"] = supplier_id
-        payload["import_id"] = import_id
-        payload["source_file_id"] = file_map.get(str(raw.get("source_file") or ""))
+
+        review_match = None
+
+        if not existing:
+            similarity = _similar_product_match(
+                client,
+                supplier_id=supplier_id,
+                incoming=payload,
+            )
+
+            if similarity["decision"] == "auto":
+                existing = similarity["candidate"]
+                match_method = similarity["method"]
+            elif similarity["decision"] == "review":
+                review_match = similarity
+
         entity_id = None
 
         if not existing:
-            response = client.table("products").insert(payload).execute()
+            response = (
+                client.table("products")
+                .insert(payload)
+                .execute()
+            )
+
             if response.data:
                 entity_id = response.data[0]["id"]
                 inserted += 1
+
+                if review_match:
+                    _create_duplicate_candidate(
+                        client,
+                        entity_type="product",
+                        source_entity_id=entity_id,
+                        candidate=review_match["candidate"],
+                        import_id=import_id,
+                        source_file_id=payload.get(
+                            "source_file_id"
+                        ),
+                        source_name=item_name,
+                        similarity_score=review_match[
+                            "score"
+                        ],
+                        match_method=review_match[
+                            "method"
+                        ],
+                        match_context={
+                            "supplier_id": supplier_id,
+                            "sku": raw.get("sku"),
+                            "category": raw.get(
+                                "category"
+                            ),
+                        },
+                        original_strategy=strategy,
+                    )
+                    possible_duplicates += 1
+
         elif strategy == "new_only":
             skipped += 1
             continue
+
         else:
             entity_id = existing["id"]
             result = merge_record(
@@ -862,25 +1507,42 @@ def save_catalog(
             )
             changes = result["applied_changes"]
             conflicts = result["conflicts"]
+
             if changes:
-                client.table("products").update(changes).eq("id", entity_id).execute()
+                (
+                    client.table("products")
+                    .update(changes)
+                    .eq("id", entity_id)
+                    .execute()
+                )
                 enriched += 1
+
             if conflicts:
                 conflict_records += 1
-                conflict_rows.extend(_conflict_rows(
-                    entity_type="product",
-                    entity_id=entity_id,
-                    item_name=item_name,
-                    conflicts=conflicts,
-                ))
-            fields_filled += len(result["filled_fields"])
-            fields_updated += len(result["updated_fields"])
+                conflict_rows.extend(
+                    _conflict_rows(
+                        entity_type="product",
+                        entity_id=entity_id,
+                        item_name=item_name,
+                        conflicts=conflicts,
+                    )
+                )
+
+            fields_filled += len(
+                result["filled_fields"]
+            )
+            fields_updated += len(
+                result["updated_fields"]
+            )
+
             _record_enrichment_event(
                 client,
                 entity_type="product",
                 entity_id=entity_id,
                 import_id=import_id,
-                source_file_id=payload.get("source_file_id"),
+                source_file_id=payload.get(
+                    "source_file_id"
+                ),
                 source_file=raw.get("source_file"),
                 source_page=raw.get("source_page"),
                 match_method=match_method,
@@ -889,6 +1551,7 @@ def save_catalog(
                 incoming=payload,
                 result=result,
             )
+
             if not changes and not conflicts:
                 skipped += 1
 
@@ -902,9 +1565,14 @@ def save_catalog(
                 entity_type="product",
                 entity_id=entity_id,
                 visual=visuals[row_index],
-                source_file_id=payload.get("source_file_id"),
+                source_file_id=payload.get(
+                    "source_file_id"
+                ),
             )
-            _count_visual_status(status, visual_counts)
+            _count_visual_status(
+                status,
+                visual_counts,
+            )
 
     _update_import_result(
         client,
@@ -913,23 +1581,30 @@ def save_catalog(
         enriched=enriched,
         conflict_records=conflict_records,
         skipped=skipped,
+        possible_duplicate_records=possible_duplicates,
         visual_assets_added=visual_counts["added"],
-        visual_assets_duplicate=visual_counts["duplicate"],
+        visual_assets_duplicate=visual_counts[
+            "duplicate"
+        ],
         visual_assets_pending=visual_counts["pending"],
     )
+
     return {
         "import_id": import_id,
         "suppliers_saved": supplier_count,
         "records_inserted": inserted,
         "records_enriched": enriched,
         "records_with_conflicts": conflict_records,
+        "possible_duplicate_records": possible_duplicates,
         "duplicates_skipped": skipped,
         "fields_filled": fields_filled,
         "fields_updated": fields_updated,
         "conflicts": conflict_rows,
         "costs_inserted": 0,
         "visual_assets_added": visual_counts["added"],
-        "visual_assets_duplicate": visual_counts["duplicate"],
+        "visual_assets_duplicate": visual_counts[
+            "duplicate"
+        ],
         "visual_assets_pending": visual_counts["pending"],
     }
 
@@ -948,17 +1623,29 @@ def save_activations(
     skip_duplicates: bool | None = None,
     auto_extract_visuals: bool = True,
 ) -> dict:
-    strategy = _strategy_or_legacy(existing_strategy, skip_duplicates)
+    strategy = _strategy_or_legacy(
+        existing_strategy,
+        skip_duplicates,
+    )
     solutions = dataframe_records(solutions_df)
     visuals = (
-        prepare_visual_assignments(solutions, source_documents)
+        prepare_visual_assignments(
+            solutions,
+            source_documents,
+        )
         if auto_extract_visuals
         else [None] * len(solutions)
     )
     costs = dataframe_records(costs_df)
     suppliers = dataframe_records(suppliers_df)
-    supplier_map, supplier_count = _supplier_maps(client, suppliers)
-    first_supplier_id = next(iter(supplier_map.values()), None)
+    supplier_map, supplier_count = _supplier_maps(
+        client,
+        suppliers,
+    )
+    first_supplier_id = next(
+        iter(supplier_map.values()),
+        None,
+    )
     import_id, file_map = create_import(
         client,
         classification=classification,
@@ -975,37 +1662,109 @@ def save_activations(
     )
 
     inserted = enriched = skipped = conflict_records = 0
+    possible_duplicates = 0
     fields_filled = fields_updated = costs_inserted = 0
-    visual_counts = {"added": 0, "duplicate": 0, "pending": 0}
+    visual_counts = {
+        "added": 0,
+        "duplicate": 0,
+        "pending": 0,
+    }
     conflict_rows: list[dict] = []
     local_to_database: dict[str, str] = {}
 
     for row_index, raw in enumerate(solutions):
-        supplier_id = _supplier_id_for_record(raw, supplier_map)
+        supplier_id = _supplier_id_for_record(
+            raw,
+            supplier_map,
+        )
         item_name = raw.get("name") or "Sem nome"
+
+        payload = _prepare_record(
+            raw,
+            ACTIVATION_COLUMNS,
+        )
+        payload["supplier_id"] = supplier_id
+        payload["import_id"] = import_id
+        payload["source_file_id"] = file_map.get(
+            str(raw.get("source_file") or "")
+        )
+
+        local_id = str(
+            raw.get("solution_id") or ""
+        )
+
         existing, match_method = _find_existing_activation(
             client,
             supplier_id=supplier_id,
             name=item_name,
             project_name=raw.get("project_name"),
         )
-        payload = _prepare_record(raw, ACTIVATION_COLUMNS)
-        payload["supplier_id"] = supplier_id
-        payload["import_id"] = import_id
-        payload["source_file_id"] = file_map.get(str(raw.get("source_file") or ""))
-        local_id = str(raw.get("solution_id") or "")
+
+        review_match = None
+
+        if not existing:
+            similarity = _similar_activation_match(
+                client,
+                supplier_id=supplier_id,
+                incoming=payload,
+            )
+
+            if similarity["decision"] == "auto":
+                existing = similarity["candidate"]
+                match_method = similarity["method"]
+            elif similarity["decision"] == "review":
+                review_match = similarity
+
         database_id = None
 
         if not existing:
-            response = client.table("activation_solutions").insert(payload).execute()
+            response = (
+                client.table("activation_solutions")
+                .insert(payload)
+                .execute()
+            )
+
             if response.data:
                 database_id = response.data[0]["id"]
                 inserted += 1
+
+                if review_match:
+                    _create_duplicate_candidate(
+                        client,
+                        entity_type="activation",
+                        source_entity_id=database_id,
+                        candidate=review_match["candidate"],
+                        import_id=import_id,
+                        source_file_id=payload.get(
+                            "source_file_id"
+                        ),
+                        source_name=item_name,
+                        similarity_score=review_match[
+                            "score"
+                        ],
+                        match_method=review_match[
+                            "method"
+                        ],
+                        match_context={
+                            "supplier_id": supplier_id,
+                            "project_name": raw.get(
+                                "project_name"
+                            ),
+                            "category": raw.get(
+                                "category"
+                            ),
+                        },
+                        original_strategy=strategy,
+                    )
+                    possible_duplicates += 1
+
         else:
             database_id = existing["id"]
+
             if strategy == "new_only":
                 skipped += 1
                 continue
+
             result = merge_record(
                 existing,
                 payload,
@@ -1014,25 +1773,42 @@ def save_activations(
             )
             changes = result["applied_changes"]
             conflicts = result["conflicts"]
+
             if changes:
-                client.table("activation_solutions").update(changes).eq("id", database_id).execute()
+                (
+                    client.table("activation_solutions")
+                    .update(changes)
+                    .eq("id", database_id)
+                    .execute()
+                )
                 enriched += 1
+
             if conflicts:
                 conflict_records += 1
-                conflict_rows.extend(_conflict_rows(
-                    entity_type="activation",
-                    entity_id=database_id,
-                    item_name=item_name,
-                    conflicts=conflicts,
-                ))
-            fields_filled += len(result["filled_fields"])
-            fields_updated += len(result["updated_fields"])
+                conflict_rows.extend(
+                    _conflict_rows(
+                        entity_type="activation",
+                        entity_id=database_id,
+                        item_name=item_name,
+                        conflicts=conflicts,
+                    )
+                )
+
+            fields_filled += len(
+                result["filled_fields"]
+            )
+            fields_updated += len(
+                result["updated_fields"]
+            )
+
             _record_enrichment_event(
                 client,
                 entity_type="activation",
                 entity_id=database_id,
                 import_id=import_id,
-                source_file_id=payload.get("source_file_id"),
+                source_file_id=payload.get(
+                    "source_file_id"
+                ),
                 source_file=raw.get("source_file"),
                 source_page=raw.get("source_page"),
                 match_method=match_method,
@@ -1041,12 +1817,14 @@ def save_activations(
                 incoming=payload,
                 result=result,
             )
+
             if not changes and not conflicts:
                 skipped += 1
 
         if database_id:
             if local_id:
                 local_to_database[local_id] = database_id
+
             if (
                 auto_extract_visuals
                 and _record_has_pdf_visual_source(raw)
@@ -1056,16 +1834,29 @@ def save_activations(
                     entity_type="activation",
                     entity_id=database_id,
                     visual=visuals[row_index],
-                    source_file_id=payload.get("source_file_id"),
+                    source_file_id=payload.get(
+                        "source_file_id"
+                    ),
                 )
-                _count_visual_status(status, visual_counts)
+                _count_visual_status(
+                    status,
+                    visual_counts,
+                )
 
     for raw_cost in costs:
-        database_solution_id = local_to_database.get(str(raw_cost.get("solution_id") or ""))
+        database_solution_id = local_to_database.get(
+            str(raw_cost.get("solution_id") or "")
+        )
+
         if not database_solution_id:
             continue
-        description = raw_cost.get("description") or "Custo adicional"
+
+        description = (
+            raw_cost.get("description")
+            or "Custo adicional"
+        )
         amount = _json_safe(raw_cost.get("amount"))
+
         if _activation_cost_exists(
             client,
             solution_id=database_solution_id,
@@ -1073,18 +1864,36 @@ def save_activations(
             amount=amount,
         ):
             continue
-        payload = {
+
+        cost_payload = {
             "solution_id": database_solution_id,
             "description": description,
             "amount": amount,
-            "currency": raw_cost.get("currency") or "Não informado",
-            "treatment": raw_cost.get("treatment") or "Não informado",
-            "notes": _json_safe(raw_cost.get("notes")),
-            "source_page": _json_safe(raw_cost.get("source_page")),
-            "confidence": _json_safe(raw_cost.get("confidence")),
+            "currency": (
+                raw_cost.get("currency")
+                or "Não informado"
+            ),
+            "treatment": (
+                raw_cost.get("treatment")
+                or "Não informado"
+            ),
+            "notes": _json_safe(
+                raw_cost.get("notes")
+            ),
+            "source_page": _json_safe(
+                raw_cost.get("source_page")
+            ),
+            "confidence": _json_safe(
+                raw_cost.get("confidence")
+            ),
             "raw_data": _json_safe(raw_cost),
         }
-        client.table("activation_costs").insert(payload).execute()
+
+        (
+            client.table("activation_costs")
+            .insert(cost_payload)
+            .execute()
+        )
         costs_inserted += 1
 
     _update_import_result(
@@ -1094,23 +1903,30 @@ def save_activations(
         enriched=enriched,
         conflict_records=conflict_records,
         skipped=skipped,
+        possible_duplicate_records=possible_duplicates,
         visual_assets_added=visual_counts["added"],
-        visual_assets_duplicate=visual_counts["duplicate"],
+        visual_assets_duplicate=visual_counts[
+            "duplicate"
+        ],
         visual_assets_pending=visual_counts["pending"],
     )
+
     return {
         "import_id": import_id,
         "suppliers_saved": supplier_count,
         "records_inserted": inserted,
         "records_enriched": enriched,
         "records_with_conflicts": conflict_records,
+        "possible_duplicate_records": possible_duplicates,
         "duplicates_skipped": skipped,
         "fields_filled": fields_filled,
         "fields_updated": fields_updated,
         "conflicts": conflict_rows,
         "costs_inserted": costs_inserted,
         "visual_assets_added": visual_counts["added"],
-        "visual_assets_duplicate": visual_counts["duplicate"],
+        "visual_assets_duplicate": visual_counts[
+            "duplicate"
+        ],
         "visual_assets_pending": visual_counts["pending"],
     }
 
@@ -1128,16 +1944,28 @@ def save_venues(
     skip_duplicates: bool | None = None,
     auto_extract_visuals: bool = True,
 ) -> dict:
-    strategy = _strategy_or_legacy(existing_strategy, skip_duplicates)
+    strategy = _strategy_or_legacy(
+        existing_strategy,
+        skip_duplicates,
+    )
     venues = dataframe_records(venues_df)
     visuals = (
-        prepare_visual_assignments(venues, source_documents)
+        prepare_visual_assignments(
+            venues,
+            source_documents,
+        )
         if auto_extract_visuals
         else [None] * len(venues)
     )
     contacts = dataframe_records(contacts_df)
-    supplier_map, supplier_count = _supplier_maps(client, contacts)
-    first_supplier_id = next(iter(supplier_map.values()), None)
+    supplier_map, supplier_count = _supplier_maps(
+        client,
+        contacts,
+    )
+    first_supplier_id = next(
+        iter(supplier_map.values()),
+        None,
+    )
     import_id, file_map = create_import(
         client,
         classification=classification,
@@ -1153,33 +1981,99 @@ def save_venues(
     )
 
     inserted = enriched = skipped = conflict_records = 0
+    possible_duplicates = 0
     fields_filled = fields_updated = 0
-    visual_counts = {"added": 0, "duplicate": 0, "pending": 0}
+    visual_counts = {
+        "added": 0,
+        "duplicate": 0,
+        "pending": 0,
+    }
     conflict_rows: list[dict] = []
 
     for row_index, raw in enumerate(venues):
-        operator_id = _supplier_id_for_record(raw, supplier_map)
+        operator_id = _supplier_id_for_record(
+            raw,
+            supplier_map,
+        )
         item_name = raw.get("name") or "Sem nome"
+
+        payload = _prepare_record(
+            raw,
+            VENUE_COLUMNS,
+        )
+        payload["operator_id"] = operator_id
+        payload["import_id"] = import_id
+        payload["source_file_id"] = file_map.get(
+            str(raw.get("source_file") or "")
+        )
+
         existing, match_method = _find_existing_venue(
             client,
             operator_id=operator_id,
             name=item_name,
             city=raw.get("city"),
         )
-        payload = _prepare_record(raw, VENUE_COLUMNS)
-        payload["operator_id"] = operator_id
-        payload["import_id"] = import_id
-        payload["source_file_id"] = file_map.get(str(raw.get("source_file") or ""))
+
+        review_match = None
+
+        if not existing:
+            similarity = _similar_venue_match(
+                client,
+                operator_id=operator_id,
+                incoming=payload,
+            )
+
+            if similarity["decision"] == "auto":
+                existing = similarity["candidate"]
+                match_method = similarity["method"]
+            elif similarity["decision"] == "review":
+                review_match = similarity
+
         entity_id = None
 
         if not existing:
-            response = client.table("venues").insert(payload).execute()
+            response = (
+                client.table("venues")
+                .insert(payload)
+                .execute()
+            )
+
             if response.data:
                 entity_id = response.data[0]["id"]
                 inserted += 1
+
+                if review_match:
+                    _create_duplicate_candidate(
+                        client,
+                        entity_type="venue",
+                        source_entity_id=entity_id,
+                        candidate=review_match["candidate"],
+                        import_id=import_id,
+                        source_file_id=payload.get(
+                            "source_file_id"
+                        ),
+                        source_name=item_name,
+                        similarity_score=review_match[
+                            "score"
+                        ],
+                        match_method=review_match[
+                            "method"
+                        ],
+                        match_context={
+                            "operator_id": operator_id,
+                            "city": raw.get("city"),
+                            "venue_type": raw.get(
+                                "venue_type"
+                            ),
+                        },
+                        original_strategy=strategy,
+                    )
+                    possible_duplicates += 1
+
         elif strategy == "new_only":
             skipped += 1
             continue
+
         else:
             entity_id = existing["id"]
             result = merge_record(
@@ -1190,25 +2084,42 @@ def save_venues(
             )
             changes = result["applied_changes"]
             conflicts = result["conflicts"]
+
             if changes:
-                client.table("venues").update(changes).eq("id", entity_id).execute()
+                (
+                    client.table("venues")
+                    .update(changes)
+                    .eq("id", entity_id)
+                    .execute()
+                )
                 enriched += 1
+
             if conflicts:
                 conflict_records += 1
-                conflict_rows.extend(_conflict_rows(
-                    entity_type="venue",
-                    entity_id=entity_id,
-                    item_name=item_name,
-                    conflicts=conflicts,
-                ))
-            fields_filled += len(result["filled_fields"])
-            fields_updated += len(result["updated_fields"])
+                conflict_rows.extend(
+                    _conflict_rows(
+                        entity_type="venue",
+                        entity_id=entity_id,
+                        item_name=item_name,
+                        conflicts=conflicts,
+                    )
+                )
+
+            fields_filled += len(
+                result["filled_fields"]
+            )
+            fields_updated += len(
+                result["updated_fields"]
+            )
+
             _record_enrichment_event(
                 client,
                 entity_type="venue",
                 entity_id=entity_id,
                 import_id=import_id,
-                source_file_id=payload.get("source_file_id"),
+                source_file_id=payload.get(
+                    "source_file_id"
+                ),
                 source_file=raw.get("source_file"),
                 source_page=raw.get("source_page"),
                 match_method=match_method,
@@ -1217,6 +2128,7 @@ def save_venues(
                 incoming=payload,
                 result=result,
             )
+
             if not changes and not conflicts:
                 skipped += 1
 
@@ -1230,9 +2142,14 @@ def save_venues(
                 entity_type="venue",
                 entity_id=entity_id,
                 visual=visuals[row_index],
-                source_file_id=payload.get("source_file_id"),
+                source_file_id=payload.get(
+                    "source_file_id"
+                ),
             )
-            _count_visual_status(status, visual_counts)
+            _count_visual_status(
+                status,
+                visual_counts,
+            )
 
     _update_import_result(
         client,
@@ -1241,25 +2158,33 @@ def save_venues(
         enriched=enriched,
         conflict_records=conflict_records,
         skipped=skipped,
+        possible_duplicate_records=possible_duplicates,
         visual_assets_added=visual_counts["added"],
-        visual_assets_duplicate=visual_counts["duplicate"],
+        visual_assets_duplicate=visual_counts[
+            "duplicate"
+        ],
         visual_assets_pending=visual_counts["pending"],
     )
+
     return {
         "import_id": import_id,
         "suppliers_saved": supplier_count,
         "records_inserted": inserted,
         "records_enriched": enriched,
         "records_with_conflicts": conflict_records,
+        "possible_duplicate_records": possible_duplicates,
         "duplicates_skipped": skipped,
         "fields_filled": fields_filled,
         "fields_updated": fields_updated,
         "conflicts": conflict_rows,
         "costs_inserted": 0,
         "visual_assets_added": visual_counts["added"],
-        "visual_assets_duplicate": visual_counts["duplicate"],
+        "visual_assets_duplicate": visual_counts[
+            "duplicate"
+        ],
         "visual_assets_pending": visual_counts["pending"],
     }
+
 
 
 def _iso_date_or_none(value: Any) -> str | None:

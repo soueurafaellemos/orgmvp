@@ -25,67 +25,144 @@ def _login_logo_data_uri() -> str:
 
 LOGIN_CSS = """
 <style>
-[data-testid="stSidebar"] {
-    display: none !important;
+:root {
+    --nave-navy: #121B42;
+    --nave-cyan: #18CDEA;
+    --nave-surface: #F4F6F9;
+    --nave-border: #DCE2ED;
+    --nave-muted: #687188;
 }
 
+[data-testid="stSidebar"],
 [data-testid="stSidebarCollapsedControl"] {
     display: none !important;
 }
 
+[data-testid="stAppViewContainer"] {
+    background:
+        radial-gradient(
+            circle at 50% -10%,
+            rgba(24, 205, 234, 0.08),
+            transparent 31rem
+        ),
+        #FFFFFF !important;
+}
+
+[data-testid="stMain"] {
+    min-height: 100vh !important;
+}
+
+[data-testid="stMainBlockContainer"],
 .block-container {
-    max-width: 560px !important;
-    padding-top: 7vh !important;
+    box-sizing: border-box !important;
+    margin: 0 auto !important;
+    max-width: 520px !important;
+    padding:
+        clamp(2.2rem, 8vh, 5rem)
+        1.35rem
+        2.5rem !important;
+    width: 100% !important;
 }
 
 .nave-login-logo {
-    margin: 0 auto 1.2rem;
-    max-width: 430px;
+    margin: 0 auto 0.8rem !important;
+    max-width: 360px !important;
     text-align: center;
+    width: min(100%, 360px) !important;
 }
 
 .nave-login-logo img {
     display: block;
-    height: auto;
+    height: auto !important;
     margin: 0 auto;
-    max-width: 100%;
-    width: 100%;
+    max-width: 100% !important;
+    width: 100% !important;
 }
 
 .nave-login-mark {
-    color: #18CDEA;
-    font-size: 0.72rem;
+    color: var(--nave-cyan);
+    font-size: clamp(0.66rem, 1.8vw, 0.76rem);
     font-weight: 800;
-    letter-spacing: 0.14em;
-    margin-bottom: 0.55rem;
+    letter-spacing: 0.15em;
+    line-height: 1.4;
+    margin: 0.15rem auto 0.35rem;
+    max-width: 430px;
     text-align: center;
     text-transform: uppercase;
 }
 
-.nave-login-title {
-    color: #121B42;
-    font-size: 2.35rem;
-    font-weight: 760;
-    letter-spacing: -0.045em;
-    line-height: 1.05;
-    margin: 0;
-    text-align: center;
-}
-
 .nave-login-copy {
-    color: #687188;
-    font-size: 0.94rem;
-    line-height: 1.55;
-    margin: 0.75rem auto 1.4rem;
+    color: var(--nave-muted);
+    font-size: clamp(0.95rem, 2.4vw, 1.08rem);
+    line-height: 1.5;
+    margin: 0 auto 1.6rem;
     max-width: 430px;
     text-align: center;
 }
 
-.nave-login-box {
-    background: #F4F6F9;
-    border: 1px solid #E1E6EF;
-    border-radius: 16px;
-    padding: 1.1rem 1.2rem 0.25rem;
+[data-testid="stForm"] {
+    background: #FFFFFF !important;
+    border: 1px solid var(--nave-border) !important;
+    border-radius: 18px !important;
+    box-shadow:
+        0 18px 42px rgba(18, 27, 66, 0.08) !important;
+    box-sizing: border-box !important;
+    margin: 0 auto !important;
+    padding: 1.35rem 1.45rem 1.45rem !important;
+    width: 100% !important;
+}
+
+[data-testid="stForm"] > div {
+    gap: 0.8rem !important;
+}
+
+[data-testid="stForm"] label,
+[data-testid="stForm"] [data-testid="stWidgetLabel"] {
+    color: var(--nave-navy) !important;
+    font-size: 0.93rem !important;
+    font-weight: 650 !important;
+}
+
+[data-testid="stTextInput"] input {
+    background: var(--nave-surface) !important;
+    border: 1px solid var(--nave-border) !important;
+    border-radius: 12px !important;
+    color: var(--nave-navy) !important;
+    min-height: 3rem !important;
+}
+
+[data-testid="stTextInput"] input:focus {
+    border-color: var(--nave-cyan) !important;
+    box-shadow:
+        0 0 0 1px var(--nave-cyan) !important;
+}
+
+[data-testid="stFormSubmitButton"] button {
+    background: var(--nave-navy) !important;
+    border: 1px solid var(--nave-navy) !important;
+    border-radius: 12px !important;
+    box-shadow: none !important;
+    color: #FFFFFF !important;
+    font-size: 0.98rem !important;
+    font-weight: 700 !important;
+    min-height: 3rem !important;
+    transition: all 0.18s ease-in-out !important;
+}
+
+[data-testid="stFormSubmitButton"] button p,
+[data-testid="stFormSubmitButton"] button span {
+    color: #FFFFFF !important;
+}
+
+[data-testid="stFormSubmitButton"] button:hover {
+    background: var(--nave-cyan) !important;
+    border-color: var(--nave-cyan) !important;
+    color: #0C122F !important;
+}
+
+[data-testid="stFormSubmitButton"] button:hover p,
+[data-testid="stFormSubmitButton"] button:hover span {
+    color: #0C122F !important;
 }
 
 [data-testid="stDecoration"],
@@ -97,15 +174,31 @@ footer {
     visibility: hidden !important;
 }
 
-/*
-Mantém os controles essenciais do Streamlit visíveis:
-- toolbar minimal no topo;
-- indicador de execução e botão Stop.
-*/
 [data-testid="stToolbar"],
 [data-testid="stStatusWidget"] {
     display: flex !important;
     visibility: visible !important;
+}
+
+@media (max-width: 600px) {
+    [data-testid="stMainBlockContainer"],
+    .block-container {
+        max-width: 100% !important;
+        padding:
+            1.8rem
+            1rem
+            2rem !important;
+    }
+
+    .nave-login-logo {
+        max-width: 300px !important;
+        width: min(100%, 300px) !important;
+    }
+
+    [data-testid="stForm"] {
+        border-radius: 15px !important;
+        padding: 1.1rem 1rem 1.2rem !important;
+    }
 }
 </style>
 """
@@ -198,10 +291,6 @@ def require_app_access() -> bool:
         return False
 
     with st.form("nave_app_login"):
-        st.markdown(
-            '<div class="nave-login-box">',
-            unsafe_allow_html=True,
-        )
         password = st.text_input(
             "Senha de acesso",
             type="password",
@@ -212,8 +301,6 @@ def require_app_access() -> bool:
             type="primary",
             use_container_width=True,
         )
-        st.markdown("</div>", unsafe_allow_html=True)
-
     if submitted:
         if _password_matches(
             password,
