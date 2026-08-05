@@ -35,6 +35,14 @@ from gemini_extractor import (
     extract_catalog,
     extract_venues,
 )
+from supabase_db import (
+    get_supabase_client,
+    save_activations,
+    save_briefing,
+    save_catalog,
+    save_venues,
+    test_connection,
+)
 
 
 st.set_page_config(
@@ -71,6 +79,48 @@ with st.sidebar:
     st.warning(
         "Na faixa gratuita, não use documentos confidenciais."
     )
+
+    st.divider()
+    st.header("Banco Supabase")
+
+    try:
+        supabase_url = st.secrets.get("SUPABASE_URL", "")
+        supabase_secret_key = st.secrets.get(
+            "SUPABASE_SECRET_KEY",
+            st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", ""),
+        )
+    except Exception:
+        supabase_url = os.getenv("SUPABASE_URL", "")
+        supabase_secret_key = (
+            os.getenv("SUPABASE_SECRET_KEY", "")
+            or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        )
+
+    database_configured = bool(
+        supabase_url and supabase_secret_key
+    )
+
+    if database_configured:
+        try:
+            database_client = get_supabase_client(
+                supabase_url,
+                supabase_secret_key,
+            )
+            connection = test_connection(database_client)
+            st.success(
+                "Supabase conectado. "
+                f"Fornecedores cadastrados: "
+                f"{connection['supplier_count']}."
+            )
+        except Exception as exc:
+            database_client = None
+            st.error(f"Supabase não conectado: {exc}")
+    else:
+        database_client = None
+        st.info(
+            "Adicione SUPABASE_URL e SUPABASE_SECRET_KEY "
+            "nos Secrets do Streamlit."
+        )
 
 mode_label = st.radio(
     "Como deseja organizar?",
@@ -230,6 +280,77 @@ def _source_image_tab(
         )
     except Exception as exc:
         st.error(f"Não foi possível renderizar a página: {exc}")
+
+
+def _classification_dict():
+    item = st.session_state.get("classification")
+    return item.model_dump() if item else None
+
+
+def _database_save_controls(
+    *,
+    key: str,
+    label: str,
+    save_action,
+):
+    st.divider()
+    st.subheader("Salvar na base central")
+
+    if database_client is None:
+        st.info(
+            "Configure o Supabase nos Secrets do Streamlit para "
+            "habilitar o salvamento."
+        )
+        return
+
+    skip_duplicates = st.checkbox(
+        "Ignorar registros já existentes",
+        value=True,
+        key=f"skip_duplicates_{key}",
+        help=(
+            "Compara fornecedor e nome ou SKU antes de inserir. "
+            "Mantém a base mais limpa durante os testes."
+        ),
+    )
+
+    if st.button(
+        label,
+        type="primary",
+        use_container_width=True,
+        key=f"save_database_{key}",
+    ):
+        try:
+            with st.spinner("Salvando registros no Supabase..."):
+                result = save_action(skip_duplicates)
+
+            st.session_state[f"database_result_{key}"] = result
+            st.success("Dados salvos na base central.")
+
+        except Exception as exc:
+            st.exception(exc)
+
+    result = st.session_state.get(f"database_result_{key}")
+    if result:
+        metric1, metric2, metric3, metric4 = st.columns(4)
+        metric1.metric(
+            "Registros adicionados",
+            result.get("records_inserted", 0),
+        )
+        metric2.metric(
+            "Duplicidades ignoradas",
+            result.get("duplicates_skipped", 0),
+        )
+        metric3.metric(
+            "Fornecedores processados",
+            result.get("suppliers_saved", 0),
+        )
+        metric4.metric(
+            "Custos adicionados",
+            result.get("costs_inserted", 0),
+        )
+        st.caption(
+            f"Importação registrada: {result.get('import_id')}"
+        )
 
 
 if run:
@@ -510,6 +631,21 @@ if result_type == "catalog":
         use_container_width=True,
     )
 
+    _database_save_controls(
+        key="catalog",
+        label="Salvar brindes na base",
+        save_action=lambda skip: save_catalog(
+            database_client,
+            products_df=technical,
+            suppliers_df=suppliers,
+            rules_df=rules,
+            alerts_df=alerts,
+            classification=_classification_dict(),
+            source_documents=docs,
+            skip_duplicates=skip,
+        ),
+    )
+
 
 if result_type == "activation":
     st.divider()
@@ -626,6 +762,21 @@ if result_type == "activation":
         use_container_width=True,
     )
 
+    _database_save_controls(
+        key="activation",
+        label="Salvar soluções na base",
+        save_action=lambda skip: save_activations(
+            database_client,
+            solutions_df=technical,
+            costs_df=costs,
+            suppliers_df=suppliers,
+            rules_df=rules,
+            alerts_df=alerts,
+            classification=_classification_dict(),
+            source_documents=docs,
+            skip_duplicates=skip,
+        ),
+    )
 
 
 if result_type == "venue":
@@ -761,6 +912,21 @@ if result_type == "venue":
         use_container_width=True,
     )
 
+    _database_save_controls(
+        key="venue",
+        label="Salvar locais na base",
+        save_action=lambda skip: save_venues(
+            database_client,
+            venues_df=technical,
+            contacts_df=contacts,
+            rules_df=rules,
+            alerts_df=alerts,
+            classification=_classification_dict(),
+            source_documents=docs,
+            skip_duplicates=skip,
+        ),
+    )
+
 
 if result_type == "briefing":
     st.divider()
@@ -785,4 +951,15 @@ if result_type == "briefing":
         briefing_json_bytes(briefing, classification),
         "briefing_estruturado.json",
         use_container_width=True,
+    )
+
+    _database_save_controls(
+        key="briefing",
+        label="Salvar briefing e projeto na base",
+        save_action=lambda skip: save_briefing(
+            database_client,
+            briefing=briefing.model_dump(),
+            classification=_classification_dict(),
+            source_documents=docs,
+        ),
     )
