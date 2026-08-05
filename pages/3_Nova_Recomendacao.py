@@ -785,6 +785,18 @@ if results is not None:
                     hide_index=True,
                 )
 
+        st.divider()
+        st.subheader("Salvar como versão do projeto")
+
+        version_notes = st.text_input(
+            "Observação desta versão",
+            placeholder=(
+                "Ex.: budget revisado pelo cliente; prazo confirmado; "
+                "versão apresentada em reunião."
+            ),
+            key="recommendation_version_notes",
+        )
+
         if st.button(
             "Salvar consulta e resultados na base",
             type="primary",
@@ -799,11 +811,21 @@ if results is not None:
                         "",
                     ),
                     results_df=results,
+                    diagnostic=st.session_state.get(
+                        "recommendation_diagnostic"
+                    ),
+                    source_files=brief.get("source_files") or [],
+                    version_notes=version_notes,
                 )
                 st.success(
-                    f"Consulta salva com "
+                    f"Versão {saved['version_number']} salva com "
                     f"{saved['results_saved']} resultados. "
-                    f"ID: {saved['query_id']}"
+                    f"Projeto: {saved['project_id']}."
+                )
+                st.page_link(
+                    "pages/4_Historico_de_Projetos.py",
+                    label="Abrir histórico do projeto",
+                    icon="🕘",
                 )
             except Exception as exc:
                 st.exception(exc)

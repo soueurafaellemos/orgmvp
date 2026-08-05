@@ -875,14 +875,116 @@ def fetch_recommendation_candidates(
     return pd.DataFrame(response.data or [])
 
 
+
+def _project_payload_from_brief(brief: dict) -> dict:
+    return {
+        "project_name": _json_safe(brief.get("project_name")),
+        "normalized_name": normalize_name(brief.get("project_name")),
+        "objective": _json_safe(brief.get("objective")),
+        "audience_profile": _json_safe(brief.get("audience_profile")),
+        "audience_quantity": _json_safe(
+            brief.get("audience_quantity")
+        ),
+        "budget_total_brl": _json_safe(
+            brief.get("budget_total_brl")
+        ),
+        "budget_unit_brl": _json_safe(
+            brief.get("budget_unit_brl")
+        ),
+        "location_city": _json_safe(brief.get("location_city")),
+        "location_state": _json_safe(brief.get("location_state")),
+        "event_date": _iso_date_or_none(brief.get("event_date")),
+        "available_days": _json_safe(brief.get("available_days")),
+        "desired_attributes": brief.get("desired_attributes") or [],
+        "restrictions": brief.get("restrictions") or [],
+        "status": "em recomendação",
+        "raw_data": _json_safe(brief),
+    }
+
+
+def ensure_project_for_recommendation(
+    client: Client,
+    brief: dict,
+) -> str:
+    project_name = (
+        str(brief.get("project_name") or "").strip()
+        or "Projeto sem nome"
+    )
+    normalized = normalize_name(project_name)
+
+    lookup = (
+        client.table("projects")
+        .select("id")
+        .eq("normalized_name", normalized)
+        .order("created_at")
+        .limit(1)
+        .execute()
+    )
+
+    payload = _project_payload_from_brief(brief)
+    payload["project_name"] = project_name
+    payload["normalized_name"] = normalized
+
+    if lookup.data:
+        project_id = lookup.data[0]["id"]
+        client.table("projects").update(payload).eq(
+            "id", project_id
+        ).execute()
+        return project_id
+
+    response = (
+        client.table("projects")
+        .insert(payload)
+        .execute()
+    )
+    return response.data[0]["id"]
+
+
+def _latest_project_version(
+    client: Client,
+    project_id: str,
+) -> dict | None:
+    response = (
+        client.table("recommendation_queries")
+        .select("id,version_number")
+        .eq("project_id", project_id)
+        .order("version_number", desc=True)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else None
+
+
 def save_recommendation(
     client: Client,
     *,
     brief: dict,
     briefing_text: str,
     results_df: pd.DataFrame,
+    diagnostic: dict | None = None,
+    source_files: list[str] | None = None,
+    version_notes: str | None = None,
 ) -> dict:
+    project_id = ensure_project_for_recommendation(
+        client,
+        brief,
+    )
+    latest = _latest_project_version(client, project_id)
+
+    version_number = (
+        int(latest.get("version_number") or 0) + 1
+        if latest
+        else 1
+    )
+    parent_query_id = latest.get("id") if latest else None
+
     query_payload = {
+        "project_id": project_id,
+        "parent_query_id": parent_query_id,
+        "version_number": version_number,
+        "query_label": f"Versão {version_number}",
+        "version_notes": _json_safe(version_notes),
         "project_name": _json_safe(brief.get("project_name")),
         "briefing_text": briefing_text,
         "objective": _json_safe(brief.get("objective")),
@@ -917,6 +1019,18 @@ def save_recommendation(
         "restrictions": brief.get("restrictions") or [],
         "keywords": brief.get("keywords") or [],
         "parsed_brief": _json_safe(brief),
+        "readiness_status": _json_safe(
+            (diagnostic or {}).get("readiness_status")
+        ),
+        "completeness_score": _json_safe(
+            (diagnostic or {}).get("completeness_score")
+        ),
+        "diagnostic_snapshot": _json_safe(diagnostic or {}),
+        "source_files": _json_safe(
+            source_files
+            or brief.get("source_files")
+            or []
+        ),
         "status": "gerada",
     }
 
@@ -955,5 +1069,113 @@ def save_recommendation(
 
     return {
         "query_id": query_id,
+        "project_id": project_id,
+        "version_number": version_number,
         "results_saved": len(result_rows),
     }
+
+
+def fetch_project_history_overview(
+    client: Client,
+    *,
+    limit: int = 500,
+) -> pd.DataFrame:
+    response = (
+        client.table("project_history_overview")
+        .select("*")
+        .order("latest_activity", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return pd.DataFrame(response.data or [])
+
+
+def fetch_recommendation_history(
+    client: Client,
+    *,
+    project_id: str | None = None,
+    limit: int = 1000,
+) -> pd.DataFrame:
+    query = (
+        client.table("recommendation_history_summary")
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    if project_id:
+        query = query.eq("project_id", project_id)
+    return pd.DataFrame(query.execute().data or [])
+
+
+def fetch_recommendation_query(
+    client: Client,
+    query_id: str,
+) -> dict | None:
+    response = (
+        client.table("recommendation_queries")
+        .select("*")
+        .eq("id", query_id)
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else None
+
+
+def fetch_recommendation_results(
+    client: Client,
+    query_id: str,
+) -> pd.DataFrame:
+    response = (
+        client.table("recommendation_results")
+        .select("*")
+        .eq("query_id", query_id)
+        .order("rank")
+        .execute()
+    )
+    return pd.DataFrame(response.data or [])
+
+
+def fetch_recommendation_feedback(
+    client: Client,
+    query_id: str,
+) -> pd.DataFrame:
+    response = (
+        client.table("recommendation_feedback")
+        .select("*")
+        .eq("query_id", query_id)
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    return pd.DataFrame(response.data or [])
+
+
+def save_recommendation_feedback(
+    client: Client,
+    *,
+    query_id: str,
+    result_id: str | None,
+    item_type: str,
+    item_id: str,
+    decision: str,
+    reason: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    payload = {
+        "query_id": query_id,
+        "result_id": result_id,
+        "item_type": item_type,
+        "item_id": item_id,
+        "decision": decision,
+        "reason": _json_safe(reason),
+        "notes": _json_safe(notes),
+    }
+
+    response = (
+        client.table("recommendation_feedback")
+        .upsert(
+            payload,
+            on_conflict="query_id,item_type,item_id",
+        )
+        .execute()
+    )
+    return response.data[0] if response.data else payload
