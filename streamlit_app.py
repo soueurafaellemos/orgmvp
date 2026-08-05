@@ -12,7 +12,7 @@ from branding import (
     journey_cards,
 )
 
-from runtime_ui import report_service_error
+from runtime_ui import report_service_error, require_app_access
 
 from document_io import (
     InputDocument,
@@ -59,6 +59,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if not require_app_access():
+    st.stop()
 
 apply_nave_branding()
 home_header()

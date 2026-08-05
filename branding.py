@@ -4,6 +4,8 @@ from html import escape
 from pathlib import Path
 
 import streamlit as st
+
+from runtime_ui import app_logout_button
 from PIL import Image
 
 
@@ -400,6 +402,7 @@ def render_sidebar() -> None:
             """,
             unsafe_allow_html=True,
         )
+        app_logout_button()
 
 
 def _svg_data(path: Path, *, symbol_only: bool = False) -> str:

@@ -457,3 +457,20 @@ Adicione aos Secrets:
 ```toml
 NAVE_ADMIN_PASSWORD = "defina-uma-senha-forte"
 ```
+
+
+## V13.1 — acesso privado em duas camadas
+
+A NAVE agora exige:
+
+```toml
+NAVE_APP_PASSWORD = "senha-geral"
+NAVE_ADMIN_PASSWORD = "senha-administrativa-diferente"
+```
+
+- A senha geral bloqueia todas as páginas.
+- A Administração exige uma segunda senha.
+- A sidebar só aparece depois do primeiro login.
+- O botão "Sair da NAVE" encerra os dois níveis de acesso.
+- Recomenda-se também tornar o app privado em Settings > Sharing
+  no Streamlit Community Cloud.

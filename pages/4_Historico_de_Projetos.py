@@ -14,7 +14,7 @@ from branding import (
     page_header,
 )
 
-from runtime_ui import report_service_error
+from runtime_ui import report_service_error, require_app_access
 
 from adaptive_briefing import (
     DELIVERABLE_COLUMNS,
@@ -48,6 +48,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if not require_app_access():
+    st.stop()
 
 apply_nave_branding()
 page_header(

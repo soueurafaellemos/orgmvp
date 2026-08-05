@@ -12,7 +12,7 @@ from branding import (
     page_header,
 )
 
-from runtime_ui import report_service_error
+from runtime_ui import report_service_error, require_app_access
 from exporters import format_pt_br_number
 from supabase_db import (
     fetch_supplier_by_id,
@@ -28,6 +28,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if not require_app_access():
+    st.stop()
 
 apply_nave_branding()
 page_header(

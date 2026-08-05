@@ -14,6 +14,7 @@ from runtime_ui import (
     get_setting,
     report_service_error,
     require_admin_access,
+    require_app_access,
 )
 from supabase_db import (
     get_supabase_client,
@@ -27,6 +28,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if not require_app_access():
+    st.stop()
 
 apply_nave_branding()
 page_header(
