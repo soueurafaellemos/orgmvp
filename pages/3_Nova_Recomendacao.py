@@ -26,6 +26,7 @@ from briefing_diagnostic import (
     build_diagnostic,
     generate_service_agenda,
 )
+from briefing_pdf import build_internal_briefing_pdf
 from document_io import prepare_documents
 from exporters import format_pt_br_number
 from gemini_extractor import (
@@ -679,13 +680,50 @@ if prefill and diagnostic:
         "",
     )
 
-    st.download_button(
-        "Baixar pauta para atendimento",
-        data=agenda.encode("utf-8"),
-        file_name="pauta_complementacao_briefing.txt",
-        mime="text/plain",
-        use_container_width=True,
-    )
+    try:
+        briefing_pdf = build_internal_briefing_pdf(
+            prefill,
+            diagnostic,
+        )
+        safe_project_name = (
+            str(prefill.get("project_name") or "briefing")
+            .strip()
+            .replace("/", "-")
+            .replace("\\", "-")
+        )
+
+        pdf_col, txt_col = st.columns(2)
+        with pdf_col:
+            st.download_button(
+                "Baixar debriefing interno em PDF",
+                data=briefing_pdf,
+                file_name=(
+                    f"debriefing_interno_{safe_project_name}.pdf"
+                ),
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+            )
+        with txt_col:
+            st.download_button(
+                "Baixar pauta em TXT",
+                data=agenda.encode("utf-8"),
+                file_name="pauta_complementacao_briefing.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+    except Exception as exc:
+        st.warning(
+            "O diagnóstico foi gerado, mas o PDF não pôde ser montado: "
+            f"{exc}"
+        )
+        st.download_button(
+            "Baixar pauta em TXT",
+            data=agenda.encode("utf-8"),
+            file_name="pauta_complementacao_briefing.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
 
 # ================================================================
 # 3. ADAPTIVE FORM

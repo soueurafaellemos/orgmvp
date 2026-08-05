@@ -19,6 +19,7 @@ from adaptive_briefing import (
     records_dataframe,
 )
 from briefing_diagnostic import generate_service_agenda
+from briefing_pdf import build_internal_briefing_pdf
 from exporters import format_pt_br_number
 from supabase_db import (
     fetch_project_history_overview,
@@ -776,6 +777,24 @@ with tab_brief:
                 use_container_width=True,
                 hide_index=True,
             )
+
+    try:
+        saved_pdf = build_internal_briefing_pdf(
+            parsed_brief,
+            diagnostic,
+        )
+        st.download_button(
+            "Baixar esta versão em PDF",
+            data=saved_pdf,
+            file_name=(
+                f"debriefing_{query.get('project_name') or 'projeto'}_"
+                f"v{query.get('version_number') or 1}.pdf"
+            ).replace("/", "-"),
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    except Exception as exc:
+        st.caption(f"PDF indisponível nesta versão: {exc}")
 
     if st.button(
         "Reutilizar esta versão em uma nova recomendação",
