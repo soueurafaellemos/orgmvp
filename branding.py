@@ -160,21 +160,32 @@ textarea,
     border-radius: 11px;
     font-weight: 650;
     min-height: 2.7rem;
+    color: var(--nave-navy);
+    background: #FFFFFF;
 }
 
 .stButton > button[kind="primary"],
 .stDownloadButton > button[kind="primary"],
-[data-testid="stFormSubmitButton"] > button[kind="primary"] {
+[data-testid="stFormSubmitButton"] > button[kind="primary"],
+.stLinkButton > a,
+[data-testid="stLinkButton"] > a {
     background: var(--nave-navy);
-    border-color: var(--nave-navy);
-    color: #FFFFFF;
+    border: 1px solid var(--nave-navy);
+    color: #FFFFFF !important;
+    border-radius: 11px;
+    font-weight: 650;
+    min-height: 2.7rem;
+    text-decoration: none !important;
 }
 
 .stButton > button[kind="primary"]:hover,
-[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
-    background: var(--nave-cyan);
-    border-color: var(--nave-cyan);
-    color: var(--nave-navy);
+.stDownloadButton > button[kind="primary"]:hover,
+[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover,
+.stLinkButton > a:hover,
+[data-testid="stLinkButton"] > a:hover {
+    background: #22336B;
+    border-color: #22336B;
+    color: #FFFFFF !important;
 }
 
 [data-testid="stAlert"] {

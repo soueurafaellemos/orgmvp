@@ -17,6 +17,7 @@ from media_library import (
     DOCUMENT_ASSET_TYPES,
     IMAGE_ASSET_TYPES,
     add_external_media_link,
+    create_signed_download_url,
     create_signed_media_url,
     delete_media_asset,
     fetch_media_assets,
@@ -306,8 +307,15 @@ def _render_media_gallery(
                         client,
                         media,
                     )
+                    download_url = (
+                        create_signed_download_url(
+                            client,
+                            media,
+                        )
+                    )
                 except Exception:
                     signed_url = None
+                    download_url = None
 
                 if signed_url:
                     st.image(
@@ -332,6 +340,13 @@ def _render_media_gallery(
                         str(media.get("description"))
                     )
 
+                if download_url:
+                    st.link_button(
+                        "Baixar imagem",
+                        download_url,
+                        use_container_width=True,
+                    )
+
     if document_rows:
         st.markdown("#### Documentos e links")
 
@@ -341,8 +356,15 @@ def _render_media_gallery(
                     client,
                     media,
                 )
+                download_url = (
+                    create_signed_download_url(
+                        client,
+                        media,
+                    )
+                )
             except Exception:
                 signed_url = None
+                download_url = None
 
             label = ASSET_TYPE_LABELS.get(
                 str(media.get("asset_type")),
@@ -356,9 +378,14 @@ def _render_media_gallery(
             size = format_file_size(
                 media.get("file_size_bytes")
             )
+            is_external_link = bool(
+                str(
+                    media.get("external_url") or ""
+                ).strip()
+            )
 
-            col_info, col_action = st.columns(
-                [4, 1]
+            col_info, col_open, col_download = st.columns(
+                [4, 1, 1]
             )
             with col_info:
                 st.write(f"**{title}**")
@@ -372,7 +399,7 @@ def _render_media_gallery(
                         str(media.get("description"))
                     )
 
-            with col_action:
+            with col_open:
                 if signed_url:
                     st.link_button(
                         "Abrir",
@@ -384,7 +411,40 @@ def _render_media_gallery(
                         "Indisponível",
                         disabled=True,
                         key=(
-                            "unavailable_"
+                            "unavailable_open_"
+                            f"{media.get('id')}"
+                        ),
+                        use_container_width=True,
+                    )
+
+            with col_download:
+                if download_url:
+                    st.link_button(
+                        "Baixar",
+                        download_url,
+                        use_container_width=True,
+                    )
+                elif is_external_link:
+                    st.button(
+                        "Sem arquivo",
+                        disabled=True,
+                        key=(
+                            "external_no_download_"
+                            f"{media.get('id')}"
+                        ),
+                        help=(
+                            "Este item é um link externo e "
+                            "não possui arquivo armazenado "
+                            "na NAVE."
+                        ),
+                        use_container_width=True,
+                    )
+                else:
+                    st.button(
+                        "Indisponível",
+                        disabled=True,
+                        key=(
+                            "unavailable_download_"
                             f"{media.get('id')}"
                         ),
                         use_container_width=True,
@@ -458,15 +518,38 @@ def _render_venue_media_manager(
                 accept_multiple_files=True,
                 key=f"venue_asset_files_{venue_id}",
             )
-
-            is_primary = st.checkbox(
-                "Usar como imagem principal do local",
-                value=(asset_type == "main_image"),
-                disabled=(
-                    asset_type not in IMAGE_ASSET_TYPES
-                ),
-                key=f"venue_asset_primary_{venue_id}",
+            st.caption(
+                "Formatos aceitos: JPG, JPEG, PNG, WEBP, GIF, "
+                "PDF, DOCX, PPTX e XLSX. Limite de 50 MB "
+                "por arquivo."
             )
+
+            if asset_type in IMAGE_ASSET_TYPES:
+                primary_choice = st.radio(
+                    "Definir como imagem principal do local?",
+                    options=["Não", "Sim"],
+                    index=(
+                        1
+                        if asset_type == "main_image"
+                        else 0
+                    ),
+                    horizontal=True,
+                    key=(
+                        f"venue_asset_primary_"
+                        f"{venue_id}_{asset_type}"
+                    ),
+                    help=(
+                        "A imagem principal será usada como "
+                        "referência visual prioritária do local."
+                    ),
+                )
+                is_primary = primary_choice == "Sim"
+            else:
+                is_primary = False
+                st.caption(
+                    "A opção de imagem principal aparece apenas "
+                    "para arquivos de imagem."
+                )
 
             if st.button(
                 "Adicionar ao acervo",

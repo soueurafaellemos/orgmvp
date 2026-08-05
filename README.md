@@ -509,3 +509,29 @@ Antes de usar, execute no Supabase:
 
 O bucket privado `nave-media` é preparado automaticamente no primeiro
 upload ou pelo botão da Administração.
+
+
+## V14.1 — Ajuste de legibilidade dos botões
+
+- botões com fundo azul passam a usar texto branco;
+- hover dos botões principais mantém contraste;
+- link buttons passam a seguir o mesmo padrão visual dos botões.
+
+
+## V14.2 — seleção de imagem principal
+
+- substitui o checkbox instável por uma escolha Sim / Não;
+- a escolha aparece somente para tipos de imagem;
+- cada tipo de imagem possui estado independente;
+- “Imagem principal” inicia com Sim;
+- fotos de galeria e mapas iniciam com Não;
+- formatos aceitos ficam visíveis abaixo do campo de upload.
+
+
+## V14.3 — download do acervo
+
+- imagens armazenadas passam a ter o botão “Baixar imagem”;
+- documentos armazenados passam a ter “Abrir” e “Baixar”;
+- o download usa endereço temporário e protegido;
+- links externos continuam com “Abrir” e não oferecem download;
+- não exige nova alteração no banco.

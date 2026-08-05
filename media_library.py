@@ -181,6 +181,34 @@ def create_signed_media_url(
     return _signed_url_from_response(response)
 
 
+def create_signed_download_url(
+    client: Client,
+    media: dict,
+    *,
+    expires_in: int = 3600,
+) -> str | None:
+    bucket = str(
+        media.get("storage_bucket") or ""
+    ).strip()
+    path = str(
+        media.get("storage_path") or ""
+    ).strip()
+
+    if not bucket or not path:
+        return None
+
+    response = (
+        client.storage
+        .from_(bucket)
+        .create_signed_url(
+            path,
+            expires_in,
+            {"download": True},
+        )
+    )
+    return _signed_url_from_response(response)
+
+
 def fetch_media_assets(
     client: Client,
     *,
