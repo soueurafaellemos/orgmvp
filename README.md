@@ -474,3 +474,38 @@ NAVE_ADMIN_PASSWORD = "senha-administrativa-diferente"
 - O botão "Sair da NAVE" encerra os dois níveis de acesso.
 - Recomenda-se também tornar o app privado em Settings > Sharing
   no Streamlit Community Cloud.
+
+
+## V13.2 — Home separada da organização
+
+- A página inicial passa a ser exclusivamente institucional.
+- Logo, significado, tagline, descriptor e os quatro pilares aparecem
+  somente na Home.
+- Organizar conhecimento passa a ser uma página operacional separada.
+- A página de organização começa diretamente pelo cabeçalho e pelo upload.
+- A sidebar ganha o item Início.
+
+
+## V14 — Acervo visual e documental
+
+Primeira implementação da camada visual da NAVE:
+
+- estrutura genérica de mídias para brindes, ativações, locais,
+  fornecedores e projetos;
+- primeira experiência completa aplicada a locais;
+- seleção de linha na Base de conhecimento;
+- contador de imagens e documentos;
+- galeria de imagens com acesso temporário;
+- abertura de plantas, books, apresentações e fichas técnicas;
+- upload de arquivos para locais;
+- cadastro de links externos e tours virtuais;
+- armazenamento privado;
+- exclusão de materiais restrita a uma sessão administrativa;
+- limite de 50 MB por arquivo.
+
+Antes de usar, execute no Supabase:
+
+`supabase_patch_acervo_visual_v1.sql`
+
+O bucket privado `nave-media` é preparado automaticamente no primeiro
+upload ou pelo botão da Administração.

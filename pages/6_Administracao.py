@@ -16,6 +16,10 @@ from runtime_ui import (
     require_admin_access,
     require_app_access,
 )
+from media_library import (
+    MEDIA_BUCKET,
+    ensure_media_bucket,
+)
 from supabase_db import (
     get_supabase_client,
     test_connection,
@@ -167,6 +171,37 @@ if supabase_url and supabase_key:
 else:
     st.warning(
         "A base de conhecimento ainda não foi configurada."
+    )
+
+st.divider()
+st.subheader("Acervo visual e documental")
+
+if supabase_url and supabase_key:
+    if st.button(
+        "Preparar armazenamento do acervo",
+        use_container_width=True,
+    ):
+        try:
+            ensure_media_bucket(client)
+            st.success(
+                "Armazenamento privado do acervo disponível."
+            )
+            st.caption(
+                f"Identificação interna: {MEDIA_BUCKET}"
+            )
+        except Exception as exc:
+            report_service_error(
+                "preparação do armazenamento do acervo",
+                user_message=(
+                    "Não foi possível preparar o armazenamento "
+                    "do acervo."
+                ),
+                exception=exc,
+            )
+else:
+    st.info(
+        "A base precisa estar disponível para preparar "
+        "o acervo visual."
     )
 
 st.divider()
