@@ -388,7 +388,7 @@ def render_sidebar() -> None:
         )
         st.page_link(
             "pages/6_Administracao.py",
-            label="Administração",
+            label="Acesso administrativo",
         )
 
         st.markdown(

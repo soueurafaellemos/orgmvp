@@ -12,6 +12,8 @@ from branding import (
     journey_cards,
 )
 
+from runtime_ui import report_service_error
+
 from document_io import (
     InputDocument,
     prepare_documents,
@@ -234,7 +236,7 @@ def _source_image_tab(
     label: str,
 ):
     if records_df.empty:
-        st.info("Nenhum registro disponível.")
+        st.info("Nenhum item disponível.")
         return
 
     options = {
@@ -261,13 +263,13 @@ def _source_image_tab(
     if pd.isna(page):
         if str(source_file or "").lower().endswith(".txt"):
             st.warning(
-                "Este registro foi criado a partir de texto colado ou e-mail, "
+                "Este item foi criado a partir de texto colado ou e-mail, "
                 "sem uma página visual de origem. Para exibir imagens, envie "
                 "também o PDF ou PowerPoint original que contenha as fotos."
             )
         else:
             st.warning(
-                "O registro não possui página de origem. "
+                "O item não possui página de origem. "
                 "A imagem não pode ser exibida automaticamente."
             )
         return
@@ -303,17 +305,17 @@ def _database_save_controls(
     save_action,
 ):
     st.divider()
-    st.subheader("Salvar na base central")
+    st.subheader("Adicionar à base de conhecimento")
 
     if database_client is None:
         st.info(
-            "Configure o Supabase nos Secrets do Streamlit para "
-            "habilitar o salvamento."
+            "A base de conhecimento está indisponível. "
+            "Consulte a área de Administração."
         )
         return
 
     skip_duplicates = st.checkbox(
-        "Ignorar registros já existentes",
+        "Ignorar itens já existentes",
         value=True,
         key=f"skip_duplicates_{key}",
         help=(
@@ -329,20 +331,27 @@ def _database_save_controls(
         key=f"save_database_{key}",
     ):
         try:
-            with st.spinner("Salvando registros no Supabase..."):
+            with st.spinner("Adicionando informações à base..."):
                 result = save_action(skip_duplicates)
 
             st.session_state[f"database_result_{key}"] = result
-            st.success("Dados salvos na base central.")
+            st.success("Informações adicionadas à base de conhecimento.")
 
         except Exception as exc:
-            st.exception(exc)
+            report_service_error(
+                "salvamento na base de conhecimento",
+                user_message=(
+                    "Não foi possível adicionar as informações "
+                    "à base neste momento."
+                ),
+                exception=exc,
+            )
 
     result = st.session_state.get(f"database_result_{key}")
     if result:
         metric1, metric2, metric3, metric4 = st.columns(4)
         metric1.metric(
-            "Registros adicionados",
+            "Itens adicionados",
             result.get("records_inserted", 0),
         )
         metric2.metric(
@@ -350,15 +359,12 @@ def _database_save_controls(
             result.get("duplicates_skipped", 0),
         )
         metric3.metric(
-            "Fornecedores processados",
+            "Fornecedores relacionados",
             result.get("suppliers_saved", 0),
         )
         metric4.metric(
             "Custos adicionados",
             result.get("costs_inserted", 0),
-        )
-        st.caption(
-            f"Importação registrada: {result.get('import_id')}"
         )
 
 
@@ -368,7 +374,10 @@ if run:
         st.error("Envie um arquivo ou cole um texto.")
         st.stop()
     if not api_key:
-        st.error("Informe uma Gemini API key.")
+        st.error(
+            "O serviço de leitura não está disponível. "
+            "Consulte a área de Administração."
+        )
         st.stop()
 
     raw = [
@@ -503,7 +512,14 @@ if run:
             st.session_state["result_briefing"] = briefing
 
     except Exception as exc:
-        st.exception(exc)
+        report_service_error(
+            "organização de documentos",
+            user_message=(
+                "Não foi possível concluir a organização "
+                "destes documentos."
+            ),
+            exception=exc,
+        )
 
 
 classification = st.session_state.get("classification")
@@ -628,7 +644,7 @@ if result_type == "catalog":
         use_container_width=True,
     )
     d2.download_button(
-        "Baixar JSON",
+        "Baixar dados estruturados",
         catalog_json_bytes(
             technical,
             rules,
@@ -642,7 +658,7 @@ if result_type == "catalog":
 
     _database_save_controls(
         key="catalog",
-        label="Salvar brindes na base",
+        label="Adicionar brindes à base",
         save_action=lambda skip: save_catalog(
             database_client,
             products_df=technical,
@@ -758,7 +774,7 @@ if result_type == "activation":
         use_container_width=True,
     )
     d2.download_button(
-        "Baixar JSON",
+        "Baixar dados estruturados",
         activation_json_bytes(
             technical,
             costs,
@@ -773,7 +789,7 @@ if result_type == "activation":
 
     _database_save_controls(
         key="activation",
-        label="Salvar soluções na base",
+        label="Adicionar soluções à base",
         save_action=lambda skip: save_activations(
             database_client,
             solutions_df=technical,
@@ -909,7 +925,7 @@ if result_type == "venue":
     )
 
     d2.download_button(
-        "Baixar JSON",
+        "Baixar dados estruturados",
         venue_json_bytes(
             technical,
             rules,
@@ -923,7 +939,7 @@ if result_type == "venue":
 
     _database_save_controls(
         key="venue",
-        label="Salvar locais na base",
+        label="Adicionar locais à base",
         save_action=lambda skip: save_venues(
             database_client,
             venues_df=technical,
@@ -956,7 +972,7 @@ if result_type == "briefing":
         use_container_width=True,
     )
     d2.download_button(
-        "Baixar JSON",
+        "Baixar dados estruturados",
         briefing_json_bytes(briefing, classification),
         "briefing_estruturado.json",
         use_container_width=True,
@@ -964,7 +980,7 @@ if result_type == "briefing":
 
     _database_save_controls(
         key="briefing",
-        label="Salvar briefing e projeto na base",
+        label="Adicionar briefing e projeto à base",
         save_action=lambda skip: save_briefing(
             database_client,
             briefing=briefing.model_dump(),

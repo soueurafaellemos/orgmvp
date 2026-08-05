@@ -14,6 +14,8 @@ from branding import (
     page_header,
 )
 
+from runtime_ui import report_service_error
+
 from adaptive_briefing import (
     DELIVERABLE_COLUMNS,
     EXECUTION_COLUMNS,
@@ -68,7 +70,10 @@ except Exception:
     )
 
 if not supabase_url or not supabase_key:
-    st.error("Configure o Supabase nos Secrets.")
+    st.error(
+        "A base de projetos não está disponível. "
+        "Consulte a área de Administração."
+    )
     st.stop()
 
 client = get_supabase_client(
@@ -463,7 +468,13 @@ def _reuse_version(
 try:
     projects = fetch_project_history_overview(client)
 except Exception as exc:
-    st.exception(exc)
+    report_service_error(
+        "consulta de projetos",
+        user_message=(
+            "Não foi possível carregar os projetos."
+        ),
+        exception=exc,
+    )
     st.stop()
 
 if projects.empty:

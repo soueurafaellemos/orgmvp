@@ -12,6 +12,7 @@ from branding import (
     page_header,
 )
 
+from runtime_ui import report_service_error
 from exporters import format_pt_br_number
 from supabase_db import (
     fetch_supplier_by_id,
@@ -55,7 +56,10 @@ except Exception:
     )
 
 if not supabase_url or not supabase_key:
-    st.error("Configure o Supabase nos Secrets.")
+    st.error(
+        "A base de fornecedores não está disponível. "
+        "Consulte a área de Administração."
+    )
     st.stop()
 
 client = get_supabase_client(
@@ -83,7 +87,13 @@ def _bool_index(value: Any) -> int:
 try:
     coverage = fetch_supplier_coverage(client)
 except Exception as exc:
-    st.exception(exc)
+    report_service_error(
+        "consulta de fornecedores",
+        user_message=(
+            "Não foi possível carregar os fornecedores."
+        ),
+        exception=exc,
+    )
     st.stop()
 
 if coverage.empty:
@@ -481,4 +491,10 @@ if submitted:
         st.success("Cobertura atualizada.")
         st.rerun()
     except Exception as exc:
-        st.exception(exc)
+        report_service_error(
+            "atualização do fornecedor",
+            user_message=(
+                "Não foi possível atualizar este fornecedor."
+            ),
+            exception=exc,
+        )

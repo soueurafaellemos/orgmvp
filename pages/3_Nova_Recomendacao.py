@@ -14,6 +14,8 @@ from branding import (
     page_header,
 )
 
+from runtime_ui import report_service_error
+
 from adaptive_briefing import (
     DELIVERABLE_COLUMNS,
     EXECUTION_COLUMNS,
@@ -81,7 +83,10 @@ except Exception:
     )
 
 if not gemini_key or not supabase_url or not supabase_key:
-    st.error("Configure Gemini e Supabase nos Secrets.")
+    st.error(
+        "Os serviços necessários não estão disponíveis. "
+        "Consulte a área de Administração."
+    )
     st.stop()
 
 client = get_supabase_client(supabase_url, supabase_key)
@@ -537,7 +542,7 @@ if read_briefing:
                 parsed = dict(session_cache[fingerprint])
                 st.info(
                     "Reutilizando a leitura deste briefing já feita "
-                    "nesta sessão. Nenhuma nova chamada ao Gemini foi usada."
+                    "nesta sessão. Nenhum novo processamento foi necessário."
                 )
             else:
                 docs = prepare_documents(raw_files)
@@ -575,21 +580,27 @@ if read_briefing:
             wait_seconds = exc.retry_after_seconds
             if wait_seconds:
                 st.warning(
-                    "O limite temporário gratuito do Gemini foi atingido. "
+                    "O serviço de leitura atingiu o limite temporário. "
                     f"Aguarde cerca de {wait_seconds} segundos e clique "
                     "novamente em “Ler briefing e preencher campos”."
                 )
             else:
                 st.warning(
-                    "O limite temporário gratuito do Gemini foi atingido. "
+                    "O serviço de leitura atingiu o limite temporário. "
                     "Aguarde um pouco e tente novamente."
                 )
             st.info(
                 "O arquivo continua selecionado e não foi perdido. "
-                "O app já tentou o modelo econômico automaticamente."
+                "A NAVE já tentou a alternativa de menor consumo automaticamente."
             )
         except Exception as exc:
-            st.exception(exc)
+            report_service_error(
+                "leitura e qualificação do briefing",
+                user_message=(
+                    "Não foi possível concluir a leitura do briefing."
+                ),
+                exception=exc,
+            )
 
 # ================================================================
 # 2. PROFILE AND DIAGNOSTIC
@@ -1537,7 +1548,13 @@ Briefing:
             )
 
     except Exception as exc:
-        st.exception(exc)
+        report_service_error(
+            "geração da recomendação",
+            user_message=(
+                "Não foi possível concluir as recomendações."
+            ),
+            exception=exc,
+        )
 
 # ================================================================
 # FINAL UNDERSTANDING AND RECOMMENDATIONS
@@ -1838,7 +1855,7 @@ if results is not None:
                     f"{saved['results_saved']} recomendações gerais, "
                     f"{saved.get('execution_results_saved', 0)} "
                     f"recomendações por execução e "
-                    f"{structured_count} registros estruturados."
+                    f"{structured_count} itens estruturados."
                 )
                 st.page_link(
                     "pages/4_Historico_de_Projetos.py",
@@ -1846,4 +1863,11 @@ if results is not None:
                     icon="🕘",
                 )
             except Exception as exc:
-                st.exception(exc)
+                report_service_error(
+                    "salvamento do projeto",
+                    user_message=(
+                        "Não foi possível salvar esta versão "
+                        "do projeto."
+                    ),
+                    exception=exc,
+                )

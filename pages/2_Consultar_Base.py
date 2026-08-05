@@ -11,6 +11,7 @@ from branding import (
     page_header,
 )
 
+from runtime_ui import report_service_error
 from exporters import format_pt_br_number
 from supabase_db import (
     database_counts,
@@ -46,7 +47,10 @@ except Exception:
     )
 
 if not url or not key:
-    st.error("Configure o Supabase nos Secrets do Streamlit.")
+    st.error(
+        "A base de conhecimento não está disponível. "
+        "Consulte a área de Administração."
+    )
     st.stop()
 
 try:
@@ -54,7 +58,13 @@ try:
     counts = database_counts(client)
     candidates = fetch_recommendation_candidates(client)
 except Exception as exc:
-    st.exception(exc)
+    report_service_error(
+        "consulta da base de conhecimento",
+        user_message=(
+            "Não foi possível consultar a base de conhecimento."
+        ),
+        exception=exc,
+    )
     st.stop()
 
 metric_columns = st.columns(len(counts))
@@ -130,7 +140,7 @@ if max_price > 0:
 display = filtered.copy()
 
 if display.empty:
-    st.info("Nenhum registro corresponde aos filtros.")
+    st.info("Nenhum item corresponde aos filtros.")
     st.stop()
 
 display["Tipo"] = display["item_type"].map(type_labels)
@@ -184,4 +194,4 @@ st.dataframe(
     hide_index=True,
 )
 
-st.caption(f"{len(display)} registros encontrados.")
+st.caption(f"{len(display)} itens encontrados.")

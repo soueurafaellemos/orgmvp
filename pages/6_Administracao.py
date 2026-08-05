@@ -9,6 +9,12 @@ from branding import (
     apply_nave_branding,
     page_header,
 )
+from runtime_ui import (
+    admin_logout_button,
+    get_setting,
+    report_service_error,
+    require_admin_access,
+)
 from supabase_db import (
     get_supabase_client,
     test_connection,
@@ -25,90 +31,96 @@ st.set_page_config(
 apply_nave_branding()
 page_header(
     "Administração",
-    "Configurações técnicas e diagnóstico dos serviços da NAVE.",
-    eyebrow="Sistema",
+    "Acesso interno às configurações e ao diagnóstico da NAVE.",
+    eyebrow="Área restrita",
 )
 
-try:
-    gemini_key = st.secrets.get(
-        "GEMINI_API_KEY",
-        os.getenv("GEMINI_API_KEY", ""),
-    )
-    default_model = st.secrets.get(
+if not require_admin_access():
+    st.stop()
+
+admin_logout_button()
+
+gemini_key = str(
+    get_setting("GEMINI_API_KEY", "")
+)
+default_model = str(
+    get_setting(
         "GEMINI_MODEL",
         "gemini-3.5-flash-lite",
     )
-    supabase_url = st.secrets.get(
-        "SUPABASE_URL",
-        os.getenv("SUPABASE_URL", ""),
-    )
-    supabase_key = st.secrets.get(
+)
+supabase_url = str(
+    get_setting("SUPABASE_URL", "")
+)
+supabase_key = str(
+    get_setting(
         "SUPABASE_SECRET_KEY",
-        st.secrets.get(
+        get_setting(
             "SUPABASE_SERVICE_ROLE_KEY",
-            os.getenv("SUPABASE_SECRET_KEY", "")
-            or os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
+            "",
         ),
     )
-except Exception:
-    gemini_key = os.getenv("GEMINI_API_KEY", "")
-    default_model = os.getenv(
-        "GEMINI_MODEL",
-        "gemini-3.5-flash-lite",
-    )
-    supabase_url = os.getenv("SUPABASE_URL", "")
-    supabase_key = (
-        os.getenv("SUPABASE_SECRET_KEY", "")
-        or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-    )
+)
 
-st.subheader("Serviço de leitura")
+model_labels = {
+    "Econômico — recomendado": "gemini-3.5-flash-lite",
+    "Padrão": "gemini-3.5-flash",
+    "Avançado": "gemini-3.6-flash",
+}
+reverse_models = {
+    value: label
+    for label, value in model_labels.items()
+}
 
-model_options = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.6-flash",
-]
 current_model = st.session_state.get(
     "nave_model",
     default_model,
 )
-if current_model not in model_options:
-    current_model = model_options[0]
+current_label = reverse_models.get(
+    current_model,
+    "Econômico — recomendado",
+)
 
-selected_model = st.selectbox(
-    "Modelo ativo",
-    model_options,
-    index=model_options.index(current_model),
-    help=(
-        "O modelo econômico permanece recomendado para reduzir "
-        "o consumo da quota."
+st.subheader("Status dos serviços")
+
+status1, status2, status3 = st.columns(3)
+status1.metric(
+    "Leitura inteligente",
+    "Disponível" if gemini_key else "Indisponível",
+)
+status2.metric(
+    "Base de conhecimento",
+    (
+        "Disponível"
+        if supabase_url and supabase_key
+        else "Indisponível"
     ),
 )
-st.session_state["nave_model"] = selected_model
-
-g1, g2 = st.columns(2)
-g1.metric(
-    "Chave de leitura",
-    "Configurada" if gemini_key else "Não configurada",
-)
-g2.metric(
-    "Modelo desta sessão",
-    selected_model,
+status3.metric(
+    "Identidade do produto",
+    "NAVE by VOE",
 )
 
 st.divider()
-st.subheader("Base de conhecimento")
+st.subheader("Configuração de processamento")
 
-s1, s2 = st.columns(2)
-s1.metric(
-    "URL do banco",
-    "Configurada" if supabase_url else "Não configurada",
+selected_label = st.selectbox(
+    "Perfil de processamento",
+    options=list(model_labels.keys()),
+    index=list(model_labels.keys()).index(
+        current_label
+    ),
+    help=(
+        "O perfil econômico é indicado para o uso cotidiano "
+        "e reduz o consumo do serviço de leitura."
+    ),
 )
-s2.metric(
-    "Chave do banco",
-    "Configurada" if supabase_key else "Não configurada",
-)
+st.session_state["nave_model"] = model_labels[
+    selected_label
+]
+
+st.divider()
+st.subheader("Diagnóstico da base")
 
 if supabase_url and supabase_key:
     try:
@@ -116,10 +128,10 @@ if supabase_url and supabase_key:
             supabase_url,
             supabase_key,
         )
-        st.success("Base de conhecimento disponível.")
+        st.success("A base de conhecimento está disponível.")
 
         if st.button(
-            "Testar conexão",
+            "Verificar disponibilidade",
             use_container_width=True,
         ):
             try:
@@ -128,27 +140,33 @@ if supabase_url and supabase_key:
                 ):
                     result = test_connection(client)
                 st.success(
-                    "Conexão confirmada. "
-                    f"Fornecedores cadastrados: "
+                    "Verificação concluída. "
+                    f"Fornecedores disponíveis: "
                     f"{result['supplier_count']}."
                 )
-            except Exception:
-                st.error(
-                    "A conexão não pôde ser confirmada agora. "
-                    "Revise os Secrets do aplicativo."
+            except Exception as exc:
+                report_service_error(
+                    "verificação administrativa da base",
+                    user_message=(
+                        "A base não respondeu à verificação."
+                    ),
+                    exception=exc,
                 )
-    except Exception:
-        st.error(
-            "Não foi possível preparar a conexão com a base."
+    except Exception as exc:
+        report_service_error(
+            "inicialização administrativa da base",
+            user_message=(
+                "A base de conhecimento não pôde ser preparada."
+            ),
+            exception=exc,
         )
 else:
     st.warning(
-        "Configure SUPABASE_URL e SUPABASE_SECRET_KEY "
-        "nos Secrets do aplicativo."
+        "A base de conhecimento ainda não foi configurada."
     )
 
 st.divider()
-st.subheader("Identidade do produto")
+st.subheader("Informações do produto")
 
 st.markdown(
     """
@@ -163,3 +181,42 @@ st.markdown(
     recomenda soluções para projetos de live marketing.
     """
 )
+
+st.divider()
+
+support_mode = st.checkbox(
+    "Exibir detalhes para suporte",
+    value=st.session_state.get(
+        "nave_support_mode",
+        False,
+    ),
+)
+st.session_state["nave_support_mode"] = support_mode
+
+if support_mode:
+    with st.expander(
+        "Detalhes técnicos",
+        expanded=True,
+    ):
+        st.write(
+            {
+                "serviço_de_leitura": (
+                    "configurado"
+                    if gemini_key
+                    else "não configurado"
+                ),
+                "perfil_interno": st.session_state[
+                    "nave_model"
+                ],
+                "base_url": (
+                    "configurada"
+                    if supabase_url
+                    else "não configurada"
+                ),
+                "base_key": (
+                    "configurada"
+                    if supabase_key
+                    else "não configurada"
+                ),
+            }
+        )
