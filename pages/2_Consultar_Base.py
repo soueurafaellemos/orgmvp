@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import math
 
 import pandas as pd
 import streamlit as st
@@ -20,14 +22,17 @@ from media_library import (
     create_signed_download_url,
     create_signed_media_url,
     delete_media_asset,
+    download_media_bytes,
     fetch_media_assets,
     fetch_media_counts,
+    fetch_primary_media_assets,
     fetch_primary_media_urls,
     format_file_size,
     upload_media_asset,
 )
 from exporters import format_pt_br_number
 from knowledge_details import render_complete_record
+from selection_pdf import build_selection_pdf
 from supabase_db import (
     database_counts,
     fetch_enrichment_history,
@@ -73,10 +78,61 @@ if not url or not key:
     )
     st.stop()
 
+@st.cache_data(
+    ttl=120,
+    show_spinner=False,
+)
+def _cached_database_counts(
+    service_url: str,
+    _service_key: str,
+) -> dict:
+    cached_client = get_supabase_client(
+        service_url,
+        _service_key,
+    )
+    return database_counts(cached_client)
+
+
+@st.cache_data(
+    ttl=120,
+    show_spinner=False,
+)
+def _cached_candidates(
+    service_url: str,
+    _service_key: str,
+) -> pd.DataFrame:
+    cached_client = get_supabase_client(
+        service_url,
+        _service_key,
+    )
+    return fetch_recommendation_candidates(
+        cached_client,
+    )
+
+
+refresh_column, refresh_note = st.columns(
+    [1, 5]
+)
+with refresh_column:
+    refresh_clicked = st.button(
+        "Atualizar base",
+        use_container_width=True,
+    )
+with refresh_note:
+    st.caption(
+        "A listagem usa cache de 2 minutos para abrir "
+        "mais rapidamente."
+    )
+
+if refresh_clicked:
+    _cached_database_counts.clear()
+    _cached_candidates.clear()
+    st.rerun()
+
 try:
     client = get_supabase_client(url, key)
-    counts = database_counts(client)
-    candidates = fetch_recommendation_candidates(client)
+    counts = _cached_database_counts(url, key)
+    candidates = _cached_candidates(url, key)
 except Exception as exc:
     report_service_error(
         "consulta da base de conhecimento",
@@ -175,15 +231,138 @@ if max_price > 0:
         | (numeric_price <= max_price)
     ]
 
-display = filtered.copy()
+filtered = filtered.reset_index(drop=True)
 
-if display.empty:
+if filtered.empty:
     st.info("Nenhum item corresponde aos filtros.")
     st.stop()
 
-display = display.reset_index(drop=True)
+# The media count for all records is only loaded when the
+# user explicitly filters by media. This avoids many queries
+# in the normal view.
+if media_filter != "Todos":
+    all_item_keys = [
+        (
+            str(row.get("item_type")),
+            str(row.get("item_id")),
+        )
+        for _, row in filtered.iterrows()
+    ]
 
-item_keys = [
+    try:
+        all_media_counts = fetch_media_counts(
+            client,
+            all_item_keys,
+        )
+    except Exception:
+        all_media_counts = {}
+
+    filtered["_media_count"] = filtered.apply(
+        lambda row: all_media_counts.get(
+            (
+                str(row.get("item_type")),
+                str(row.get("item_id")),
+            ),
+            0,
+        ),
+        axis=1,
+    )
+
+    if media_filter == "Com mídia":
+        filtered = filtered[
+            filtered["_media_count"] > 0
+        ]
+    else:
+        filtered = filtered[
+            filtered["_media_count"] == 0
+        ]
+
+    filtered = filtered.reset_index(drop=True)
+
+if filtered.empty:
+    st.info(
+        "Nenhum item corresponde ao filtro de acervo."
+    )
+    st.stop()
+
+pagination_col1, pagination_col2, pagination_col3 = st.columns(
+    [1, 1, 3]
+)
+
+with pagination_col1:
+    page_size = st.selectbox(
+        "Itens por página",
+        options=[25, 50, 100],
+        index=1,
+    )
+
+total_items = len(filtered)
+total_pages = max(
+    1,
+    math.ceil(total_items / page_size),
+)
+
+filter_signature = hashlib.sha1(
+    (
+        f"{search}|{selected_types}|{max_price}|"
+        f"{media_filter}|{page_size}|{total_items}"
+    ).encode("utf-8")
+).hexdigest()
+
+if (
+    st.session_state.get(
+        "knowledge_filter_signature"
+    )
+    != filter_signature
+):
+    st.session_state[
+        "knowledge_filter_signature"
+    ] = filter_signature
+    st.session_state[
+        "knowledge_page_number"
+    ] = 1
+
+current_page_state = int(
+    st.session_state.get(
+        "knowledge_page_number",
+        1,
+    )
+)
+current_page_state = min(
+    max(current_page_state, 1),
+    total_pages,
+)
+st.session_state[
+    "knowledge_page_number"
+] = current_page_state
+
+with pagination_col2:
+    current_page = st.number_input(
+        "Página",
+        min_value=1,
+        max_value=total_pages,
+        key="knowledge_page_number",
+    )
+
+with pagination_col3:
+    st.caption(
+        f"{total_items} itens encontrados · "
+        f"página {int(current_page)} de {total_pages}"
+    )
+
+start_index = (
+    int(current_page) - 1
+) * page_size
+end_index = min(
+    start_index + page_size,
+    total_items,
+)
+
+display = filtered.iloc[
+    start_index:end_index
+].copy().reset_index(drop=True)
+
+page_item_keys = [
     (
         str(row.get("item_type")),
         str(row.get("item_id")),
@@ -192,15 +371,15 @@ item_keys = [
 ]
 
 try:
-    media_counts = fetch_media_counts(
+    page_media_counts = fetch_media_counts(
         client,
-        item_keys,
+        page_item_keys,
     )
 except Exception:
-    media_counts = {}
+    page_media_counts = {}
 
 display["_media_count"] = display.apply(
-    lambda row: media_counts.get(
+    lambda row: page_media_counts.get(
         (
             str(row.get("item_type")),
             str(row.get("item_id")),
@@ -210,35 +389,10 @@ display["_media_count"] = display.apply(
     axis=1,
 )
 
-if media_filter == "Com mídia":
-    display = display[
-        display["_media_count"] > 0
-    ]
-elif media_filter == "Sem mídia":
-    display = display[
-        display["_media_count"] == 0
-    ]
-
-display = display.reset_index(drop=True)
-
-if display.empty:
-    st.info(
-        "Nenhum item corresponde ao filtro de acervo."
-    )
-    st.stop()
-
-visible_item_keys = [
-    (
-        str(row.get("item_type")),
-        str(row.get("item_id")),
-    )
-    for _, row in display.iterrows()
-]
-
 try:
     primary_urls = fetch_primary_media_urls(
         client,
-        visible_item_keys,
+        page_item_keys,
     )
 except Exception:
     primary_urls = {}
@@ -319,25 +473,27 @@ table = display[columns].rename(
 ).fillna("Não informado")
 
 st.caption(
-    "Selecione uma linha para abrir a ficha completa, "
-    "imagens e documentos."
+    "Selecione uma linha para abrir a ficha ou várias "
+    "linhas para gerar um PDF de possibilidades."
 )
 
 table_event = st.dataframe(
     table,
     use_container_width=True,
     hide_index=True,
-    key="knowledge_base_table",
+    key=(
+        f"knowledge_base_table_"
+        f"{filter_signature}_{int(current_page)}"
+    ),
     on_select="rerun",
-    selection_mode="single-row",
+    selection_mode="multi-row",
     row_height=64,
     column_config={
         "Capa": st.column_config.ImageColumn(
             "Capa",
             width="small",
             help=(
-                "Miniatura de 56 × 56 px da imagem "
-                "definida como principal."
+                "Miniatura da imagem definida como principal."
             ),
         ),
         "Nome": st.column_config.TextColumn(
@@ -351,7 +507,10 @@ table_event = st.dataframe(
     },
 )
 
-st.caption(f"{len(display)} itens encontrados.")
+st.caption(
+    f"Exibindo {start_index + 1} a {end_index} "
+    f"de {total_items} itens."
+)
 
 
 def _selected_row_indexes(event) -> list[int]:
@@ -836,19 +995,18 @@ def _render_media_management(
     entity_id: str,
     media_df: pd.DataFrame,
 ) -> None:
-    if (
-        media_df.empty
-        or not st.session_state.get(
-            "nave_admin_authenticated",
-            False,
-        )
-    ):
+    if media_df.empty:
         return
 
     with st.expander(
-        "Gerenciar itens do acervo",
+        "Corrigir ou excluir imagem / arquivo",
         expanded=False,
     ):
+        st.warning(
+            "A exclusão remove o material permanentemente "
+            "do acervo deste item."
+        )
+
         options = {
             (
                 f"{ASSET_TYPE_LABELS.get(
@@ -861,7 +1019,7 @@ def _render_media_management(
         }
 
         selected_media_label = st.selectbox(
-            "Material",
+            "Material que deseja remover",
             list(options.keys()),
             key=(
                 f"delete_media_select_"
@@ -869,8 +1027,18 @@ def _render_media_management(
             ),
         )
 
+        confirmation = st.checkbox(
+            "Confirmo que este material está incorreto "
+            "e deve ser excluído.",
+            key=(
+                f"delete_media_confirmation_"
+                f"{entity_type}_{entity_id}"
+            ),
+        )
+
         if st.button(
             "Excluir material selecionado",
+            disabled=not confirmation,
             key=(
                 f"delete_media_"
                 f"{entity_type}_{entity_id}"
@@ -905,157 +1073,365 @@ selected_indexes = _selected_row_indexes(
     table_event
 )
 
-if selected_indexes:
-    selected = display.iloc[
-        selected_indexes[0]
-    ].to_dict()
+selected_records = [
+    display.iloc[index].to_dict()
+    for index in selected_indexes
+    if 0 <= index < len(display)
+]
 
-    entity_type = str(
-        selected.get("item_type") or ""
+selection_signature = "|".join(
+    sorted(
+        (
+            f"{record.get('item_type')}:"
+            f"{record.get('item_id')}"
+        )
+        for record in selected_records
     )
-    entity_id = str(
-        selected.get("item_id") or ""
-    )
-    item_name = str(
-        selected.get("name") or "Item"
-    )
+)
 
+if (
+    st.session_state.get(
+        "selection_pdf_signature"
+    )
+    != selection_signature
+):
+    st.session_state.pop(
+        "selection_pdf_bytes",
+        None,
+    )
+    st.session_state[
+        "selection_pdf_signature"
+    ] = selection_signature
+
+if selected_records:
     st.divider()
-    st.subheader(item_name)
 
-    try:
-        complete_record = fetch_knowledge_item(
-            client,
-            entity_type=entity_type,
-            entity_id=entity_id,
+    if len(selected_records) > 1:
+        st.subheader(
+            f"{len(selected_records)} possibilidades selecionadas"
         )
-    except Exception as exc:
-        report_service_error(
-            "consulta da ficha completa",
-            user_message=(
-                "Não foi possível carregar todos os detalhes "
-                "deste item."
-            ),
-            exception=exc,
-        )
-        complete_record = {}
-
-    complete_record = {
-        **selected,
-        **complete_record,
-    }
-
-    if not complete_record.get("supplier_name"):
-        complete_record["supplier_name"] = selected.get(
-            "supplier_name"
+        st.caption(
+            "A seleção múltipla pode ser exportada em um PDF "
+            "para apresentação interna ou compartilhamento."
         )
 
-    render_complete_record(
-        entity_type,
-        complete_record,
-    )
-
-    try:
-        enrichment_history = fetch_enrichment_history(
-            client,
-            entity_type=entity_type,
-            entity_id=entity_id,
+        selection_preview = pd.DataFrame(
+            [
+                {
+                    "Tipo": type_labels.get(
+                        str(item.get("item_type")),
+                        str(item.get("item_type")),
+                    ),
+                    "Nome": item.get("name"),
+                    "Valor": item.get("Valor"),
+                    "Fornecedor": item.get(
+                        "supplier_name"
+                    ),
+                }
+                for item in selected_records
+            ]
         )
-    except Exception:
-        enrichment_history = pd.DataFrame()
+        st.dataframe(
+            selection_preview,
+            use_container_width=True,
+            hide_index=True,
+        )
 
-    if not enrichment_history.empty:
         with st.expander(
-            "Histórico de enriquecimento",
-            expanded=False,
+            "Exportar seleção em PDF",
+            expanded=True,
         ):
-            for _, event in enrichment_history.iterrows():
-                strategy_label = {
-                    "enrich_safe": (
-                        "Lacunas preenchidas e diferenças "
-                        "preservadas"
+            pdf_title = st.text_input(
+                "Título do PDF",
+                value="Seleção de possibilidades",
+                key="selection_pdf_title",
+            )
+            pdf_introduction = st.text_area(
+                "Mensagem de abertura",
+                placeholder=(
+                    "Ex.: Opções selecionadas de acordo com "
+                    "a verba e o perfil do projeto."
+                ),
+                key="selection_pdf_introduction",
+            )
+
+            if st.button(
+                "Preparar PDF",
+                type="primary",
+                use_container_width=True,
+                key="prepare_selection_pdf",
+            ):
+                try:
+                    with st.spinner(
+                        "Preparando o PDF da seleção..."
+                    ):
+                        selected_keys = [
+                            (
+                                str(item.get("item_type")),
+                                str(item.get("item_id")),
+                            )
+                            for item in selected_records
+                        ]
+                        primary_assets = (
+                            fetch_primary_media_assets(
+                                client,
+                                selected_keys,
+                            )
+                        )
+                        pdf_items = []
+
+                        for item in selected_records:
+                            entity_type = str(
+                                item.get("item_type")
+                            )
+                            entity_id = str(
+                                item.get("item_id")
+                            )
+                            complete = fetch_knowledge_item(
+                                client,
+                                entity_type=entity_type,
+                                entity_id=entity_id,
+                            )
+                            complete = {
+                                **item,
+                                **complete,
+                            }
+
+                            if not complete.get(
+                                "supplier_name"
+                            ):
+                                complete[
+                                    "supplier_name"
+                                ] = item.get(
+                                    "supplier_name"
+                                )
+
+                            media_record = primary_assets.get(
+                                (
+                                    entity_type,
+                                    entity_id,
+                                )
+                            )
+                            image_bytes = None
+
+                            if media_record:
+                                try:
+                                    image_bytes = (
+                                        download_media_bytes(
+                                            client,
+                                            media_record,
+                                        )
+                                    )
+                                except Exception:
+                                    image_bytes = None
+
+                            pdf_items.append(
+                                {
+                                    "entity_type": entity_type,
+                                    "record": complete,
+                                    "image_bytes": image_bytes,
+                                }
+                            )
+
+                        st.session_state[
+                            "selection_pdf_bytes"
+                        ] = build_selection_pdf(
+                            pdf_items,
+                            title=(
+                                pdf_title.strip()
+                                or "Seleção de possibilidades"
+                            ),
+                            introduction=pdf_introduction,
+                        )
+                        st.session_state[
+                            "selection_pdf_filename"
+                        ] = (
+                            "nave_selecao_possibilidades.pdf"
+                        )
+
+                    st.success(
+                        "PDF preparado para download."
+                    )
+
+                except Exception as exc:
+                    report_service_error(
+                        "exportação da seleção em PDF",
+                        user_message=(
+                            "Não foi possível preparar "
+                            "o PDF desta seleção."
+                        ),
+                        exception=exc,
+                    )
+
+            pdf_bytes = st.session_state.get(
+                "selection_pdf_bytes"
+            )
+            if pdf_bytes:
+                st.download_button(
+                    "Baixar PDF da seleção",
+                    data=pdf_bytes,
+                    file_name=st.session_state.get(
+                        "selection_pdf_filename",
+                        "nave_selecao_possibilidades.pdf",
                     ),
-                    "prefer_new": (
-                        "Arquivo mais recente priorizado"
-                    ),
-                }.get(
-                    str(event.get("strategy")),
-                    str(event.get("strategy") or ""),
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
                 )
 
-                st.write(
-                    f"**{strategy_label}**"
-                )
-                source = str(
-                    event.get("source_file")
-                    or "Fonte não informada"
-                )
-                page = event.get("source_page")
-                source_text = source
-                if pd.notna(page):
-                    source_text += f" · página {int(page)}"
+    else:
+        selected = selected_records[0]
 
-                st.caption(source_text)
-
-                history_metrics = st.columns(4)
-                history_metrics[0].metric(
-                    "Preenchidos",
-                    len(
-                        event.get("fields_filled")
-                        or []
-                    ),
-                )
-                history_metrics[1].metric(
-                    "Atualizados",
-                    len(
-                        event.get("fields_updated")
-                        or []
-                    ),
-                )
-                history_metrics[2].metric(
-                    "Listas unidas",
-                    len(
-                        event.get("fields_merged")
-                        or []
-                    ),
-                )
-                history_metrics[3].metric(
-                    "Diferenças",
-                    len(
-                        event.get("conflict_fields")
-                        or []
-                    ),
-                )
-                st.divider()
-
-    st.markdown("### Imagens e arquivos")
-
-    try:
-        media_df = fetch_media_assets(
-            client,
-            entity_type=entity_type,
-            entity_id=entity_id,
+        entity_type = str(
+            selected.get("item_type") or ""
         )
-    except Exception as exc:
-        report_service_error(
-            "consulta do acervo visual",
-            user_message=(
-                "Não foi possível carregar as imagens "
-                "e documentos deste item."
-            ),
-            exception=exc,
+        entity_id = str(
+            selected.get("item_id") or ""
         )
-        media_df = pd.DataFrame()
+        item_name = str(
+            selected.get("name") or "Item"
+        )
 
-    _render_media_gallery(media_df)
-    _render_media_manager(
-        entity_type,
-        entity_id,
-        item_name,
-    )
-    _render_media_management(
-        entity_type,
-        entity_id,
-        media_df,
-    )
+        st.subheader(item_name)
+
+        try:
+            complete_record = fetch_knowledge_item(
+                client,
+                entity_type=entity_type,
+                entity_id=entity_id,
+            )
+        except Exception as exc:
+            report_service_error(
+                "consulta da ficha completa",
+                user_message=(
+                    "Não foi possível carregar todos os detalhes "
+                    "deste item."
+                ),
+                exception=exc,
+            )
+            complete_record = {}
+
+        complete_record = {
+            **selected,
+            **complete_record,
+        }
+
+        if not complete_record.get("supplier_name"):
+            complete_record["supplier_name"] = selected.get(
+                "supplier_name"
+            )
+
+        render_complete_record(
+            entity_type,
+            complete_record,
+        )
+
+        try:
+            enrichment_history = fetch_enrichment_history(
+                client,
+                entity_type=entity_type,
+                entity_id=entity_id,
+            )
+        except Exception:
+            enrichment_history = pd.DataFrame()
+
+        if not enrichment_history.empty:
+            with st.expander(
+                "Histórico de enriquecimento",
+                expanded=False,
+            ):
+                for _, event in enrichment_history.iterrows():
+                    strategy_label = {
+                        "enrich_safe": (
+                            "Lacunas preenchidas e diferenças "
+                            "preservadas"
+                        ),
+                        "prefer_new": (
+                            "Arquivo mais recente priorizado"
+                        ),
+                    }.get(
+                        str(event.get("strategy")),
+                        str(
+                            event.get("strategy")
+                            or ""
+                        ),
+                    )
+
+                    st.write(
+                        f"**{strategy_label}**"
+                    )
+                    source = str(
+                        event.get("source_file")
+                        or "Fonte não informada"
+                    )
+                    page = event.get("source_page")
+                    source_text = source
+                    if pd.notna(page):
+                        source_text += (
+                            f" · página {int(page)}"
+                        )
+
+                    st.caption(source_text)
+
+                    history_metrics = st.columns(4)
+                    history_metrics[0].metric(
+                        "Preenchidos",
+                        len(
+                            event.get("fields_filled")
+                            or []
+                        ),
+                    )
+                    history_metrics[1].metric(
+                        "Atualizados",
+                        len(
+                            event.get("fields_updated")
+                            or []
+                        ),
+                    )
+                    history_metrics[2].metric(
+                        "Listas unidas",
+                        len(
+                            event.get("fields_merged")
+                            or []
+                        ),
+                    )
+                    history_metrics[3].metric(
+                        "Diferenças",
+                        len(
+                            event.get("conflict_fields")
+                            or []
+                        ),
+                    )
+                    st.divider()
+
+        st.markdown("### Imagens e arquivos")
+
+        try:
+            media_df = fetch_media_assets(
+                client,
+                entity_type=entity_type,
+                entity_id=entity_id,
+            )
+        except Exception as exc:
+            report_service_error(
+                "consulta do acervo visual",
+                user_message=(
+                    "Não foi possível carregar as imagens "
+                    "e documentos deste item."
+                ),
+                exception=exc,
+            )
+            media_df = pd.DataFrame()
+
+        _render_media_gallery(media_df)
+        _render_media_manager(
+            entity_type,
+            entity_id,
+            item_name,
+        )
+        _render_media_management(
+            entity_type,
+            entity_id,
+            media_df,
+        )
 

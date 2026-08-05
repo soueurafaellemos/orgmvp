@@ -178,22 +178,56 @@ pasted_text = st.text_area(
     height=140,
 )
 
-start_page, end_page_value, pages_per_batch = 1, 0, 3
+start_page, end_page_value, pages_per_batch = 1, 0, 6
 if selected_mode != "briefing":
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        start_page = st.number_input(
-            "Página inicial", min_value=1, value=1
+    analyze_entire_document = st.toggle(
+        "Analisar o documento inteiro",
+        value=True,
+        help=(
+            "A NAVE percorre todas as páginas automaticamente, "
+            "dividindo o documento em lotes internos."
+        ),
+    )
+
+    if analyze_entire_document:
+        st.caption(
+            "Todas as páginas serão analisadas. O documento será "
+            "processado em vários lotes automáticos, sem precisar "
+            "enviá-lo novamente."
         )
-    with col2:
-        end_page_value = st.number_input(
-            "Página final (0 = até o fim)",
-            min_value=0,
-            value=0,
-        )
-    with col3:
+    else:
+        range_col1, range_col2 = st.columns(2)
+        with range_col1:
+            start_page = st.number_input(
+                "Página inicial",
+                min_value=1,
+                value=1,
+            )
+        with range_col2:
+            end_page_value = st.number_input(
+                "Página final",
+                min_value=1,
+                value=8,
+            )
+
+    with st.expander(
+        "Configurações avançadas de processamento",
+        expanded=False,
+    ):
         pages_per_batch = st.slider(
-            "Páginas por lote", 1, 8, 3
+            "Páginas processadas por lote",
+            min_value=1,
+            max_value=8,
+            value=6,
+            help=(
+                "Este número não limita o total de páginas. "
+                "Ele define apenas quantas páginas são enviadas "
+                "em cada etapa interna da leitura."
+            ),
+        )
+        st.caption(
+            "Exemplo: um PDF com 40 páginas será analisado em "
+            "vários lotes consecutivos até chegar ao final."
         )
 
 run = st.button(

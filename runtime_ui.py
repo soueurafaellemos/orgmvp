@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+import base64
 import hmac
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
 
 LOGGER = logging.getLogger("nave")
+
+
+ROOT_DIR = Path(__file__).resolve().parent
+LOGIN_LOGO_PATH = ROOT_DIR / "assets" / "nave_lockup.svg"
+
+
+def _login_logo_data_uri() -> str:
+    svg_bytes = LOGIN_LOGO_PATH.read_bytes()
+    encoded = base64.b64encode(svg_bytes).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 LOGIN_CSS = """
@@ -24,6 +36,20 @@ LOGIN_CSS = """
 .block-container {
     max-width: 560px !important;
     padding-top: 7vh !important;
+}
+
+.nave-login-logo {
+    margin: 0 auto 1.2rem;
+    max-width: 430px;
+    text-align: center;
+}
+
+.nave-login-logo img {
+    display: block;
+    height: auto;
+    margin: 0 auto;
+    max-width: 100%;
+    width: 100%;
 }
 
 .nave-login-mark {
@@ -142,14 +168,18 @@ def require_app_access() -> bool:
         return True
 
     st.markdown(LOGIN_CSS, unsafe_allow_html=True)
+    login_logo = _login_logo_data_uri()
     st.markdown(
-        """
+        f"""
+        <div class="nave-login-logo">
+            <img
+                src="{login_logo}"
+                alt="NAVE by VOE"
+            >
+        </div>
         <div class="nave-login-mark">
             Núcleo de Análise VOE para Experiências
         </div>
-        <h1 class="nave-login-title">
-            NAVE by VOE
-        </h1>
         <div class="nave-login-copy">
             Conectando briefing, repertório e decisão.
         </div>

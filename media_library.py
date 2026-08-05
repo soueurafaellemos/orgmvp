@@ -315,6 +315,29 @@ def fetch_primary_media_assets(
     return result
 
 
+def _signed_url_records(
+    response: Any,
+) -> list[dict]:
+    if isinstance(response, list):
+        return [
+            item
+            for item in response
+            if isinstance(item, dict)
+        ]
+
+    if isinstance(response, dict):
+        data = (
+            response.get("data")
+            or response.get("signedURLs")
+            or response.get("signed_urls")
+            or []
+        )
+        return data if isinstance(data, list) else []
+
+    data = getattr(response, "data", None)
+    return data if isinstance(data, list) else []
+
+
 def fetch_primary_media_urls(
     client: Client,
     items: list[tuple[str, str]],
@@ -326,21 +349,106 @@ def fetch_primary_media_urls(
         items,
     )
     result: dict[tuple[str, str], str] = {}
+    by_bucket: dict[str, list[tuple[tuple[str, str], str]]] = {}
 
     for key, media in assets.items():
-        try:
-            url = create_signed_media_url(
-                client,
-                media,
-                expires_in=expires_in,
-            )
-        except Exception:
-            url = None
+        external_url = str(
+            media.get("external_url") or ""
+        ).strip()
+        if external_url:
+            result[key] = external_url
+            continue
 
-        if url:
-            result[key] = url
+        bucket = str(
+            media.get("storage_bucket") or ""
+        ).strip()
+        path = str(
+            media.get("storage_path") or ""
+        ).strip()
+
+        if bucket and path:
+            by_bucket.setdefault(bucket, []).append(
+                (key, path)
+            )
+
+    for bucket, bucket_items in by_bucket.items():
+        paths = [path for _, path in bucket_items]
+
+        try:
+            response = (
+                client.storage
+                .from_(bucket)
+                .create_signed_urls(
+                    paths,
+                    expires_in,
+                )
+            )
+            records = _signed_url_records(response)
+
+            for index, (key, path) in enumerate(
+                bucket_items
+            ):
+                record = (
+                    records[index]
+                    if index < len(records)
+                    else {}
+                )
+                url = (
+                    record.get("signedURL")
+                    or record.get("signedUrl")
+                    or record.get("signed_url")
+                )
+                if url:
+                    result[key] = url
+
+        except Exception:
+            for key, _ in bucket_items:
+                try:
+                    url = create_signed_media_url(
+                        client,
+                        assets[key],
+                        expires_in=expires_in,
+                    )
+                except Exception:
+                    url = None
+
+                if url:
+                    result[key] = url
 
     return result
+
+
+def download_media_bytes(
+    client: Client,
+    media: dict,
+) -> bytes | None:
+    bucket = str(
+        media.get("storage_bucket") or ""
+    ).strip()
+    path = str(
+        media.get("storage_path") or ""
+    ).strip()
+
+    if not bucket or not path:
+        return None
+
+    response = (
+        client.storage
+        .from_(bucket)
+        .download(path)
+    )
+
+    if isinstance(response, bytes):
+        return response
+
+    if isinstance(response, bytearray):
+        return bytes(response)
+
+    data = getattr(response, "data", None)
+    if isinstance(data, bytes):
+        return data
+
+    return None
 
 
 def upload_media_asset(

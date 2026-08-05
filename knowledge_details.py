@@ -610,3 +610,57 @@ def render_complete_record(
             expanded=False,
         ):
             _render_fields(additional, record)
+
+
+EXPORT_EXCLUDED_SECTIONS = {
+    "Qualidade da informação",
+    "Classificação e origem",
+}
+
+EXPORT_EXCLUDED_FIELDS = {
+    "source_file",
+    "source_page",
+    "source_image_url",
+    "confidence",
+    "missing_fields",
+    "evidence",
+    "raw_data",
+}
+
+
+def formatted_sections_for_export(
+    entity_type: str,
+    record: dict,
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    result = []
+
+    for section_title, fields in DETAIL_SCHEMAS.get(
+        entity_type,
+        [],
+    ):
+        if section_title in EXPORT_EXCLUDED_SECTIONS:
+            continue
+
+        section_values = []
+
+        for field, label in fields:
+            if field in EXPORT_EXCLUDED_FIELDS:
+                continue
+
+            value, missing, _ = _format_value(
+                field,
+                record.get(field),
+                record,
+            )
+
+            if missing:
+                continue
+
+            section_values.append((label, value))
+
+        if section_values:
+            result.append(
+                (section_title, section_values)
+            )
+
+    return result

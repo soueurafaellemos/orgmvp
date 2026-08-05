@@ -603,3 +603,29 @@ Antes de usar, execute:
 - menu principal, deploy e elementos técnicos desnecessários
   continuam ocultos;
 - não exige SQL nem alteração no Supabase.
+
+
+## V18 - consulta otimizada e exportação de possibilidades
+
+- esclarece que oito páginas é o tamanho do lote, não o limite
+  do documento;
+- opção “Analisar o documento inteiro” ativada por padrão;
+- configurações de faixa e lote movidas para área avançada;
+- cache de dois minutos para contadores e listagem;
+- paginação com 25, 50 ou 100 itens;
+- URLs de miniaturas geradas em lote;
+- contagens de mídia completas carregadas somente quando o filtro
+  de acervo é utilizado;
+- seleção múltipla na tabela;
+- geração de PDF com várias possibilidades;
+- imagem principal incluída no PDF quando disponível;
+- exclusão de imagem ou arquivo disponível com confirmação;
+- não exige novo SQL.
+
+
+## V18.1 - identidade na tela de login
+
+- o logo oficial NAVE by VOE passa a aparecer na tela de acesso;
+- o logo é carregado do asset vetorial já utilizado pela interface;
+- significado e tagline permanecem abaixo da assinatura;
+- a atualização faz parte do mesmo pacote da V18.
