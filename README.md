@@ -535,3 +535,12 @@ upload ou pelo botão da Administração.
 - o download usa endereço temporário e protegido;
 - links externos continuam com “Abrir” e não oferecem download;
 - não exige nova alteração no banco.
+
+
+## V14.4 — padronização visual dos botões
+
+- todos os botões passam a seguir o mesmo padrão visual;
+- estado padrão: azul escuro com texto branco;
+- hover: azul claro da marca com texto escuro;
+- estado desabilitado: fundo cinza claro com texto cinza;
+- ajuste aplicado a botões comuns, primários, downloads e links.

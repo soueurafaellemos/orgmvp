@@ -153,39 +153,74 @@ textarea,
     border-radius: 12px !important;
 }
 
+/* =========================
+   BOTÕES PADRONIZADOS NAVE
+   Padrão: azul escuro + texto branco
+   Hover: azul claro + texto escuro
+   ========================= */
+
 .stButton > button,
 .stDownloadButton > button,
-[data-testid="stFormSubmitButton"] > button {
-    border: 1px solid var(--nave-navy);
-    border-radius: 11px;
-    font-weight: 650;
-    min-height: 2.7rem;
-    color: var(--nave-navy);
-    background: #FFFFFF;
-}
-
-.stButton > button[kind="primary"],
-.stDownloadButton > button[kind="primary"],
-[data-testid="stFormSubmitButton"] > button[kind="primary"],
+[data-testid="stFormSubmitButton"] > button,
 .stLinkButton > a,
 [data-testid="stLinkButton"] > a {
-    background: var(--nave-navy);
-    border: 1px solid var(--nave-navy);
+    background: var(--nave-navy) !important;
+    border: 1px solid var(--nave-navy) !important;
     color: #FFFFFF !important;
-    border-radius: 11px;
-    font-weight: 650;
-    min-height: 2.7rem;
+    border-radius: 11px !important;
+    font-weight: 650 !important;
+    min-height: 2.7rem !important;
     text-decoration: none !important;
+    box-shadow: none !important;
+    transition: all 0.18s ease-in-out !important;
 }
 
-.stButton > button[kind="primary"]:hover,
-.stDownloadButton > button[kind="primary"]:hover,
-[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover,
+.stButton > button p,
+.stDownloadButton > button p,
+[data-testid="stFormSubmitButton"] > button p,
+.stLinkButton > a p,
+[data-testid="stLinkButton"] > a p,
+.stLinkButton > a span,
+[data-testid="stLinkButton"] > a span {
+    color: #FFFFFF !important;
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover,
+[data-testid="stFormSubmitButton"] > button:hover,
 .stLinkButton > a:hover,
 [data-testid="stLinkButton"] > a:hover {
-    background: #22336B;
-    border-color: #22336B;
-    color: #FFFFFF !important;
+    background: var(--nave-cyan) !important;
+    border-color: var(--nave-cyan) !important;
+    color: #0C122F !important;
+}
+
+.stButton > button:hover p,
+.stDownloadButton > button:hover p,
+[data-testid="stFormSubmitButton"] > button:hover p,
+.stLinkButton > a:hover p,
+[data-testid="stLinkButton"] > a:hover p,
+.stLinkButton > a:hover span,
+[data-testid="stLinkButton"] > a:hover span {
+    color: #0C122F !important;
+}
+
+.stButton > button:disabled,
+.stDownloadButton > button:disabled,
+[data-testid="stFormSubmitButton"] > button:disabled,
+.stLinkButton > a[aria-disabled="true"],
+[data-testid="stLinkButton"] > a[aria-disabled="true"] {
+    background: #E8ECF6 !important;
+    border-color: #D3DAEC !important;
+    color: #7C88A8 !important;
+    opacity: 1 !important;
+    cursor: not-allowed !important;
+}
+
+.stButton > button:disabled p,
+.stDownloadButton > button:disabled p,
+[data-testid="stFormSubmitButton"] > button:disabled p {
+    color: #7C88A8 !important;
 }
 
 [data-testid="stAlert"] {
