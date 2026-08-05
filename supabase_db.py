@@ -979,6 +979,37 @@ def database_counts(client: Client) -> dict[str, int]:
     return result
 
 
+KNOWLEDGE_ENTITY_TABLES = {
+    "product": "products",
+    "activation": "activation_solutions",
+    "venue": "venues",
+}
+
+
+def fetch_knowledge_item(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+) -> dict[str, Any]:
+    table = KNOWLEDGE_ENTITY_TABLES.get(entity_type)
+
+    if not table:
+        raise ValueError(
+            f"Tipo de item não suportado: {entity_type}"
+        )
+
+    response = (
+        client.table(table)
+        .select("*")
+        .eq("id", entity_id)
+        .limit(1)
+        .execute()
+    )
+
+    return response.data[0] if response.data else {}
+
+
 def fetch_recommendation_candidates(
     client: Client,
     *,

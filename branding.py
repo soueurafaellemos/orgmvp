@@ -371,6 +371,51 @@ textarea,
     border-radius: 15px;
     padding: 1rem 1.1rem;
 }
+
+.nave-detail-section-title {
+    border-bottom: 1px solid var(--nave-border);
+    color: var(--nave-navy);
+    font-size: 1rem;
+    font-weight: 760;
+    margin: 1.6rem 0 0.8rem;
+    padding-bottom: 0.45rem;
+}
+
+.nave-field-card {
+    background: #FFFFFF;
+    border: 1px solid var(--nave-border);
+    border-radius: 12px;
+    height: calc(100% - 0.5rem);
+    margin-bottom: 0.75rem;
+    min-height: 92px;
+    padding: 0.85rem 0.95rem;
+}
+
+.nave-field-label {
+    color: var(--nave-cyan);
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.42rem;
+    text-transform: uppercase;
+}
+
+.nave-field-value {
+    color: var(--nave-navy);
+    font-size: 0.88rem;
+    line-height: 1.46;
+    overflow-wrap: anywhere;
+}
+
+.nave-field-value a {
+    color: var(--nave-navy);
+    font-weight: 700;
+}
+
+.nave-field-empty {
+    color: #929AAF;
+    font-style: italic;
+}
 </style>
 """
 

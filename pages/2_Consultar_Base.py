@@ -22,12 +22,15 @@ from media_library import (
     delete_media_asset,
     fetch_media_assets,
     fetch_media_counts,
+    fetch_primary_media_urls,
     format_file_size,
     upload_media_asset,
 )
 from exporters import format_pt_br_number
+from knowledge_details import render_complete_record
 from supabase_db import (
     database_counts,
+    fetch_knowledge_item,
     fetch_recommendation_candidates,
     get_supabase_client,
 )
@@ -95,7 +98,9 @@ type_labels = {
     "venue": "Locais / espaços",
 }
 
-col1, col2, col3 = st.columns([2, 1, 1])
+col1, col2, col3, col4 = st.columns(
+    [2, 1, 1, 1]
+)
 
 with col1:
     search = st.text_input(
@@ -122,6 +127,16 @@ with col3:
         help="Zero mantém todos os valores.",
     )
 
+with col4:
+    media_filter = st.selectbox(
+        "Acervo",
+        options=[
+            "Todos",
+            "Com mídia",
+            "Sem mídia",
+        ],
+    )
+
 filtered = candidates.copy()
 
 if selected_types:
@@ -142,7 +157,12 @@ if search.strip():
         + " "
         + filtered["location"].fillna("").astype(str)
     ).str.lower()
-    filtered = filtered[searchable.str.contains(normalized, regex=False)]
+    filtered = filtered[
+        searchable.str.contains(
+            normalized,
+            regex=False,
+        )
+    ]
 
 if max_price > 0:
     numeric_price = pd.to_numeric(
@@ -150,7 +170,8 @@ if max_price > 0:
         errors="coerce",
     )
     filtered = filtered[
-        numeric_price.isna() | (numeric_price <= max_price)
+        numeric_price.isna()
+        | (numeric_price <= max_price)
     ]
 
 display = filtered.copy()
@@ -159,7 +180,82 @@ if display.empty:
     st.info("Nenhum item corresponde aos filtros.")
     st.stop()
 
-display["Tipo"] = display["item_type"].map(type_labels)
+display = display.reset_index(drop=True)
+
+item_keys = [
+    (
+        str(row.get("item_type")),
+        str(row.get("item_id")),
+    )
+    for _, row in display.iterrows()
+]
+
+try:
+    media_counts = fetch_media_counts(
+        client,
+        item_keys,
+    )
+except Exception:
+    media_counts = {}
+
+display["_media_count"] = display.apply(
+    lambda row: media_counts.get(
+        (
+            str(row.get("item_type")),
+            str(row.get("item_id")),
+        ),
+        0,
+    ),
+    axis=1,
+)
+
+if media_filter == "Com mídia":
+    display = display[
+        display["_media_count"] > 0
+    ]
+elif media_filter == "Sem mídia":
+    display = display[
+        display["_media_count"] == 0
+    ]
+
+display = display.reset_index(drop=True)
+
+if display.empty:
+    st.info(
+        "Nenhum item corresponde ao filtro de acervo."
+    )
+    st.stop()
+
+visible_item_keys = [
+    (
+        str(row.get("item_type")),
+        str(row.get("item_id")),
+    )
+    for _, row in display.iterrows()
+]
+
+try:
+    primary_urls = fetch_primary_media_urls(
+        client,
+        visible_item_keys,
+    )
+except Exception:
+    primary_urls = {}
+
+display["Capa"] = display.apply(
+    lambda row: primary_urls.get(
+        (
+            str(row.get("item_type")),
+            str(row.get("item_id")),
+        ),
+        None,
+    ),
+    axis=1,
+)
+
+display["Tipo"] = display["item_type"].map(
+    type_labels
+)
 display["Valor"] = display.apply(
     lambda row: format_pt_br_number(
         row.get("base_price"),
@@ -167,52 +263,40 @@ display["Valor"] = display.apply(
             "BRL": "R$ ",
             "USD": "US$ ",
             "EUR": "€ ",
-        }.get(str(row.get("currency") or ""), ""),
-    ),
+        }.get(
+            str(row.get("currency") or ""),
+            "",
+        ),
+    )
+    or "Não informado",
     axis=1,
 )
-display["Prazo"] = display["lead_time_days"].apply(
+display["Prazo"] = display[
+    "lead_time_days"
+].apply(
     lambda value: (
         f"{int(value)} dias"
         if pd.notna(value)
-        else ""
+        else "Não informado"
     )
 )
-display["Capacidade"] = display["capacity"].apply(
+display["Capacidade"] = display[
+    "capacity"
+].apply(
     lambda value: (
         f"{int(value):,}".replace(",", ".")
         if pd.notna(value)
-        else ""
+        else "Não informado"
     )
 )
-
-display = display.reset_index(drop=True)
-
-try:
-    media_counts = fetch_media_counts(
-        client,
-        [
-            (
-                str(row.get("item_type")),
-                str(row.get("item_id")),
-            )
-            for _, row in display.iterrows()
-        ],
-    )
-except Exception:
-    media_counts = {}
-
-display["Mídia"] = display.apply(
-    lambda row: (
-        f"{media_counts.get((
-            str(row.get('item_type')),
-            str(row.get('item_id')),
-        ), 0)} arquivo(s)"
-    ),
-    axis=1,
+display["Mídia"] = display[
+    "_media_count"
+].apply(
+    lambda value: f"{int(value)} arquivo(s)"
 )
 
 columns = [
+    "Capa",
     "Tipo",
     "name",
     "category",
@@ -231,10 +315,10 @@ table = display[columns].rename(
         "supplier_name": "Fornecedor",
         "location": "Localização",
     }
-)
+).fillna("Não informado")
 
 st.caption(
-    "Selecione uma linha para abrir os detalhes, "
+    "Selecione uma linha para abrir a ficha completa, "
     "imagens e documentos."
 )
 
@@ -245,6 +329,25 @@ table_event = st.dataframe(
     key="knowledge_base_table",
     on_select="rerun",
     selection_mode="single-row",
+    row_height=64,
+    column_config={
+        "Capa": st.column_config.ImageColumn(
+            "Capa",
+            width="small",
+            help=(
+                "Miniatura de 56 × 56 px da imagem "
+                "definida como principal."
+            ),
+        ),
+        "Nome": st.column_config.TextColumn(
+            "Nome",
+            width="medium",
+        ),
+        "Mídia": st.column_config.TextColumn(
+            "Mídia",
+            width="small",
+        ),
+    },
 )
 
 st.caption(f"{len(display)} itens encontrados.")
@@ -451,12 +554,52 @@ def _render_media_gallery(
                     )
 
 
-def _render_venue_media_manager(
-    venue_id: str,
-    venue_name: str,
+def _entity_noun(
+    entity_type: str,
+) -> str:
+    return {
+        "product": "brinde",
+        "activation": "solução / ativação",
+        "venue": "local",
+    }.get(entity_type, "item")
+
+
+def _asset_options(
+    entity_type: str,
+) -> list[str]:
+    common = [
+        "main_image",
+        "gallery_image",
+        "technical_sheet",
+        "presentation",
+        "other",
+    ]
+
+    if entity_type == "venue":
+        return [
+            "main_image",
+            "gallery_image",
+            "floor_plan",
+            "elevation",
+            "access_map",
+            "technical_sheet",
+            "commercial_book",
+            "presentation",
+            "other",
+        ]
+
+    return common
+
+
+def _render_media_manager(
+    entity_type: str,
+    entity_id: str,
+    item_name: str,
 ) -> None:
+    noun = _entity_noun(entity_type)
+
     with st.expander(
-        "Adicionar imagens e documentos ao local",
+        f"Adicionar imagens e documentos ao {noun}",
         expanded=False,
     ):
         upload_tab, link_tab = st.tabs(
@@ -466,39 +609,31 @@ def _render_venue_media_manager(
         with upload_tab:
             asset_type = st.selectbox(
                 "Tipo de material",
-                options=[
-                    "main_image",
-                    "gallery_image",
-                    "floor_plan",
-                    "elevation",
-                    "access_map",
-                    "technical_sheet",
-                    "commercial_book",
-                    "presentation",
-                    "other",
-                ],
+                options=_asset_options(entity_type),
                 format_func=lambda value: (
                     ASSET_TYPE_LABELS[value]
                 ),
-                key=f"venue_asset_type_{venue_id}",
+                key=(
+                    f"asset_type_{entity_type}_{entity_id}"
+                ),
             )
 
             title = st.text_input(
                 "Título",
                 placeholder=(
-                    "Ex.: Planta baixa do salão principal"
+                    "Ex.: Imagem de referência, planta "
+                    "ou ficha técnica"
                 ),
-                key=f"venue_asset_title_{venue_id}",
+                key=(
+                    f"asset_title_{entity_type}_{entity_id}"
+                ),
             )
 
             description = st.text_area(
                 "Descrição ou observação",
-                placeholder=(
-                    "Ex.: versão atualizada, capacidade "
-                    "e medidas confirmadas..."
-                ),
                 key=(
-                    f"venue_asset_description_{venue_id}"
+                    f"asset_description_"
+                    f"{entity_type}_{entity_id}"
                 ),
             )
 
@@ -516,7 +651,9 @@ def _render_venue_media_manager(
                     "xlsx",
                 ],
                 accept_multiple_files=True,
-                key=f"venue_asset_files_{venue_id}",
+                key=(
+                    f"asset_files_{entity_type}_{entity_id}"
+                ),
             )
             st.caption(
                 "Formatos aceitos: JPG, JPEG, PNG, WEBP, GIF, "
@@ -526,7 +663,7 @@ def _render_venue_media_manager(
 
             if asset_type in IMAGE_ASSET_TYPES:
                 primary_choice = st.radio(
-                    "Definir como imagem principal do local?",
+                    f"Definir como imagem principal do {noun}?",
                     options=["Não", "Sim"],
                     index=(
                         1
@@ -535,12 +672,8 @@ def _render_venue_media_manager(
                     ),
                     horizontal=True,
                     key=(
-                        f"venue_asset_primary_"
-                        f"{venue_id}_{asset_type}"
-                    ),
-                    help=(
-                        "A imagem principal será usada como "
-                        "referência visual prioritária do local."
+                        f"asset_primary_{entity_type}_"
+                        f"{entity_id}_{asset_type}"
                     ),
                 )
                 is_primary = primary_choice == "Sim"
@@ -555,7 +688,9 @@ def _render_venue_media_manager(
                 "Adicionar ao acervo",
                 type="primary",
                 use_container_width=True,
-                key=f"venue_upload_{venue_id}",
+                key=(
+                    f"asset_upload_{entity_type}_{entity_id}"
+                ),
             ):
                 if not uploaded_assets:
                     st.warning(
@@ -578,8 +713,8 @@ def _render_venue_media_manager(
 
                             upload_media_asset(
                                 client,
-                                entity_type="venue",
-                                entity_id=venue_id,
+                                entity_type=entity_type,
+                                entity_id=entity_id,
                                 asset_type=asset_type,
                                 title=item_title,
                                 description=description,
@@ -593,8 +728,8 @@ def _render_venue_media_manager(
                             )
 
                         st.success(
-                            "Material adicionado ao acervo "
-                            f"de {venue_name}."
+                            f"Material adicionado ao acervo "
+                            f"de {item_name}."
                         )
                         st.rerun()
 
@@ -621,27 +756,32 @@ def _render_venue_media_manager(
                 format_func=lambda value: (
                     ASSET_TYPE_LABELS[value]
                 ),
-                key=f"venue_link_type_{venue_id}",
+                key=(
+                    f"link_type_{entity_type}_{entity_id}"
+                ),
             )
 
             link_title = st.text_input(
                 "Título do link",
-                placeholder=(
-                    "Ex.: Tour virtual do espaço"
+                placeholder="Ex.: Tour virtual ou case",
+                key=(
+                    f"link_title_{entity_type}_{entity_id}"
                 ),
-                key=f"venue_link_title_{venue_id}",
             )
 
             external_url = st.text_input(
                 "Endereço",
                 placeholder="https://...",
-                key=f"venue_link_url_{venue_id}",
+                key=(
+                    f"link_url_{entity_type}_{entity_id}"
+                ),
             )
 
             link_description = st.text_area(
                 "Descrição",
                 key=(
-                    f"venue_link_description_{venue_id}"
+                    f"link_description_"
+                    f"{entity_type}_{entity_id}"
                 ),
             )
 
@@ -649,7 +789,9 @@ def _render_venue_media_manager(
                 "Adicionar link ao acervo",
                 type="primary",
                 use_container_width=True,
-                key=f"venue_add_link_{venue_id}",
+                key=(
+                    f"link_add_{entity_type}_{entity_id}"
+                ),
             ):
                 if not external_url.strip().startswith(
                     ("http://", "https://")
@@ -662,8 +804,8 @@ def _render_venue_media_manager(
                     try:
                         add_external_media_link(
                             client,
-                            entity_type="venue",
-                            entity_id=venue_id,
+                            entity_type=entity_type,
+                            entity_id=entity_id,
                             asset_type=link_type,
                             title=(
                                 link_title.strip()
@@ -688,6 +830,76 @@ def _render_venue_media_manager(
                         )
 
 
+def _render_media_management(
+    entity_type: str,
+    entity_id: str,
+    media_df: pd.DataFrame,
+) -> None:
+    if (
+        media_df.empty
+        or not st.session_state.get(
+            "nave_admin_authenticated",
+            False,
+        )
+    ):
+        return
+
+    with st.expander(
+        "Gerenciar itens do acervo",
+        expanded=False,
+    ):
+        options = {
+            (
+                f"{ASSET_TYPE_LABELS.get(
+                    str(row.get('asset_type')),
+                    'Arquivo',
+                )} — "
+                f"{row.get('title')}"
+            ): index
+            for index, row in media_df.iterrows()
+        }
+
+        selected_media_label = st.selectbox(
+            "Material",
+            list(options.keys()),
+            key=(
+                f"delete_media_select_"
+                f"{entity_type}_{entity_id}"
+            ),
+        )
+
+        if st.button(
+            "Excluir material selecionado",
+            key=(
+                f"delete_media_"
+                f"{entity_type}_{entity_id}"
+            ),
+        ):
+            try:
+                media_record = media_df.loc[
+                    options[selected_media_label]
+                ].to_dict()
+
+                delete_media_asset(
+                    client,
+                    media_record,
+                )
+                st.success(
+                    "Material removido do acervo."
+                )
+                st.rerun()
+
+            except Exception as exc:
+                report_service_error(
+                    "exclusão do acervo visual",
+                    user_message=(
+                        "Não foi possível remover "
+                        "este material."
+                    ),
+                    exception=exc,
+                )
+
+
 selected_indexes = _selected_row_indexes(
     table_event
 )
@@ -710,28 +922,39 @@ if selected_indexes:
     st.divider()
     st.subheader(item_name)
 
-    detail1, detail2, detail3 = st.columns(3)
-    detail1.metric(
-        "Tipo",
-        type_labels.get(
-            entity_type,
-            entity_type,
-        ),
-    )
-    detail2.metric(
-        "Categoria",
-        str(selected.get("category") or "—"),
-    )
-    detail3.metric(
-        "Localização",
-        str(selected.get("location") or "—"),
+    try:
+        complete_record = fetch_knowledge_item(
+            client,
+            entity_type=entity_type,
+            entity_id=entity_id,
+        )
+    except Exception as exc:
+        report_service_error(
+            "consulta da ficha completa",
+            user_message=(
+                "Não foi possível carregar todos os detalhes "
+                "deste item."
+            ),
+            exception=exc,
+        )
+        complete_record = {}
+
+    complete_record = {
+        **selected,
+        **complete_record,
+    }
+
+    if not complete_record.get("supplier_name"):
+        complete_record["supplier_name"] = selected.get(
+            "supplier_name"
+        )
+
+    render_complete_record(
+        entity_type,
+        complete_record,
     )
 
-    description = str(
-        selected.get("description") or ""
-    ).strip()
-    if description:
-        st.write(description)
+    st.markdown("### Imagens e arquivos")
 
     try:
         media_df = fetch_media_assets(
@@ -751,68 +974,14 @@ if selected_indexes:
         media_df = pd.DataFrame()
 
     _render_media_gallery(media_df)
+    _render_media_manager(
+        entity_type,
+        entity_id,
+        item_name,
+    )
+    _render_media_management(
+        entity_type,
+        entity_id,
+        media_df,
+    )
 
-    if entity_type == "venue":
-        _render_venue_media_manager(
-            entity_id,
-            item_name,
-        )
-
-    if (
-        entity_type == "venue"
-        and not media_df.empty
-        and st.session_state.get(
-            "nave_admin_authenticated",
-            False,
-        )
-    ):
-        with st.expander(
-            "Gerenciar itens do acervo",
-            expanded=False,
-        ):
-            options = {
-                (
-                    f"{ASSET_TYPE_LABELS.get(
-                        str(row.get('asset_type')),
-                        'Arquivo',
-                    )} — "
-                    f"{row.get('title')}"
-                ): index
-                for index, row in media_df.iterrows()
-            }
-
-            selected_media_label = st.selectbox(
-                "Material",
-                list(options.keys()),
-                key=(
-                    f"venue_delete_media_{entity_id}"
-                ),
-            )
-
-            if st.button(
-                "Excluir material selecionado",
-                key=f"venue_delete_{entity_id}",
-            ):
-                try:
-                    media_record = media_df.loc[
-                        options[selected_media_label]
-                    ].to_dict()
-
-                    delete_media_asset(
-                        client,
-                        media_record,
-                    )
-                    st.success(
-                        "Material removido do acervo."
-                    )
-                    st.rerun()
-
-                except Exception as exc:
-                    report_service_error(
-                        "exclusão do acervo visual",
-                        user_message=(
-                            "Não foi possível remover "
-                            "este material."
-                        ),
-                        exception=exc,
-                    )

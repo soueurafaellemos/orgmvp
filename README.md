@@ -544,3 +544,18 @@ upload ou pelo botão da Administração.
 - hover: azul claro da marca com texto escuro;
 - estado desabilitado: fundo cinza claro com texto cinza;
 - ajuste aplicado a botões comuns, primários, downloads e links.
+
+
+## V15 — Fase 5D: consulta visual e ficha completa
+
+- miniatura de capa na tabela em linha de 64 px;
+- imagem visual com referência aproximada de 56 × 56 px;
+- filtro por itens com ou sem mídia;
+- ficha completa por tipo de registro;
+- campos vazios exibidos como “Não informado”;
+- informações agrupadas por contexto;
+- leitura do registro completo diretamente da tabela original;
+- imagens e arquivos disponíveis para brindes, ativações e locais;
+- upload de acervo expandido para os três tipos;
+- exclusão de mídia continua restrita à Administração;
+- não exige novo SQL.

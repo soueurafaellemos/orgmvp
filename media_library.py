@@ -271,6 +271,78 @@ def fetch_media_counts(
     return result
 
 
+def fetch_primary_media_assets(
+    client: Client,
+    items: list[tuple[str, str]],
+) -> dict[tuple[str, str], dict]:
+    if not items:
+        return {}
+
+    result: dict[tuple[str, str], dict] = {}
+    grouped: dict[str, list[str]] = {}
+
+    for entity_type, entity_id in items:
+        grouped.setdefault(entity_type, []).append(
+            str(entity_id)
+        )
+
+    for entity_type, entity_ids in grouped.items():
+        unique_ids = list(dict.fromkeys(entity_ids))
+
+        for start in range(0, len(unique_ids), 150):
+            chunk = unique_ids[start:start + 150]
+
+            response = (
+                client.table("media_assets")
+                .select(
+                    "id,entity_type,entity_id,asset_type,"
+                    "storage_bucket,storage_path,external_url,"
+                    "file_name,mime_type,is_primary"
+                )
+                .eq("entity_type", entity_type)
+                .eq("is_primary", True)
+                .in_("entity_id", chunk)
+                .execute()
+            )
+
+            for row in response.data or []:
+                key = (
+                    str(row.get("entity_type")),
+                    str(row.get("entity_id")),
+                )
+                result[key] = row
+
+    return result
+
+
+def fetch_primary_media_urls(
+    client: Client,
+    items: list[tuple[str, str]],
+    *,
+    expires_in: int = 3600,
+) -> dict[tuple[str, str], str]:
+    assets = fetch_primary_media_assets(
+        client,
+        items,
+    )
+    result: dict[tuple[str, str], str] = {}
+
+    for key, media in assets.items():
+        try:
+            url = create_signed_media_url(
+                client,
+                media,
+                expires_in=expires_in,
+            )
+        except Exception:
+            url = None
+
+        if url:
+            result[key] = url
+
+    return result
+
+
 def upload_media_asset(
     client: Client,
     *,
