@@ -741,3 +741,18 @@ Antes de usar, execute:
 Antes de usar, execute:
 
 `supabase_patch_curadoria_base_v1.sql`
+
+
+## V23.1 — curadoria simplificada para acesso compartilhado
+
+- remove status de validação da interface;
+- remove responsável pela revisão;
+- remove próxima revisão;
+- remove responsável do histórico exibido;
+- mantém data automática das alterações;
+- mantém fonte da informação;
+- mantém observações internas;
+- mantém situação Ativo / Arquivado;
+- simplifica os filtros da Base e de Fornecedores;
+- não exige novo SQL;
+- não contém arquivos de logo.

@@ -15,10 +15,7 @@ from branding import (
 
 from runtime_ui import report_service_error, require_app_access
 from exporters import format_pt_br_number
-from curation_ui import (
-    VALIDATION_LABELS,
-    render_curation_editor,
-)
+from curation_ui import render_curation_editor
 from supabase_db import (
     fetch_curation_states,
     fetch_supplier_by_id,
@@ -206,13 +203,9 @@ with filter2:
 
 with filter3:
     curation_filter = st.selectbox(
-        "Curadoria",
+        "Situação",
         [
             "Ativos",
-            "Não revisados",
-            "Em revisão",
-            "Validados",
-            "Precisam atualização",
             "Arquivados",
             "Todos",
         ],
@@ -236,18 +229,6 @@ if curation_filter == "Ativos":
 elif curation_filter == "Arquivados":
     filtered = filtered[
         filtered["is_archived"].fillna(False)
-    ]
-elif curation_filter != "Todos":
-    status_map = {
-        "Não revisados": "not_reviewed",
-        "Em revisão": "in_review",
-        "Validados": "validated",
-        "Precisam atualização": "needs_update",
-    }
-    filtered = filtered[
-        filtered["validation_status"].fillna(
-            "not_reviewed"
-        ).eq(status_map[curation_filter])
     ]
 
 if search.strip():
@@ -381,11 +362,15 @@ overview["Locais"] = pd.to_numeric(
     overview["venues_count"],
     errors="coerce",
 ).fillna(0).astype(int)
-overview["Validação"] = overview[
-    "validation_status"
-].fillna("not_reviewed").map(
-    VALIDATION_LABELS
-).fillna("Não revisado")
+overview["Situação"] = overview[
+    "is_archived"
+].fillna(False).apply(
+    lambda value: (
+        "Arquivado"
+        if bool(value)
+        else "Ativo"
+    )
+)
 
 st.caption(
     "Selecione uma linha para abrir os dados completos e "
@@ -404,7 +389,7 @@ supplier_event = st.dataframe(
             "Soluções",
             "Produtos",
             "Locais",
-            "Validação",
+            "Situação",
         ]
     ],
     use_container_width=True,
@@ -438,9 +423,9 @@ supplier_event = st.dataframe(
                 width="large",
             )
         ),
-        "Validação": st.column_config.TextColumn(
-            "Validação",
-            width="medium",
+        "Situação": st.column_config.TextColumn(
+            "Situação",
+            width="small",
         ),
     },
 )

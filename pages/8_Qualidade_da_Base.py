@@ -346,7 +346,6 @@ with priorities_tab:
         "Cidade",
         "Pontuação",
         "Status",
-        "Validação",
         "Arquivado",
         "Mídia",
         "Preço / logística",

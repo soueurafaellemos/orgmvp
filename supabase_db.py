@@ -2659,10 +2659,7 @@ def update_curated_entity(
     }
 
     for field in (
-        "validation_status",
-        "reviewed_by",
         "review_source",
-        "next_review_date",
         "internal_notes",
         "is_archived",
     ):

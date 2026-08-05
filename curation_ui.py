@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
@@ -576,12 +575,9 @@ FIELD_LABELS = {
 
 FIELD_LABELS.update(
     {
-        "validation_status": "Status de validação",
-        "reviewed_by": "Responsável pela revisão",
-        "review_source": "Fonte da revisão",
-        "next_review_date": "Próxima revisão",
+        "review_source": "Fonte da informação",
         "internal_notes": "Observações internas",
-        "is_archived": "Arquivado",
+        "is_archived": "Situação do cadastro",
     }
 )
 
@@ -798,38 +794,6 @@ def render_curation_status(
     state: dict | None,
 ) -> None:
     state = state or {}
-    status = str(
-        state.get("validation_status")
-        or "not_reviewed"
-    )
-
-    columns = st.columns(4)
-
-    columns[0].metric(
-        "Validação",
-        VALIDATION_LABELS.get(
-            status,
-            status,
-        ),
-    )
-    columns[1].metric(
-        "Responsável",
-        state.get("reviewed_by")
-        or "Não informado",
-    )
-    columns[2].metric(
-        "Última revisão",
-        (
-            str(state.get("reviewed_at"))[:10]
-            if state.get("reviewed_at")
-            else "Não informada"
-        ),
-    )
-    columns[3].metric(
-        "Próxima revisão",
-        state.get("next_review_date")
-        or "Não programada",
-    )
 
     if state.get("is_archived"):
         st.warning(
@@ -902,90 +866,28 @@ def render_curation_editor(
                                 supplier_options=supplier_options,
                             )
 
-            st.markdown("#### Validação e revisão")
+            st.markdown("#### Informações internas")
 
             meta1, meta2 = st.columns(2)
 
             with meta1:
-                current_status = str(
-                    state.get("validation_status")
-                    or "not_reviewed"
-                )
-                validation_status = st.selectbox(
-                    "Status de validação",
-                    VALIDATION_VALUES,
-                    index=(
-                        VALIDATION_VALUES.index(
-                            current_status
-                        )
-                        if current_status
-                        in VALIDATION_VALUES
-                        else 0
-                    ),
-                    format_func=lambda item: (
-                        VALIDATION_LABELS[item]
-                    ),
-                    key=(
-                        f"validation_status_"
-                        f"{entity_type}_{entity_id}"
-                    ),
-                )
-
-                reviewed_by = st.text_input(
-                    "Responsável pela revisão",
-                    value=str(
-                        state.get("reviewed_by")
-                        or ""
-                    ),
-                    placeholder="Nome da pessoa que revisou",
-                    key=(
-                        f"reviewed_by_"
-                        f"{entity_type}_{entity_id}"
-                    ),
-                )
-
                 current_source = str(
                     state.get("review_source")
                     or "Não informado"
                 )
-                if current_source not in REVIEW_SOURCES:
-                    REVIEW_SOURCES.append(current_source)
+                source_options = list(REVIEW_SOURCES)
+
+                if current_source not in source_options:
+                    source_options.append(current_source)
 
                 review_source = st.selectbox(
-                    "Fonte da revisão",
-                    REVIEW_SOURCES,
-                    index=REVIEW_SOURCES.index(
+                    "Fonte da informação",
+                    source_options,
+                    index=source_options.index(
                         current_source
                     ),
                     key=(
                         f"review_source_"
-                        f"{entity_type}_{entity_id}"
-                    ),
-                )
-
-            with meta2:
-                next_review_date = st.text_input(
-                    "Próxima revisão",
-                    value=str(
-                        state.get("next_review_date")
-                        or ""
-                    ),
-                    placeholder="DD/MM/AAAA",
-                    key=(
-                        f"next_review_date_"
-                        f"{entity_type}_{entity_id}"
-                    ),
-                )
-
-                internal_notes = st.text_area(
-                    "Observações internas",
-                    value=str(
-                        state.get("internal_notes")
-                        or ""
-                    ),
-                    height=105,
-                    key=(
-                        f"internal_notes_"
                         f"{entity_type}_{entity_id}"
                     ),
                 )
@@ -997,11 +899,25 @@ def render_curation_editor(
                         or False
                     ),
                     help=(
-                        "Itens arquivados continuam na base, "
-                        "mas deixam de participar das recomendações."
+                        "O cadastro continua na base e no histórico, "
+                        "mas deixa de participar das recomendações."
                     ),
                     key=(
                         f"is_archived_"
+                        f"{entity_type}_{entity_id}"
+                    ),
+                )
+
+            with meta2:
+                internal_notes = st.text_area(
+                    "Observações internas",
+                    value=str(
+                        state.get("internal_notes")
+                        or ""
+                    ),
+                    height=130,
+                    key=(
+                        f"internal_notes_"
                         f"{entity_type}_{entity_id}"
                     ),
                 )
@@ -1040,10 +956,6 @@ def render_curation_editor(
                             )
                         )
 
-                parsed_review_date = _parse_date(
-                    next_review_date
-                )
-
                 with st.spinner(
                     "Salvando alterações e histórico..."
                 ):
@@ -1052,8 +964,7 @@ def render_curation_editor(
                         entity_type=entity_type,
                         entity_id=entity_id,
                         updates=updates,
-                        editor_name=reviewed_by.strip()
-                        or "Usuário da NAVE",
+                        editor_name="Usuário da NAVE",
                         edit_notes=edit_notes.strip()
                         or None,
                         field_labels=FIELD_LABELS,
@@ -1061,21 +972,16 @@ def render_curation_editor(
                             "validation_status": (
                                 "archived"
                                 if is_archived
-                                else validation_status
+                                else "not_reviewed"
                             ),
-                            "reviewed_by": (
-                                reviewed_by.strip()
-                                or None
-                            ),
+                            "reviewed_by": None,
                             "review_source": (
                                 None
                                 if review_source
                                 == "Não informado"
                                 else review_source
                             ),
-                            "next_review_date": (
-                                parsed_review_date
-                            ),
+                            "next_review_date": None,
                             "internal_notes": (
                                 internal_notes.strip()
                                 or None
@@ -1156,9 +1062,6 @@ def render_curation_history(
         display["Novo valor"] = display[
             "new_value"
         ].apply(_text_value)
-        display["Responsável"] = display[
-            "editor_name"
-        ].fillna("Não informado")
         display["Observação"] = display[
             "edit_notes"
         ].fillna("")
@@ -1170,7 +1073,6 @@ def render_curation_history(
                     "Campo",
                     "Valor anterior",
                     "Novo valor",
-                    "Responsável",
                     "Observação",
                 ]
             ],

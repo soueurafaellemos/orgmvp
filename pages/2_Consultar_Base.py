@@ -32,10 +32,7 @@ from media_library import (
 )
 from exporters import format_pt_br_number
 from knowledge_details import render_complete_record
-from curation_ui import (
-    VALIDATION_LABELS,
-    render_curation_editor,
-)
+from curation_ui import render_curation_editor
 from selection_pdf import build_selection_pdf
 from supabase_db import (
     database_counts,
@@ -203,13 +200,9 @@ with col4:
 
 with col5:
     curation_filter = st.selectbox(
-        "Curadoria",
+        "Situação",
         options=[
             "Ativos",
-            "Não revisados",
-            "Em revisão",
-            "Validados",
-            "Precisam atualização",
             "Arquivados",
             "Todos",
         ],
@@ -224,18 +217,6 @@ if curation_filter == "Ativos":
 elif curation_filter == "Arquivados":
     filtered = filtered[
         filtered["is_archived"].fillna(False)
-    ]
-elif curation_filter != "Todos":
-    status_map = {
-        "Não revisados": "not_reviewed",
-        "Em revisão": "in_review",
-        "Validados": "validated",
-        "Precisam atualização": "needs_update",
-    }
-    filtered = filtered[
-        filtered["validation_status"].fillna(
-            "not_reviewed"
-        ).eq(status_map[curation_filter])
     ]
 
 if selected_types:
@@ -492,11 +473,15 @@ display["Mídia"] = display[
 ].apply(
     lambda value: f"{int(value)} arquivo(s)"
 )
-display["Validação"] = display[
-    "validation_status"
-].fillna("not_reviewed").map(
-    VALIDATION_LABELS
-).fillna("Não revisado")
+display["Situação"] = display[
+    "is_archived"
+].fillna(False).apply(
+    lambda value: (
+        "Arquivado"
+        if bool(value)
+        else "Ativo"
+    )
+)
 
 columns = [
     "Capa",
@@ -509,7 +494,7 @@ columns = [
     "Capacidade",
     "location",
     "Mídia",
-    "Validação",
+    "Situação",
 ]
 
 table = display[columns].rename(
@@ -553,9 +538,9 @@ table_event = st.dataframe(
             "Mídia",
             width="small",
         ),
-        "Validação": st.column_config.TextColumn(
-            "Validação",
-            width="medium",
+        "Situação": st.column_config.TextColumn(
+            "Situação",
+            width="small",
         ),
     },
 )
