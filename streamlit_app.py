@@ -106,15 +106,36 @@ with st.sidebar:
                 supabase_url,
                 supabase_secret_key,
             )
-            connection = test_connection(database_client)
             st.success(
-                "Supabase conectado. "
-                f"Fornecedores cadastrados: "
-                f"{connection['supplier_count']}."
+                "Supabase configurado. O teste de conexão não bloqueia "
+                "mais a abertura do aplicativo."
             )
+
+            if st.button(
+                "Testar conexão com Supabase",
+                use_container_width=True,
+            ):
+                try:
+                    with st.spinner("Testando Supabase..."):
+                        connection = test_connection(
+                            database_client
+                        )
+                    st.success(
+                        "Supabase conectado. "
+                        f"Fornecedores cadastrados: "
+                        f"{connection['supplier_count']}."
+                    )
+                except Exception as exc:
+                    st.error(
+                        "Não foi possível testar o Supabase agora: "
+                        f"{exc}"
+                    )
         except Exception as exc:
             database_client = None
-            st.error(f"Supabase não conectado: {exc}")
+            st.error(
+                "Não foi possível preparar o cliente Supabase: "
+                f"{exc}"
+            )
     else:
         database_client = None
         st.info(
