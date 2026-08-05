@@ -28,6 +28,9 @@ from briefing_diagnostic import (
 )
 from briefing_pdf import build_internal_briefing_pdf
 from document_io import prepare_documents
+from execution_recommendation import (
+    score_execution_recommendations,
+)
 from exporters import format_pt_br_number
 from gemini_extractor import (
     GeminiQuotaError,
@@ -199,6 +202,8 @@ def _set_default_state() -> None:
         "recommendation_diagnostic": None,
         "recommendation_service_agenda": "",
         "recommendation_ai_cache": {},
+        "execution_recommendation_results": {},
+        "execution_recommendation_briefs": {},
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -1462,6 +1467,12 @@ Briefing:
         if diagnose_submitted and not submitted:
             st.session_state["recommendation_brief"] = None
             st.session_state["recommendation_results"] = None
+            st.session_state[
+                "execution_recommendation_results"
+            ] = {}
+            st.session_state[
+                "execution_recommendation_briefs"
+            ] = {}
             st.success(
                 "Diagnóstico atualizado com a estrutura revisada."
             )
@@ -1481,8 +1492,31 @@ Briefing:
                     limit=12,
                 )
 
+                if (
+                    parsed.get("briefing_profile")
+                    == "Programa multi-execução"
+                    and parsed.get("executions")
+                ):
+                    (
+                        execution_results,
+                        execution_briefs,
+                    ) = score_execution_recommendations(
+                        candidates,
+                        parsed,
+                        limit=12,
+                    )
+                else:
+                    execution_results = {}
+                    execution_briefs = {}
+
             st.session_state["recommendation_brief"] = parsed
             st.session_state["recommendation_results"] = results
+            st.session_state[
+                "execution_recommendation_results"
+            ] = execution_results
+            st.session_state[
+                "execution_recommendation_briefs"
+            ] = execution_briefs
 
         if not st.session_state.get(
             "recommendation_source_text"
@@ -1543,22 +1577,108 @@ if brief:
     )
 
     if brief.get("briefing_profile") == "Programa multi-execução":
-        st.info(
-            "A recomendação abaixo usa os campos centrais do projeto. "
-            "As recomendações específicas por praça serão tratadas em "
-            "uma evolução própria."
+        execution_count = len(
+            st.session_state.get(
+                "execution_recommendation_results",
+                {},
+            )
+        )
+        st.success(
+            f"Foram gerados rankings específicos para "
+            f"{execution_count} execução(ões), além da visão geral."
         )
 
 if results is not None:
     st.divider()
     st.subheader("5. Recomendações")
 
-    if results.empty:
-        st.warning(
-            "A base ainda não possui itens compatíveis com os filtros."
+    execution_results_map = st.session_state.get(
+        "execution_recommendation_results",
+        {},
+    )
+    execution_briefs_map = st.session_state.get(
+        "execution_recommendation_briefs",
+        {},
+    )
+
+    scope_labels = ["Visão geral do projeto"]
+    scope_labels.extend(execution_results_map.keys())
+
+    if len(scope_labels) > 1:
+        selected_scope = st.selectbox(
+            "Escopo da recomendação",
+            scope_labels,
+            help=(
+                "A visão geral usa o briefing central. Cada execução "
+                "aplica cidade, data, público, produto e budget próprios."
+            ),
         )
     else:
-        for _, row in results.iterrows():
+        selected_scope = "Visão geral do projeto"
+
+    if selected_scope == "Visão geral do projeto":
+        display_results = results
+        display_brief = brief
+    else:
+        display_results = execution_results_map.get(
+            selected_scope,
+            pd.DataFrame(),
+        )
+        display_brief = execution_briefs_map.get(
+            selected_scope,
+            {},
+        )
+
+    if selected_scope != "Visão geral do projeto":
+        active = display_brief.get("active_execution") or {}
+
+        st.markdown(f"### {selected_scope}")
+
+        e1, e2, e3, e4, e5 = st.columns(5)
+        e1.metric(
+            "Cidade",
+            active.get("city") or "Não informada",
+        )
+        e2.metric(
+            "Instituição / local",
+            active.get("institution")
+            or active.get("venue")
+            or "Não informado",
+        )
+        e3.metric(
+            "Produto",
+            active.get("product_name") or "Não informado",
+        )
+        e4.metric(
+            "Público",
+            (
+                f"{int(active['audience_quantity']):,}".replace(
+                    ",", "."
+                )
+                if active.get("audience_quantity")
+                else "Não informado"
+            ),
+        )
+        e5.metric(
+            "Budget local",
+            format_pt_br_number(
+                active.get("budget_amount"),
+                prefix="R$ ",
+            ) or "Não informado",
+        )
+
+        if not active.get("budget_amount"):
+            st.warning(
+                "Esta execução não possui budget local. O sistema não "
+                "usou automaticamente o budget global como verba da praça."
+            )
+
+    if display_results is None or display_results.empty:
+        st.warning(
+            "A base ainda não possui itens compatíveis com este escopo."
+        )
+    else:
+        for _, row in display_results.iterrows():
             title = (
                 f"{int(row['rank'])}. {row['name']} "
                 f"— {row['total_score']:.0f}/100"
@@ -1644,6 +1764,18 @@ if results is not None:
         st.divider()
         st.subheader("Salvar como versão do projeto")
 
+        if execution_results_map:
+            total_execution_results = sum(
+                len(frame)
+                for frame in execution_results_map.values()
+                if frame is not None
+            )
+            st.caption(
+                f"O salvamento incluirá a visão geral e "
+                f"{total_execution_results} resultados distribuídos "
+                f"entre {len(execution_results_map)} execução(ões)."
+            )
+
         version_notes = st.text_input(
             "Observação desta versão",
             placeholder=(
@@ -1671,6 +1803,8 @@ if results is not None:
                     ),
                     source_files=brief.get("source_files") or [],
                     version_notes=version_notes,
+                    execution_results=execution_results_map,
+                    execution_briefs=execution_briefs_map,
                 )
 
                 adaptive = saved.get("adaptive_counts") or {}
@@ -1678,7 +1812,9 @@ if results is not None:
 
                 st.success(
                     f"Versão {saved['version_number']} salva com "
-                    f"{saved['results_saved']} recomendações e "
+                    f"{saved['results_saved']} recomendações gerais, "
+                    f"{saved.get('execution_results_saved', 0)} "
+                    f"recomendações por execução e "
                     f"{structured_count} registros estruturados."
                 )
                 st.page_link(

@@ -1167,6 +1167,8 @@ def save_recommendation(
     diagnostic: dict | None = None,
     source_files: list[str] | None = None,
     version_notes: str | None = None,
+    execution_results: dict[str, pd.DataFrame] | None = None,
+    execution_briefs: dict[str, dict] | None = None,
 ) -> dict:
     project_id = ensure_project_for_recommendation(
         client,
@@ -1305,11 +1307,65 @@ def save_recommendation(
             result_rows
         ).execute()
 
+    execution_rows = []
+
+    for execution_name, frame in (
+        execution_results or {}
+    ).items():
+        execution_brief = (
+            execution_briefs or {}
+        ).get(execution_name, {})
+        execution_snapshot = (
+            execution_brief.get("active_execution")
+            or {"name": execution_name}
+        )
+
+        for row in dataframe_records(frame):
+            execution_rows.append(
+                {
+                    "query_id": query_id,
+                    "execution_name": execution_name,
+                    "execution_snapshot": _json_safe(
+                        execution_snapshot
+                    ),
+                    "item_type": row.get("item_type"),
+                    "item_id": row.get("item_id"),
+                    "rank": int(row.get("rank") or 0),
+                    "total_score": row.get("total_score"),
+                    "relevance_score": row.get(
+                        "relevance_score"
+                    ),
+                    "budget_score": row.get("budget_score"),
+                    "quantity_score": row.get(
+                        "quantity_score"
+                    ),
+                    "time_score": row.get("time_score"),
+                    "location_score": row.get(
+                        "location_score"
+                    ),
+                    "estimated_total": row.get(
+                        "estimated_total"
+                    ),
+                    "reason": row.get("reason"),
+                    "warnings": row.get("warnings") or [],
+                    "snapshot": row,
+                }
+            )
+
+    if execution_rows:
+        client.table(
+            "execution_recommendation_results"
+        ).insert(execution_rows).execute()
+
     return {
         "query_id": query_id,
         "project_id": project_id,
         "version_number": version_number,
         "results_saved": len(result_rows),
+        "execution_results_saved": len(execution_rows),
+        "execution_scopes_saved": len(
+            execution_results or {}
+        ),
         "adaptive_counts": adaptive_counts,
     }
 
@@ -1372,6 +1428,44 @@ def fetch_recommendation_results(
         .execute()
     )
     return pd.DataFrame(response.data or [])
+
+
+
+def fetch_execution_recommendation_results(
+    client: Client,
+    query_id: str,
+    *,
+    execution_name: str | None = None,
+) -> pd.DataFrame:
+    query = (
+        client.table("execution_recommendation_results")
+        .select("*")
+        .eq("query_id", query_id)
+        .order("execution_name")
+        .order("rank")
+    )
+    if execution_name:
+        query = query.eq("execution_name", execution_name)
+    return pd.DataFrame(query.execute().data or [])
+
+
+def fetch_execution_recommendation_summary(
+    client: Client,
+    *,
+    query_id: str | None = None,
+    project_id: str | None = None,
+) -> pd.DataFrame:
+    query = (
+        client.table("execution_recommendation_summary")
+        .select("*")
+        .order("version_number", desc=True)
+        .order("execution_name")
+    )
+    if query_id:
+        query = query.eq("query_id", query_id)
+    if project_id:
+        query = query.eq("project_id", project_id)
+    return pd.DataFrame(query.execute().data or [])
 
 
 def fetch_recommendation_feedback(

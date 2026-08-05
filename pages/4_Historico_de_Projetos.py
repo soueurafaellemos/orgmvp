@@ -22,6 +22,8 @@ from briefing_diagnostic import generate_service_agenda
 from briefing_pdf import build_internal_briefing_pdf
 from exporters import format_pt_br_number
 from supabase_db import (
+    fetch_execution_recommendation_results,
+    fetch_execution_recommendation_summary,
     fetch_project_history_overview,
     fetch_recommendation_feedback,
     fetch_recommendation_history,
@@ -532,10 +534,79 @@ project_options = {
     for _, row in filtered_projects.iterrows()
 }
 
+project_placeholder = "Selecione um projeto para visualizar"
+
 selected_project_label = st.selectbox(
     "Projeto",
-    options=list(project_options.keys()),
+    options=[project_placeholder, *project_options.keys()],
+    index=0,
 )
+
+if selected_project_label == project_placeholder:
+    st.markdown("### Visão geral dos projetos")
+
+    overview = filtered_projects.copy()
+
+    overview["Projeto"] = overview["project_name"].fillna(
+        "Projeto sem nome"
+    )
+    overview["Cliente"] = overview["client_brand"].fillna(
+        "Não informado"
+    )
+    overview["Evento"] = overview["event_name"].fillna("")
+    overview["Versões"] = pd.to_numeric(
+        overview["recommendation_versions"],
+        errors="coerce",
+    ).fillna(0).astype(int)
+    overview["Completude atual"] = overview[
+        "latest_completeness_score"
+    ].apply(
+        lambda value: (
+            f"{int(value)}%"
+            if not _missing(value)
+            else "Não calculada"
+        )
+    )
+    overview["Status atual"] = overview[
+        "latest_readiness_status"
+    ].fillna("Não informado")
+    overview["Budget"] = overview["budget_total_brl"].apply(
+        _money
+    )
+    overview["Última atividade"] = overview[
+        "latest_activity"
+    ].apply(
+        lambda value: (
+            str(value)[:10]
+            if not _missing(value)
+            else "Não informada"
+        )
+    )
+
+    st.dataframe(
+        overview[
+            [
+                "Projeto",
+                "Cliente",
+                "Evento",
+                "Versões",
+                "Completude atual",
+                "Status atual",
+                "Budget",
+                "Última atividade",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.info(
+        "Selecione um projeto acima para abrir o briefing, "
+        "o diagnóstico, as recomendações, a comparação de versões "
+        "e os feedbacks."
+    )
+    st.stop()
+
 selected_project_id = project_options[selected_project_label]
 
 versions = fetch_recommendation_history(
@@ -620,11 +691,19 @@ if query.get("version_notes"):
         + str(query.get("version_notes"))
     )
 
-tab_brief, tab_diagnostic, tab_results, tab_compare, tab_feedback = st.tabs(
+(
+    tab_brief,
+    tab_diagnostic,
+    tab_results,
+    tab_execution,
+    tab_compare,
+    tab_feedback,
+) = st.tabs(
     [
         "Briefing",
         "Diagnóstico",
-        "Recomendações",
+        "Recomendações gerais",
+        "Por execução",
         "Comparar versões",
         "Feedback",
     ]
@@ -886,6 +965,139 @@ with tab_results:
             use_container_width=True,
             hide_index=True,
         )
+
+with tab_execution:
+    execution_summary = fetch_execution_recommendation_summary(
+        client,
+        query_id=selected_query_id,
+    )
+
+    if execution_summary.empty:
+        st.info(
+            "Esta versão não possui recomendações específicas por execução."
+        )
+    else:
+        summary_display = execution_summary.copy()
+        summary_display["Nota principal"] = summary_display[
+            "top_score"
+        ].apply(
+            lambda value: (
+                f"{float(value):.0f}/100"
+                if not _missing(value)
+                else "Não informada"
+            )
+        )
+
+        st.dataframe(
+            summary_display[
+                [
+                    "execution_name",
+                    "results_count",
+                    "top_item_name",
+                    "top_item_type",
+                    "Nota principal",
+                ]
+            ].rename(
+                columns={
+                    "execution_name": "Execução",
+                    "results_count": "Resultados",
+                    "top_item_name": "Primeira recomendação",
+                    "top_item_type": "Tipo",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        execution_names = list(
+            execution_summary["execution_name"]
+            .dropna()
+            .astype(str)
+            .unique()
+        )
+
+        selected_execution_name = st.selectbox(
+            "Execução para visualizar",
+            execution_names,
+            key="history_execution_name",
+        )
+
+        execution_results = (
+            fetch_execution_recommendation_results(
+                client,
+                selected_query_id,
+                execution_name=selected_execution_name,
+            )
+        )
+
+        if execution_results.empty:
+            st.info("Nenhum resultado encontrado para esta execução.")
+        else:
+            first_snapshot = (
+                execution_results.iloc[0].get(
+                    "execution_snapshot"
+                )
+                or {}
+            )
+            if isinstance(first_snapshot, str):
+                try:
+                    first_snapshot = json.loads(first_snapshot)
+                except Exception:
+                    first_snapshot = {}
+
+            x1, x2, x3, x4 = st.columns(4)
+            x1.metric(
+                "Cidade",
+                first_snapshot.get("city") or "Não informada",
+            )
+            x2.metric(
+                "Instituição / local",
+                first_snapshot.get("institution")
+                or first_snapshot.get("venue")
+                or "Não informado",
+            )
+            x3.metric(
+                "Produto",
+                first_snapshot.get("product_name")
+                or "Não informado",
+            )
+            x4.metric(
+                "Budget local",
+                _money(first_snapshot.get("budget_amount")),
+            )
+
+            rows = []
+            for _, row in execution_results.iterrows():
+                snapshot = row.get("snapshot") or {}
+                if isinstance(snapshot, str):
+                    try:
+                        snapshot = json.loads(snapshot)
+                    except Exception:
+                        snapshot = {}
+
+                rows.append(
+                    {
+                        "Posição": row.get("rank"),
+                        "Item": snapshot.get("name") or "Sem nome",
+                        "Tipo": row.get("item_type"),
+                        "Fornecedor": (
+                            snapshot.get("supplier_name")
+                            or "Não informado"
+                        ),
+                        "Nota": row.get("total_score"),
+                        "Estimativa": _money(
+                            row.get("estimated_total")
+                        ),
+                        "Motivo": row.get("reason"),
+                    }
+                )
+
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
 
 with tab_compare:
     if len(versions) < 2:
