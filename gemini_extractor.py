@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from typing import Type, TypeVar
 
 from google import genai
@@ -29,6 +30,49 @@ from prompts import (
 
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
+
+
+class GeminiQuotaError(RuntimeError):
+    """Friendly error for Gemini 429 / quota exhaustion."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: int | None = None,
+        model: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+        self.model = model
+
+
+def _quota_retry_seconds(message: str) -> int | None:
+    patterns = [
+        r"retry in\s+([0-9]+(?:\.[0-9]+)?)s",
+        r"retryDelay[^0-9]*([0-9]+(?:\.[0-9]+)?)",
+        r"retry after\s+([0-9]+(?:\.[0-9]+)?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if match:
+            return max(1, int(float(match.group(1)) + 0.999))
+    return None
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    signals = (
+        "ratelimiterror",
+        "too_many_requests",
+        "resource_exhausted",
+        "quota exceeded",
+        "exceeded your current quota",
+        "error code: 429",
+        "code': 429",
+        '"code": 429',
+    )
+    return any(signal in text for signal in signals)
 
 
 def get_client(api_key: str | None = None) -> genai.Client:
@@ -68,18 +112,34 @@ def _structured_call(
     schema: Type[SchemaT],
     context: str,
 ) -> SchemaT:
-    interaction = client.interactions.create(
-        model=model,
-        input=[
-            {"type": "text", "text": prompt},
-            *[_input_item(doc) for doc in docs],
-        ],
-        response_format={
-            "type": "text",
-            "mime_type": "application/json",
-            "schema": schema.model_json_schema(),
-        },
-    )
+    try:
+        interaction = client.interactions.create(
+            model=model,
+            input=[
+                {"type": "text", "text": prompt},
+                *[_input_item(doc) for doc in docs],
+            ],
+            response_format={
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": schema.model_json_schema(),
+            },
+        )
+    except Exception as exc:
+        if _is_quota_error(exc):
+            retry_after = _quota_retry_seconds(str(exc))
+            wait_text = (
+                f" Aguarde aproximadamente {retry_after} segundos."
+                if retry_after
+                else " Aguarde um pouco antes de tentar novamente."
+            )
+            raise GeminiQuotaError(
+                "O limite temporário do Gemini foi atingido."
+                + wait_text,
+                retry_after_seconds=retry_after,
+                model=model,
+            ) from exc
+        raise
     if not interaction.output_text:
         raise RuntimeError(f"O Gemini não devolveu conteúdo para {context}.")
     try:
@@ -451,6 +511,54 @@ def extract_briefing(
 
 
 
+
+def _recommendation_call_with_fallback(
+    client: genai.Client,
+    *,
+    model: str,
+    prompt: str,
+    docs: list[InputDocument],
+    context: str,
+) -> RecommendationBrief:
+    models_to_try = [model]
+
+    economical_model = "gemini-3.5-flash-lite"
+    if model != economical_model:
+        models_to_try.append(economical_model)
+
+    last_quota_error: GeminiQuotaError | None = None
+
+    for candidate_model in models_to_try:
+        try:
+            return _structured_call(
+                client,
+                model=candidate_model,
+                prompt=prompt,
+                docs=docs,
+                schema=RecommendationBrief,
+                context=context,
+            )
+        except GeminiQuotaError as exc:
+            last_quota_error = exc
+
+    if last_quota_error:
+        raise GeminiQuotaError(
+            (
+                "Os modelos disponíveis atingiram o limite temporário "
+                "do Gemini. Nenhuma informação do briefing foi perdida."
+            ),
+            retry_after_seconds=(
+                last_quota_error.retry_after_seconds
+            ),
+            model=last_quota_error.model,
+        ) from last_quota_error
+
+    raise RuntimeError(
+        "Não foi possível processar o briefing com os modelos disponíveis."
+    )
+
+
+
 def parse_recommendation_brief(
     text: str,
     *,
@@ -463,7 +571,7 @@ def parse_recommendation_brief(
         data=text.encode("utf-8"),
         mime_type="text/plain",
     )
-    return _structured_call(
+    return _recommendation_call_with_fallback(
         client,
         model=model,
         prompt=(
@@ -471,7 +579,6 @@ def parse_recommendation_brief(
             + "\n\nEstruture a consulta abaixo."
         ),
         docs=[source],
-        schema=RecommendationBrief,
         context="consulta do recomendador",
     )
 
@@ -501,7 +608,7 @@ def parse_recommendation_sources(
             "Envie ao menos um arquivo ou cole o briefing."
         )
 
-    result = _structured_call(
+    result = _recommendation_call_with_fallback(
         client,
         model=model,
         prompt=(
@@ -510,7 +617,6 @@ def parse_recommendation_sources(
               "preencha o formulário da consulta."
         ),
         docs=all_docs,
-        schema=RecommendationBrief,
         context="preenchimento automático do briefing",
     )
 

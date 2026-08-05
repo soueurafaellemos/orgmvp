@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import date
 from typing import Any
@@ -28,6 +29,7 @@ from briefing_diagnostic import (
 from document_io import prepare_documents
 from exporters import format_pt_br_number
 from gemini_extractor import (
+    GeminiQuotaError,
     parse_recommendation_brief,
     parse_recommendation_sources,
 )
@@ -76,14 +78,15 @@ with st.sidebar:
     model = st.selectbox(
         "Modelo Gemini",
         [
-            "gemini-3.5-flash",
             "gemini-3.5-flash-lite",
+            "gemini-3.5-flash",
             "gemini-3.6-flash",
         ],
     )
     st.info(
-        "A IA escolhe o nível de estrutura. Você pode alterar o perfil "
-        "antes de revisar ou recomendar."
+        "A IA escolhe o nível de estrutura. Para economizar quota, o "
+        "Flash Lite é o padrão. Se outro modelo atingir o limite, o app "
+        "também tenta o Lite automaticamente."
     )
 
 type_labels = {
@@ -194,6 +197,7 @@ def _set_default_state() -> None:
         "rec_editor_revision": 0,
         "recommendation_diagnostic": None,
         "recommendation_service_agenda": "",
+        "recommendation_ai_cache": {},
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -380,6 +384,25 @@ def _apply_parsed_brief(parsed: dict) -> None:
     st.session_state["rec_editor_revision"] += 1
 
 
+
+def _briefing_fingerprint(
+    raw_files: list[tuple[str, bytes, str | None]],
+    pasted_text: str,
+    model_name: str,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(model_name.encode("utf-8"))
+    digest.update(pasted_text.strip().encode("utf-8"))
+
+    for name, data, mime_type in raw_files:
+        digest.update(name.encode("utf-8"))
+        digest.update(str(mime_type or "").encode("utf-8"))
+        digest.update(data)
+
+    return digest.hexdigest()
+
+
+
 def _source_text_for_history(parsed: dict) -> str:
     pasted = st.session_state.get("rec_briefing_paste", "").strip()
     files = parsed.get("source_files") or []
@@ -483,20 +506,39 @@ if read_briefing:
         ]
 
         try:
-            docs = prepare_documents(raw_files)
+            pasted_for_reading = st.session_state[
+                "rec_briefing_paste"
+            ]
+            fingerprint = _briefing_fingerprint(
+                raw_files,
+                pasted_for_reading,
+                model,
+            )
+            session_cache = st.session_state[
+                "recommendation_ai_cache"
+            ]
 
-            with st.spinner(
-                "Lendo o briefing e escolhendo o nível de estrutura..."
-            ):
-                parsed_model = parse_recommendation_sources(
-                    docs,
-                    pasted_text=st.session_state[
-                        "rec_briefing_paste"
-                    ],
-                    api_key=gemini_key,
-                    model=model,
+            if fingerprint in session_cache:
+                parsed = dict(session_cache[fingerprint])
+                st.info(
+                    "Reutilizando a leitura deste briefing já feita "
+                    "nesta sessão. Nenhuma nova chamada ao Gemini foi usada."
                 )
-                parsed = parsed_model.model_dump()
+            else:
+                docs = prepare_documents(raw_files)
+
+                with st.spinner(
+                    "Lendo o briefing e escolhendo o nível de estrutura..."
+                ):
+                    parsed_model = parse_recommendation_sources(
+                        docs,
+                        pasted_text=pasted_for_reading,
+                        api_key=gemini_key,
+                        model=model,
+                    )
+                    parsed = parsed_model.model_dump()
+
+                session_cache[fingerprint] = dict(parsed)
 
             _apply_parsed_brief(parsed)
             diagnostic = build_diagnostic(parsed)
@@ -514,6 +556,23 @@ if read_briefing:
                 "correspondentes foram preenchidos."
             )
 
+        except GeminiQuotaError as exc:
+            wait_seconds = exc.retry_after_seconds
+            if wait_seconds:
+                st.warning(
+                    "O limite temporário gratuito do Gemini foi atingido. "
+                    f"Aguarde cerca de {wait_seconds} segundos e clique "
+                    "novamente em “Ler briefing e preencher campos”."
+                )
+            else:
+                st.warning(
+                    "O limite temporário gratuito do Gemini foi atingido. "
+                    "Aguarde um pouco e tente novamente."
+                )
+            st.info(
+                "O arquivo continua selecionado e não foi perdido. "
+                "O app já tentou o modelo econômico automaticamente."
+            )
         except Exception as exc:
             st.exception(exc)
 
