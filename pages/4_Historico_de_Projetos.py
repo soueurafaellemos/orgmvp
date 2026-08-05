@@ -8,6 +8,16 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from adaptive_briefing import (
+    DELIVERABLE_COLUMNS,
+    EXECUTION_COLUMNS,
+    METRIC_COLUMNS,
+    PRODUCT_COLUMNS,
+    REFERENCE_COLUMNS,
+    list_to_comma,
+    list_to_lines,
+    records_dataframe,
+)
 from briefing_diagnostic import generate_service_agenda
 from exporters import format_pt_br_number
 from supabase_db import (
@@ -269,8 +279,23 @@ def _reuse_version(
     if isinstance(diagnostic, str):
         diagnostic = json.loads(diagnostic)
 
+    agency = parsed.get("agency_context") or {}
+    financial = parsed.get("financial_context") or {}
+
+    st.session_state["rec_profile"] = (
+        parsed.get("briefing_profile") or "Entrega simples"
+    )
+    st.session_state["rec_profile_reason"] = (
+        parsed.get("profile_reason") or ""
+    )
     st.session_state["rec_project_name"] = (
         parsed.get("project_name") or ""
+    )
+    st.session_state["rec_client_brand"] = (
+        parsed.get("client_brand") or ""
+    )
+    st.session_state["rec_event_name"] = (
+        parsed.get("event_name") or ""
     )
     st.session_state["rec_objective"] = (
         parsed.get("objective") or ""
@@ -308,6 +333,106 @@ def _reuse_version(
     st.session_state["rec_briefing_paste"] = (
         query.get("briefing_text") or ""
     )
+    st.session_state["rec_delivery_date"] = _date_value(
+        parsed.get("desired_delivery_date")
+    )
+    st.session_state["rec_key_message"] = (
+        parsed.get("key_message") or ""
+    )
+    st.session_state["rec_expected_result"] = (
+        parsed.get("expected_result") or ""
+    )
+    st.session_state["rec_event_format"] = (
+        parsed.get("event_format") or ""
+    )
+
+    st.session_state["rec_job_code"] = (
+        agency.get("job_code") or ""
+    )
+    st.session_state["rec_job_folder"] = (
+        agency.get("job_folder") or ""
+    )
+    st.session_state["rec_account_manager"] = (
+        agency.get("account_manager") or ""
+    )
+    st.session_state["rec_client_contacts"] = list_to_comma(
+        agency.get("client_contacts")
+    )
+    st.session_state["rec_competition_status"] = (
+        agency.get("competition_status") or "Não informado"
+    )
+    st.session_state["rec_competitors"] = list_to_comma(
+        agency.get("competitors")
+    )
+    st.session_state["rec_campaign_types"] = (
+        agency.get("campaign_types") or []
+    )
+    st.session_state["rec_agency_services"] = (
+        agency.get("agency_services") or []
+    )
+    st.session_state["rec_production_responsibility"] = (
+        agency.get("production_responsibility") or []
+    )
+
+    st.session_state["rec_budget_currency"] = (
+        financial.get("currency") or "BRL"
+    )
+    st.session_state["rec_budget_status"] = (
+        financial.get("budget_status") or "Não informado"
+    )
+    st.session_state["rec_budget_scope"] = (
+        financial.get("budget_scope") or ""
+    )
+    st.session_state["rec_remaining_budget"] = float(
+        financial.get("remaining_budget") or 0
+    )
+    st.session_state["rec_payment_terms"] = (
+        financial.get("payment_terms") or ""
+    )
+    st.session_state["rec_direct_payment"] = bool(
+        financial.get("direct_payment_required") or False
+    )
+    st.session_state["rec_advance_payment"] = bool(
+        financial.get("advance_payment_required") or False
+    )
+    st.session_state["rec_financial_notes"] = (
+        financial.get("notes") or ""
+    )
+
+    st.session_state["rec_agenda_items"] = list_to_lines(
+        parsed.get("agenda_items")
+    )
+    st.session_state["rec_operational_requirements"] = (
+        list_to_lines(parsed.get("operational_requirements"))
+    )
+    st.session_state["rec_mandatory_requirements"] = (
+        list_to_lines(parsed.get("mandatory_requirements"))
+    )
+    st.session_state["rec_decisions"] = list_to_lines(
+        parsed.get("decisions_already_made")
+    )
+    st.session_state["rec_contradictions"] = list_to_lines(
+        parsed.get("contradictions")
+    )
+    st.session_state["rec_products_records"] = (
+        parsed.get("products_or_brands") or []
+    )
+    st.session_state["rec_deliverables_records"] = (
+        parsed.get("deliverables") or []
+    )
+    st.session_state["rec_metrics_records"] = (
+        parsed.get("success_metrics") or []
+    )
+    st.session_state["rec_executions_records"] = (
+        parsed.get("executions") or []
+    )
+    st.session_state["rec_references_records"] = (
+        parsed.get("related_references") or []
+    )
+    st.session_state["rec_editor_revision"] = int(
+        st.session_state.get("rec_editor_revision", 0)
+    ) + 1
+
     st.session_state["recommendation_prefill"] = parsed
     st.session_state["recommendation_diagnostic"] = diagnostic
     st.session_state["recommendation_service_agenda"] = (
@@ -569,6 +694,88 @@ with tab_brief:
         st.caption(
             "Fontes: " + _list_text(source_files)
         )
+
+    st.markdown("### Estrutura adaptativa")
+
+    profile = parsed_brief.get("briefing_profile")
+    st.write(
+        f"**Perfil:** {profile or 'Não informado'}"
+    )
+    if parsed_brief.get("profile_reason"):
+        st.caption(parsed_brief.get("profile_reason"))
+
+    agency = parsed_brief.get("agency_context") or {}
+    financial = parsed_brief.get("financial_context") or {}
+
+    if agency:
+        with st.expander("Agência e escopo"):
+            st.write(
+                {
+                    "Código do job": agency.get("job_code"),
+                    "Atendimento": agency.get("account_manager"),
+                    "Contatos": agency.get("client_contacts"),
+                    "Tipos": agency.get("campaign_types"),
+                    "Serviços": agency.get("agency_services"),
+                    "Produção": agency.get(
+                        "production_responsibility"
+                    ),
+                }
+            )
+
+    if financial:
+        with st.expander("Financeiro"):
+            st.write(
+                {
+                    "Moeda": financial.get("currency"),
+                    "Status": financial.get("budget_status"),
+                    "Escopo": financial.get("budget_scope"),
+                    "Saldo": financial.get("remaining_budget"),
+                    "Pagamento": financial.get("payment_terms"),
+                    "Pagamento direto": financial.get(
+                        "direct_payment_required"
+                    ),
+                    "Adiantamento": financial.get(
+                        "advance_payment_required"
+                    ),
+                }
+            )
+
+    adaptive_sections = [
+        (
+            "Produtos e marcas",
+            parsed_brief.get("products_or_brands"),
+            PRODUCT_COLUMNS,
+        ),
+        (
+            "Entregáveis",
+            parsed_brief.get("deliverables"),
+            DELIVERABLE_COLUMNS,
+        ),
+        (
+            "Métricas",
+            parsed_brief.get("success_metrics"),
+            METRIC_COLUMNS,
+        ),
+        (
+            "Execuções",
+            parsed_brief.get("executions"),
+            EXECUTION_COLUMNS,
+        ),
+        (
+            "Referências",
+            parsed_brief.get("related_references"),
+            REFERENCE_COLUMNS,
+        ),
+    ]
+
+    for title, records, columns in adaptive_sections:
+        if records:
+            st.markdown(f"#### {title}")
+            st.dataframe(
+                records_dataframe(records, columns),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     if st.button(
         "Reutilizar esta versão em uma nova recomendação",

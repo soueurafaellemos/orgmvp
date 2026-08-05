@@ -405,24 +405,208 @@ class BriefingDiagnosticItem(BaseModel):
     source_support: str | None = None
 
 
+class AgencyBriefingContext(BaseModel):
+    job_code: str | None = None
+    job_folder: str | None = None
+    account_manager: str | None = None
+    client_contacts: list[str] = Field(default_factory=list)
+    competition_status: Literal[
+        "Sim",
+        "Não",
+        "Não informado",
+    ] = "Não informado"
+    competitors: list[str] = Field(default_factory=list)
+    campaign_types: list[str] = Field(default_factory=list)
+    agency_services: list[str] = Field(default_factory=list)
+    production_responsibility: list[str] = Field(
+        default_factory=list
+    )
+
+
+class FinancialBriefingContext(BaseModel):
+    currency: Literal[
+        "BRL",
+        "USD",
+        "EUR",
+        "Outro",
+        "Não informado",
+    ] = "Não informado"
+    budget_status: Literal[
+        "Confirmado",
+        "Estimado",
+        "Parcial / saldo restante",
+        "Não necessário",
+        "Não informado",
+    ] = "Não informado"
+    budget_scope: str | None = None
+    remaining_budget: float | None = None
+    payment_terms: str | None = None
+    direct_payment_required: bool | None = None
+    advance_payment_required: bool | None = None
+    notes: str | None = None
+
+
+class BriefingProduct(BaseModel):
+    name: str
+    brand: str | None = None
+    role: Literal[
+        "Principal",
+        "Secundário",
+        "Alternativo",
+        "Insumo do cliente",
+        "Outro",
+    ] = "Principal"
+    execution_names: list[str] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class BriefingDeliverable(BaseModel):
+    name: str
+    category: str | None = None
+    quantity: float | None = None
+    unit: str | None = None
+    required: bool = True
+    responsible: str | None = None
+    execution_names: list[str] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class BriefingMetric(BaseModel):
+    name: str
+    target: str | None = None
+    unit: str | None = None
+    status: Literal[
+        "Confirmada",
+        "Estimada",
+        "A definir",
+    ] = "A definir"
+    execution_names: list[str] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class BriefingExecution(BaseModel):
+    name: str
+    city: str | None = None
+    state: str | None = None
+    venue: str | None = None
+    institution: str | None = None
+    status: Literal[
+        "Realizado",
+        "Referência",
+        "Em pesquisa",
+        "Em negociação",
+        "Data sugerida",
+        "Confirmado",
+        "Cancelado",
+        "Não informado",
+    ] = "Não informado"
+    priority: int | None = None
+    event_date: str | None = None
+    product_name: str | None = None
+    audience_quantity: int | None = None
+    budget_amount: float | None = None
+    currency: str | None = None
+    event_format: str | None = None
+    notes: str | None = None
+
+
+class BriefingReference(BaseModel):
+    title: str
+    reference_type: Literal[
+        "Briefing principal",
+        "Planilha complementar",
+        "Report anterior",
+        "Apresentação",
+        "KV / identidade visual",
+        "Cotação",
+        "Link externo",
+        "Dependência futura",
+        "Outro",
+    ] = "Outro"
+    status: Literal[
+        "Recebido",
+        "Pendente",
+        "Referência",
+        "A atualizar",
+        "Não informado",
+    ] = "Não informado"
+    url_or_location: str | None = None
+    notes: str | None = None
+
+
 class RecommendationBrief(BaseModel):
     source_files: list[str] = Field(default_factory=list)
+
+    briefing_profile: Literal[
+        "Entrega simples",
+        "Projeto único estruturado",
+        "Programa multi-execução",
+    ] = "Entrega simples"
+    profile_reason: str | None = None
+
     project_name: str | None = None
+    client_brand: str | None = None
+    event_name: str | None = None
+
+    agency_context: AgencyBriefingContext = Field(
+        default_factory=AgencyBriefingContext
+    )
+
     objective: str | None = None
     audience_profile: str | None = None
     audience_quantity: int | None = None
+
     budget_total_brl: float | None = None
     budget_unit_brl: float | None = None
+    financial_context: FinancialBriefingContext = Field(
+        default_factory=FinancialBriefingContext
+    )
+
     location_city: str | None = None
     location_state: str | None = None
     event_date: str | None = None
+    desired_delivery_date: str | None = None
     available_days: int | None = None
+
+    key_message: str | None = None
+    expected_result: str | None = None
+    event_format: str | None = None
+
     desired_types: list[
         Literal["product", "activation", "venue"]
     ] = Field(default_factory=list)
     desired_attributes: list[str] = Field(default_factory=list)
     restrictions: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
+
+    products_or_brands: list[BriefingProduct] = Field(
+        default_factory=list
+    )
+    deliverables: list[BriefingDeliverable] = Field(
+        default_factory=list
+    )
+    success_metrics: list[BriefingMetric] = Field(
+        default_factory=list
+    )
+    executions: list[BriefingExecution] = Field(
+        default_factory=list
+    )
+    related_references: list[BriefingReference] = Field(
+        default_factory=list
+    )
+
+    agenda_items: list[str] = Field(default_factory=list)
+    operational_requirements: list[str] = Field(
+        default_factory=list
+    )
+    mandatory_requirements: list[str] = Field(
+        default_factory=list
+    )
+    decisions_already_made: list[str] = Field(
+        default_factory=list
+    )
+    contradictions: list[str] = Field(default_factory=list)
+
     missing_fields: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     diagnostic_items: list[BriefingDiagnosticItem] = Field(

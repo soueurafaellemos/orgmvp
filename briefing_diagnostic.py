@@ -76,39 +76,91 @@ def _issue(
     }
 
 
+
 def calculate_completeness(brief: dict) -> int:
-    score = 0
+    profile = brief.get("briefing_profile") or "Entrega simples"
 
-    if _filled(brief.get("project_name")):
-        score += FIELD_WEIGHTS["project_name"]
-    if _filled(brief.get("objective")):
-        score += FIELD_WEIGHTS["objective"]
-    if _filled(brief.get("audience_profile")):
-        score += FIELD_WEIGHTS["audience_profile"]
-    if _filled(brief.get("audience_quantity")):
-        score += FIELD_WEIGHTS["audience_quantity"]
-    if (
-        _filled(brief.get("budget_total_brl"))
-        or _filled(brief.get("budget_unit_brl"))
-    ):
-        score += FIELD_WEIGHTS["budget"]
-    if (
-        _filled(brief.get("location_city"))
-        or _filled(brief.get("location_state"))
-    ):
-        score += FIELD_WEIGHTS["location"]
-    if _filled(brief.get("event_date")):
-        score += FIELD_WEIGHTS["event_date"]
-    if _filled(brief.get("available_days")):
-        score += FIELD_WEIGHTS["available_days"]
-    if _filled(brief.get("desired_types")):
-        score += FIELD_WEIGHTS["desired_types"]
-    if _filled(brief.get("desired_attributes")):
-        score += FIELD_WEIGHTS["desired_attributes"]
-    if _filled(brief.get("restrictions")):
-        score += FIELD_WEIGHTS["restrictions"]
+    def has_budget() -> bool:
+        return (
+            _filled(brief.get("budget_total_brl"))
+            or _filled(brief.get("budget_unit_brl"))
+        )
 
+    def has_date() -> bool:
+        if (
+            _filled(brief.get("event_date"))
+            or _filled(brief.get("desired_delivery_date"))
+        ):
+            return True
+        return any(
+            _filled(item.get("event_date"))
+            for item in (brief.get("executions") or [])
+            if isinstance(item, dict)
+        )
+
+    if profile == "Entrega simples":
+        weighted = [
+            (brief.get("project_name"), 5),
+            (brief.get("objective"), 15),
+            (brief.get("audience_profile"), 8),
+            (brief.get("audience_quantity"), 15),
+            (has_budget(), 20),
+            (has_date(), 15),
+            (brief.get("desired_types"), 10),
+            (brief.get("deliverables"), 8),
+            (brief.get("restrictions"), 4),
+        ]
+    elif profile == "Programa multi-execução":
+        weighted = [
+            (brief.get("project_name"), 4),
+            (brief.get("client_brand"), 4),
+            (brief.get("objective"), 10),
+            (brief.get("audience_profile"), 7),
+            (has_budget(), 12),
+            (brief.get("desired_types"), 8),
+            (brief.get("deliverables"), 8),
+            (brief.get("executions"), 25),
+            (brief.get("success_metrics"), 7),
+            (brief.get("products_or_brands"), 5),
+            (brief.get("mandatory_requirements"), 4),
+            (brief.get("restrictions"), 3),
+            (
+                (brief.get("financial_context") or {}).get(
+                    "budget_status"
+                )
+                not in (None, "", "Não informado"),
+                3,
+            ),
+        ]
+    else:
+        weighted = [
+            (brief.get("project_name"), 4),
+            (brief.get("client_brand"), 4),
+            (brief.get("objective"), 12),
+            (brief.get("audience_profile"), 8),
+            (brief.get("audience_quantity"), 10),
+            (has_budget(), 15),
+            (
+                _filled(brief.get("location_city"))
+                or _filled(brief.get("location_state")),
+                8,
+            ),
+            (has_date(), 9),
+            (brief.get("available_days"), 6),
+            (brief.get("desired_types"), 7),
+            (brief.get("deliverables"), 7),
+            (brief.get("event_format"), 4),
+            (brief.get("operational_requirements"), 3),
+            (brief.get("mandatory_requirements"), 3),
+        ]
+
+    score = sum(
+        weight
+        for value, weight in weighted
+        if _filled(value)
+    )
     return min(100, int(score))
+
 
 
 def _deterministic_issues(brief: dict) -> list[dict]:
@@ -344,6 +396,117 @@ def _deterministic_issues(brief: dict) -> list[dict]:
                 ),
                 responsible="Criação",
                 impact="Experiência",
+                blocks=False,
+            )
+        )
+
+
+    profile = (
+        brief.get("briefing_profile")
+        or "Entrega simples"
+    )
+    executions = brief.get("executions") or []
+    deliverables = brief.get("deliverables") or []
+    financial = brief.get("financial_context") or {}
+
+    if profile == "Programa multi-execução":
+        if not executions:
+            issues.append(
+                _issue(
+                    severity="Crítica",
+                    category="Escopo",
+                    title="Execuções não estruturadas",
+                    finding=(
+                        "O briefing foi identificado como programa com "
+                        "múltiplas praças ou ondas, mas elas não estão "
+                        "registradas individualmente."
+                    ),
+                    question=(
+                        "Quais são todas as execuções, seus status, "
+                        "prioridades, datas, produtos e públicos?"
+                    ),
+                    responsible="Atendimento",
+                    impact="Escala",
+                    blocks=True,
+                )
+            )
+        elif len(executions) == 1:
+            issues.append(
+                _issue(
+                    severity="Importante",
+                    category="Escopo",
+                    title="Perfil multi-execução a validar",
+                    finding=(
+                        "A estrutura contém somente uma execução."
+                    ),
+                    question=(
+                        "Existem outras praças, ondas ou unidades que ainda "
+                        "não foram registradas?"
+                    ),
+                    responsible="Atendimento",
+                    impact="Escala",
+                    blocks=False,
+                )
+            )
+
+    if profile in (
+        "Projeto único estruturado",
+        "Programa multi-execução",
+    ) and not deliverables:
+        issues.append(
+            _issue(
+                severity="Importante",
+                category="Escopo",
+                title="Entregáveis não estruturados",
+                finding=(
+                    "O escopo não possui uma lista estruturada de entregas."
+                ),
+                question=(
+                    "Quais entregáveis são obrigatórios, opcionais e de "
+                    "responsabilidade de cada parte?"
+                ),
+                responsible="Atendimento",
+                impact="Budget",
+                blocks=False,
+            )
+        )
+
+    if financial.get("budget_status") == "Estimado":
+        issues.append(
+            _issue(
+                severity="Importante",
+                category="Budget",
+                title="Budget ainda estimado",
+                finding=(
+                    "O valor informado é uma estimativa e não uma verba "
+                    "confirmada pelo cliente."
+                ),
+                question=(
+                    "Qual é o limite aprovado e qual tolerância pode ser "
+                    "considerada na recomendação?"
+                ),
+                responsible="Atendimento",
+                impact="Budget",
+                blocks=False,
+            )
+        )
+
+    if financial.get("budget_status") == "Parcial / saldo restante":
+        issues.append(
+            _issue(
+                severity="Importante",
+                category="Budget",
+                title="Saldo global a distribuir",
+                finding=(
+                    "O valor representa saldo restante ou verba compartilhada "
+                    "entre diferentes entregas."
+                ),
+                question=(
+                    "Como o saldo deve ser distribuído entre praças, etapas "
+                    "ou frentes do projeto?"
+                ),
+                responsible="Atendimento",
+                impact="Budget",
                 blocks=False,
             )
         )

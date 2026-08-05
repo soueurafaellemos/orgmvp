@@ -877,9 +877,54 @@ def fetch_recommendation_candidates(
 
 
 def _project_payload_from_brief(brief: dict) -> dict:
+    agency = brief.get("agency_context") or {}
+    financial = brief.get("financial_context") or {}
+
     return {
         "project_name": _json_safe(brief.get("project_name")),
         "normalized_name": normalize_name(brief.get("project_name")),
+        "client_brand": _json_safe(brief.get("client_brand")),
+        "event_name": _json_safe(brief.get("event_name")),
+        "briefing_profile": _json_safe(
+            brief.get("briefing_profile")
+        ),
+        "profile_reason": _json_safe(
+            brief.get("profile_reason")
+        ),
+        "agency_job_code": _json_safe(agency.get("job_code")),
+        "agency_account_manager": _json_safe(
+            agency.get("account_manager")
+        ),
+        "client_contacts": agency.get("client_contacts") or [],
+        "job_folder": _json_safe(agency.get("job_folder")),
+        "competition_status": _json_safe(
+            agency.get("competition_status")
+        ),
+        "competitors": agency.get("competitors") or [],
+        "campaign_types": agency.get("campaign_types") or [],
+        "agency_services": agency.get("agency_services") or [],
+        "production_responsibility": (
+            agency.get("production_responsibility") or []
+        ),
+        "budget_status": _json_safe(
+            financial.get("budget_status")
+        ),
+        "budget_currency": _json_safe(
+            financial.get("currency")
+        ),
+        "budget_scope": _json_safe(
+            financial.get("budget_scope")
+        ),
+        "payment_terms": _json_safe(
+            financial.get("payment_terms")
+        ),
+        "key_message": _json_safe(brief.get("key_message")),
+        "expected_result": _json_safe(
+            brief.get("expected_result")
+        ),
+        "event_format": _json_safe(brief.get("event_format")),
+        "agency_context": _json_safe(agency),
+        "financial_context": _json_safe(financial),
         "objective": _json_safe(brief.get("objective")),
         "audience_profile": _json_safe(brief.get("audience_profile")),
         "audience_quantity": _json_safe(
@@ -894,6 +939,9 @@ def _project_payload_from_brief(brief: dict) -> dict:
         "location_city": _json_safe(brief.get("location_city")),
         "location_state": _json_safe(brief.get("location_state")),
         "event_date": _iso_date_or_none(brief.get("event_date")),
+        "desired_delivery_date": _iso_date_or_none(
+            brief.get("desired_delivery_date")
+        ),
         "available_days": _json_safe(brief.get("available_days")),
         "desired_attributes": brief.get("desired_attributes") or [],
         "restrictions": brief.get("restrictions") or [],
@@ -956,6 +1004,160 @@ def _latest_project_version(
     return response.data[0] if response.data else None
 
 
+
+def _adaptive_rows(
+    *,
+    project_id: str,
+    query_id: str,
+    brief: dict,
+) -> dict[str, list[dict]]:
+    rows = {
+        "project_products": [],
+        "project_deliverables": [],
+        "project_metrics": [],
+        "project_executions": [],
+        "project_references": [],
+    }
+
+    for item in brief.get("products_or_brands") or []:
+        if not item.get("name"):
+            continue
+        rows["project_products"].append(
+            {
+                "project_id": project_id,
+                "query_id": query_id,
+                "name": item.get("name"),
+                "brand": _json_safe(item.get("brand")),
+                "role": _json_safe(item.get("role")),
+                "execution_names": (
+                    item.get("execution_names") or []
+                ),
+                "notes": _json_safe(item.get("notes")),
+            }
+        )
+
+    for item in brief.get("deliverables") or []:
+        if not item.get("name"):
+            continue
+        rows["project_deliverables"].append(
+            {
+                "project_id": project_id,
+                "query_id": query_id,
+                "name": item.get("name"),
+                "category": _json_safe(item.get("category")),
+                "quantity": _json_safe(item.get("quantity")),
+                "unit": _json_safe(item.get("unit")),
+                "required": bool(
+                    item.get("required", True)
+                ),
+                "responsible": _json_safe(
+                    item.get("responsible")
+                ),
+                "execution_names": (
+                    item.get("execution_names") or []
+                ),
+                "notes": _json_safe(item.get("notes")),
+            }
+        )
+
+    for item in brief.get("success_metrics") or []:
+        if not item.get("name"):
+            continue
+        rows["project_metrics"].append(
+            {
+                "project_id": project_id,
+                "query_id": query_id,
+                "name": item.get("name"),
+                "target": _json_safe(item.get("target")),
+                "unit": _json_safe(item.get("unit")),
+                "status": _json_safe(item.get("status")),
+                "execution_names": (
+                    item.get("execution_names") or []
+                ),
+                "notes": _json_safe(item.get("notes")),
+            }
+        )
+
+    for item in brief.get("executions") or []:
+        if not item.get("name"):
+            continue
+        rows["project_executions"].append(
+            {
+                "project_id": project_id,
+                "query_id": query_id,
+                "name": item.get("name"),
+                "city": _json_safe(item.get("city")),
+                "state": _json_safe(item.get("state")),
+                "venue": _json_safe(item.get("venue")),
+                "institution": _json_safe(
+                    item.get("institution")
+                ),
+                "status": _json_safe(item.get("status")),
+                "priority": _json_safe(item.get("priority")),
+                "event_date": _iso_date_or_none(
+                    item.get("event_date")
+                ),
+                "product_name": _json_safe(
+                    item.get("product_name")
+                ),
+                "audience_quantity": _json_safe(
+                    item.get("audience_quantity")
+                ),
+                "budget_amount": _json_safe(
+                    item.get("budget_amount")
+                ),
+                "currency": _json_safe(item.get("currency")),
+                "event_format": _json_safe(
+                    item.get("event_format")
+                ),
+                "notes": _json_safe(item.get("notes")),
+            }
+        )
+
+    for item in brief.get("related_references") or []:
+        if not item.get("title"):
+            continue
+        rows["project_references"].append(
+            {
+                "project_id": project_id,
+                "query_id": query_id,
+                "title": item.get("title"),
+                "reference_type": _json_safe(
+                    item.get("reference_type")
+                ),
+                "status": _json_safe(item.get("status")),
+                "url_or_location": _json_safe(
+                    item.get("url_or_location")
+                ),
+                "notes": _json_safe(item.get("notes")),
+            }
+        )
+
+    return rows
+
+
+def _save_adaptive_rows(
+    client: Client,
+    *,
+    project_id: str,
+    query_id: str,
+    brief: dict,
+) -> dict[str, int]:
+    grouped = _adaptive_rows(
+        project_id=project_id,
+        query_id=query_id,
+        brief=brief,
+    )
+    counts = {}
+
+    for table, rows in grouped.items():
+        if rows:
+            client.table(table).insert(rows).execute()
+        counts[table] = len(rows)
+
+    return counts
+
+
 def save_recommendation(
     client: Client,
     *,
@@ -986,6 +1188,35 @@ def save_recommendation(
         "query_label": f"Versão {version_number}",
         "version_notes": _json_safe(version_notes),
         "project_name": _json_safe(brief.get("project_name")),
+        "briefing_profile": _json_safe(
+            brief.get("briefing_profile")
+        ),
+        "adaptive_snapshot": _json_safe(
+            {
+                "agency_context": brief.get("agency_context") or {},
+                "financial_context": (
+                    brief.get("financial_context") or {}
+                ),
+                "products_or_brands": (
+                    brief.get("products_or_brands") or []
+                ),
+                "deliverables": brief.get("deliverables") or [],
+                "success_metrics": (
+                    brief.get("success_metrics") or []
+                ),
+                "executions": brief.get("executions") or [],
+                "related_references": (
+                    brief.get("related_references") or []
+                ),
+                "agenda_items": brief.get("agenda_items") or [],
+                "operational_requirements": (
+                    brief.get("operational_requirements") or []
+                ),
+                "mandatory_requirements": (
+                    brief.get("mandatory_requirements") or []
+                ),
+            }
+        ),
         "briefing_text": briefing_text,
         "objective": _json_safe(brief.get("objective")),
         "audience_profile": _json_safe(
@@ -1041,6 +1272,13 @@ def save_recommendation(
     )
     query_id = query_response.data[0]["id"]
 
+    adaptive_counts = _save_adaptive_rows(
+        client,
+        project_id=project_id,
+        query_id=query_id,
+        brief=brief,
+    )
+
     result_rows = []
     for row in dataframe_records(results_df):
         result_rows.append(
@@ -1072,6 +1310,7 @@ def save_recommendation(
         "project_id": project_id,
         "version_number": version_number,
         "results_saved": len(result_rows),
+        "adaptive_counts": adaptive_counts,
     }
 
 
