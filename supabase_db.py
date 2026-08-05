@@ -412,12 +412,14 @@ def create_import(
 
     file_map: dict[str, str] = {}
     for doc in source_documents:
+        source_bytes = doc.original_data or doc.data
+        source_mime = doc.original_mime_type or doc.mime_type
         file_payload = {
             "import_id": import_id,
             "file_name": doc.name,
-            "mime_type": doc.mime_type,
+            "mime_type": source_mime,
             "page_count": _page_count(doc),
-            "sha256": hashlib.sha256(doc.data).hexdigest(),
+            "sha256": hashlib.sha256(source_bytes).hexdigest(),
         }
         file_response = (
             client.table("source_files")
