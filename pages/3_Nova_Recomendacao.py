@@ -46,7 +46,16 @@ from gemini_extractor import (
     parse_recommendation_sources,
 )
 from recommendation_engine import score_candidates
+from recommendation_shortlist_pdf import (
+    build_recommendation_shortlist_pdf,
+)
+from media_library import (
+    download_media_bytes,
+    fetch_primary_media_assets,
+    fetch_primary_media_urls,
+)
 from supabase_db import (
+    fetch_knowledge_item,
     fetch_recommendation_candidates,
     get_supabase_client,
     save_recommendation,
@@ -1559,6 +1568,47 @@ Briefing:
             exception=exc,
         )
 
+def _shortlist_key(
+    scope: str,
+    item_type: str,
+    item_id: str,
+) -> str:
+    scope_hash = hashlib.sha1(
+        scope.encode("utf-8")
+    ).hexdigest()[:10]
+    return (
+        f"shortlist_{scope_hash}_"
+        f"{item_type}_{item_id}"
+    )
+
+
+def _selected_shortlist_rows(
+    frame: pd.DataFrame,
+    scope: str,
+) -> list[dict]:
+    selected = []
+
+    for _, row in frame.iterrows():
+        item_type = str(
+            row.get("item_type") or ""
+        )
+        item_id = str(
+            row.get("item_id") or ""
+        )
+
+        if st.session_state.get(
+            _shortlist_key(
+                scope,
+                item_type,
+                item_id,
+            ),
+            False,
+        ):
+            selected.append(row.to_dict())
+
+    return selected
+
+
 # ================================================================
 # FINAL UNDERSTANDING AND RECOMMENDATIONS
 # ================================================================
@@ -1707,71 +1757,117 @@ if results is not None:
             "A base ainda não possui itens compatíveis com este escopo."
         )
     else:
+        result_keys = [
+            (
+                str(row.get("item_type")),
+                str(row.get("item_id")),
+            )
+            for _, row in display_results.iterrows()
+        ]
+
+        try:
+            result_image_urls = fetch_primary_media_urls(
+                client,
+                result_keys,
+            )
+        except Exception:
+            result_image_urls = {}
+
+        st.caption(
+            "Marque as opções que devem entrar na shortlist. "
+            "A seleção pode ser comparada e exportada em PDF."
+        )
+
         for _, row in display_results.iterrows():
             title = (
                 f"{int(row['rank'])}. {row['name']} "
                 f"— {row['total_score']:.0f}/100"
             )
 
+            item_type = str(
+                row.get("item_type") or ""
+            )
+            item_id = str(
+                row.get("item_id") or ""
+            )
+            image_url = result_image_urls.get(
+                (item_type, item_id)
+            )
+
             with st.expander(
                 title,
                 expanded=int(row["rank"]) <= 3,
             ):
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric(
-                    "Tipo",
-                    type_labels.get(
-                        row.get("item_type"),
-                        row.get("item_type"),
-                    ),
-                )
-                c2.metric(
-                    "Fornecedor",
-                    row.get("supplier_name")
-                    or "Não informado",
-                )
-                c3.metric(
-                    "Estimativa total",
-                    format_pt_br_number(
-                        row.get("estimated_total"),
-                        prefix={
-                            "BRL": "R$ ",
-                            "USD": "US$ ",
-                            "EUR": "€ ",
-                        }.get(
-                            str(row.get("currency") or ""),
-                            "",
-                        ),
-                    ) or "Não calculada",
-                )
-                c4.metric(
-                    "Preço de referência",
-                    format_pt_br_number(
-                        row.get("base_price"),
-                        prefix={
-                            "BRL": "R$ ",
-                            "USD": "US$ ",
-                            "EUR": "€ ",
-                        }.get(
-                            str(row.get("currency") or ""),
-                            "",
-                        ),
-                    ) or "Não informado",
-                )
+                if image_url:
+                    visual_column, data_column = st.columns(
+                        [1, 2.4]
+                    )
+                    with visual_column:
+                        st.image(
+                            image_url,
+                            caption="Imagem principal",
+                            use_container_width=True,
+                        )
+                    data_context = data_column
+                else:
+                    data_context = st.container()
 
-                logistic1, logistic2 = st.columns(2)
-                logistic1.metric(
-                    "Cobertura",
-                    row.get("coverage_status")
-                    or "Não cadastrada",
-                )
-                logistic2.metric(
-                    "Logística estimada",
-                    format_pt_br_number(
-                        row.get("logistics_estimate"),
-                        prefix="R$ ",
-                    ) or "R$ 0,00",
-                )
+                with data_context:
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric(
+                        "Tipo",
+                        type_labels.get(
+                            row.get("item_type"),
+                            row.get("item_type"),
+                        ),
+                    )
+                    c2.metric(
+                        "Fornecedor",
+                        row.get("supplier_name")
+                        or "Não informado",
+                    )
+                    c3.metric(
+                        "Estimativa total",
+                        format_pt_br_number(
+                            row.get("estimated_total"),
+                            prefix={
+                                "BRL": "R$ ",
+                                "USD": "US$ ",
+                                "EUR": "€ ",
+                            }.get(
+                                str(row.get("currency") or ""),
+                                "",
+                            ),
+                        ) or "Não calculada",
+                    )
+                    c4.metric(
+                        "Preço de referência",
+                        format_pt_br_number(
+                            row.get("base_price"),
+                            prefix={
+                                "BRL": "R$ ",
+                                "USD": "US$ ",
+                                "EUR": "€ ",
+                            }.get(
+                                str(row.get("currency") or ""),
+                                "",
+                            ),
+                        ) or "Não informado",
+                    )
+
+                    logistic1, logistic2 = st.columns(2)
+                    logistic1.metric(
+                        "Cobertura",
+                        row.get("coverage_status")
+                        or "Não cadastrada",
+                    )
+                    logistic2.metric(
+                        "Logística estimada",
+                        format_pt_br_number(
+                            row.get("logistics_estimate"),
+                            prefix="R$ ",
+                        ) or "R$ 0,00",
+                    )
 
                 st.write(row.get("description") or "")
                 st.success(row.get("reason") or "")
@@ -1779,6 +1875,16 @@ if results is not None:
                 warnings = row.get("warnings") or []
                 if warnings:
                     st.warning(" ".join(warnings))
+
+                shortlist_key = _shortlist_key(
+                    selected_scope,
+                    item_type,
+                    item_id,
+                )
+                st.checkbox(
+                    "Adicionar à shortlist",
+                    key=shortlist_key,
+                )
 
                 score_data = pd.DataFrame(
                     {
@@ -1803,6 +1909,251 @@ if results is not None:
                     use_container_width=True,
                     hide_index=True,
                 )
+
+        shortlist_rows = _selected_shortlist_rows(
+            display_results,
+            selected_scope,
+        )
+
+        if shortlist_rows:
+            st.divider()
+            st.subheader(
+                f"Shortlist — {len(shortlist_rows)} opção(ões)"
+            )
+
+            shortlist_table = pd.DataFrame(
+                [
+                    {
+                        "Rank": int(item.get("rank") or 0),
+                        "Possibilidade": item.get("name"),
+                        "Tipo": type_labels.get(
+                            item.get("item_type"),
+                            item.get("item_type"),
+                        ),
+                        "Fornecedor": (
+                            item.get("supplier_name")
+                            or "Não informado"
+                        ),
+                        "Aderência": (
+                            f"{float(item.get('total_score') or 0):.0f}/100"
+                        ),
+                        "Estimativa": format_pt_br_number(
+                            item.get("estimated_total"),
+                            prefix={
+                                "BRL": "R$ ",
+                                "USD": "US$ ",
+                                "EUR": "€ ",
+                            }.get(
+                                str(item.get("currency") or ""),
+                                "",
+                            ),
+                        ) or "Não calculada",
+                        "Cobertura": (
+                            item.get("coverage_status")
+                            or "Não cadastrada"
+                        ),
+                    }
+                    for item in shortlist_rows
+                ]
+            )
+
+            st.dataframe(
+                shortlist_table,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            with st.expander(
+                "Exportar shortlist em PDF",
+                expanded=True,
+            ):
+                shortlist_title = st.text_input(
+                    "Título do PDF",
+                    value=(
+                        f"Shortlist — "
+                        f"{display_brief.get('project_name') or 'Projeto'}"
+                    ),
+                    key=(
+                        "shortlist_pdf_title_"
+                        + hashlib.sha1(
+                            selected_scope.encode("utf-8")
+                        ).hexdigest()[:8]
+                    ),
+                )
+
+                shortlist_intro = st.text_area(
+                    "Mensagem de abertura",
+                    placeholder=(
+                        "Ex.: Opções selecionadas de acordo "
+                        "com o briefing, a verba e a praça."
+                    ),
+                    key=(
+                        "shortlist_pdf_intro_"
+                        + hashlib.sha1(
+                            selected_scope.encode("utf-8")
+                        ).hexdigest()[:8]
+                    ),
+                )
+
+                option1, option2 = st.columns(2)
+                with option1:
+                    show_prices = st.checkbox(
+                        "Incluir valores no PDF",
+                        value=True,
+                        key=(
+                            "shortlist_show_prices_"
+                            + hashlib.sha1(
+                                selected_scope.encode("utf-8")
+                            ).hexdigest()[:8]
+                        ),
+                    )
+                with option2:
+                    show_scores = st.checkbox(
+                        "Incluir pontuação da NAVE",
+                        value=False,
+                        key=(
+                            "shortlist_show_scores_"
+                            + hashlib.sha1(
+                                selected_scope.encode("utf-8")
+                            ).hexdigest()[:8]
+                        ),
+                    )
+
+                prepare_key = (
+                    "prepare_shortlist_pdf_"
+                    + hashlib.sha1(
+                        selected_scope.encode("utf-8")
+                    ).hexdigest()[:8]
+                )
+
+                if st.button(
+                    "Preparar PDF da shortlist",
+                    type="primary",
+                    use_container_width=True,
+                    key=prepare_key,
+                ):
+                    try:
+                        with st.spinner(
+                            "Preparando o PDF da shortlist..."
+                        ):
+                            shortlist_keys = [
+                                (
+                                    str(item.get("item_type")),
+                                    str(item.get("item_id")),
+                                )
+                                for item in shortlist_rows
+                            ]
+                            primary_assets = (
+                                fetch_primary_media_assets(
+                                    client,
+                                    shortlist_keys,
+                                )
+                            )
+                            pdf_items = []
+
+                            for item in shortlist_rows:
+                                item_type = str(
+                                    item.get("item_type")
+                                )
+                                item_id = str(
+                                    item.get("item_id")
+                                )
+                                media_record = (
+                                    primary_assets.get(
+                                        (item_type, item_id)
+                                    )
+                                )
+                                image_bytes = None
+
+                                if media_record:
+                                    try:
+                                        image_bytes = (
+                                            download_media_bytes(
+                                                client,
+                                                media_record,
+                                            )
+                                        )
+                                    except Exception:
+                                        image_bytes = None
+
+                                pdf_items.append(
+                                    {
+                                        "row": item,
+                                        "image_bytes": image_bytes,
+                                    }
+                                )
+
+                            pdf_bytes = (
+                                build_recommendation_shortlist_pdf(
+                                    pdf_items,
+                                    brief=display_brief,
+                                    scope_label=selected_scope,
+                                    title=(
+                                        shortlist_title.strip()
+                                        or "Shortlist de possibilidades"
+                                    ),
+                                    introduction=shortlist_intro,
+                                    show_prices=show_prices,
+                                    show_scores=show_scores,
+                                )
+                            )
+
+                            session_pdf_key = (
+                                "shortlist_pdf_bytes_"
+                                + hashlib.sha1(
+                                    selected_scope.encode("utf-8")
+                                ).hexdigest()[:8]
+                            )
+                            st.session_state[
+                                session_pdf_key
+                            ] = pdf_bytes
+
+                        st.success(
+                            "PDF preparado para download."
+                        )
+
+                    except Exception as exc:
+                        report_service_error(
+                            "exportação da shortlist",
+                            user_message=(
+                                "Não foi possível preparar "
+                                "o PDF da shortlist."
+                            ),
+                            exception=exc,
+                        )
+
+                session_pdf_key = (
+                    "shortlist_pdf_bytes_"
+                    + hashlib.sha1(
+                        selected_scope.encode("utf-8")
+                    ).hexdigest()[:8]
+                )
+                shortlist_pdf = st.session_state.get(
+                    session_pdf_key
+                )
+
+                if shortlist_pdf:
+                    st.download_button(
+                        "Baixar PDF da shortlist",
+                        data=shortlist_pdf,
+                        file_name=(
+                            "nave_shortlist_"
+                            + re.sub(
+                                r"[^a-z0-9]+",
+                                "_",
+                                str(
+                                    display_brief.get(
+                                        "project_name"
+                                    )
+                                    or "projeto"
+                                ).casefold(),
+                            ).strip("_")
+                            + ".pdf"
+                        ),
+                        mime="application/pdf",
+                        type="primary",
+                        use_container_width=True,
+                    )
 
         st.divider()
         st.subheader("Salvar como versão do projeto")

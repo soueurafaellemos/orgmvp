@@ -661,3 +661,18 @@ Antes de usar, execute:
 Antes de usar, execute:
 
 `supabase_patch_correspondencia_inteligente_v1.sql`
+
+
+## V20 — Fase 7: shortlist visual de recomendações
+
+- mantém todas as fases anteriores;
+- corrige definitivamente o alinhamento do login;
+- usa um SVG exclusivo e recortado para a tela de acesso;
+- logo, significado, tagline e formulário ficam na mesma coluna;
+- mostra a imagem principal dentro dos cards de recomendação;
+- permite adicionar recomendações a uma shortlist;
+- apresenta uma tabela comparativa da seleção;
+- gera PDF da shortlist com imagem, justificativa e cobertura;
+- permite incluir ou ocultar valores;
+- permite incluir ou ocultar a pontuação da NAVE;
+- não exige novo SQL.

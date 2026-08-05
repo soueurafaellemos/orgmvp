@@ -14,7 +14,7 @@ LOGGER = logging.getLogger("nave")
 
 
 ROOT_DIR = Path(__file__).resolve().parent
-LOGIN_LOGO_PATH = ROOT_DIR / "assets" / "nave_lockup.svg"
+LOGIN_LOGO_PATH = ROOT_DIR / "assets" / "nave_login_lockup.svg"
 
 
 def _login_logo_data_uri() -> str:
@@ -56,19 +56,25 @@ LOGIN_CSS = """
 .block-container {
     box-sizing: border-box !important;
     margin: 0 auto !important;
-    max-width: 520px !important;
+    max-width: 1180px !important;
     padding:
-        clamp(2.2rem, 8vh, 5rem)
-        1.35rem
+        clamp(2rem, 6vh, 4rem)
+        1.25rem
         2.5rem !important;
     width: 100% !important;
 }
 
+[data-testid="stHorizontalBlock"] {
+    align-items: flex-start !important;
+}
+
 .nave-login-logo {
+    display: flex !important;
+    justify-content: center !important;
     margin: 0 auto 0.8rem !important;
-    max-width: 360px !important;
+    max-width: 390px !important;
     text-align: center;
-    width: min(100%, 360px) !important;
+    width: min(100%, 390px) !important;
 }
 
 .nave-login-logo img {
@@ -191,8 +197,8 @@ footer {
     }
 
     .nave-login-logo {
-        max-width: 300px !important;
-        width: min(100%, 300px) !important;
+        max-width: 310px !important;
+        width: min(100%, 310px) !important;
     }
 
     [data-testid="stForm"] {
@@ -262,56 +268,64 @@ def require_app_access() -> bool:
 
     st.markdown(LOGIN_CSS, unsafe_allow_html=True)
     login_logo = _login_logo_data_uri()
-    st.markdown(
-        f"""
-        <div class="nave-login-logo">
-            <img
-                src="{login_logo}"
-                alt="NAVE by VOE"
-            >
-        </div>
-        <div class="nave-login-mark">
-            Núcleo de Análise VOE para Experiências
-        </div>
-        <div class="nave-login-copy">
-            Conectando briefing, repertório e decisão.
-        </div>
-        """,
-        unsafe_allow_html=True,
+
+    _, login_column, _ = st.columns(
+        [1, 1.55, 1],
+        gap="large",
     )
 
-    if not expected_password:
-        st.error(
-            "O acesso à NAVE ainda não foi configurado."
+    with login_column:
+        st.markdown(
+            f"""
+            <div class="nave-login-logo">
+                <img
+                    src="{login_logo}"
+                    alt="NAVE by VOE"
+                >
+            </div>
+            <div class="nave-login-mark">
+                Núcleo de Análise VOE para Experiências
+            </div>
+            <div class="nave-login-copy">
+                Conectando briefing, repertório e decisão.
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-        st.info(
-            "Adicione NAVE_APP_PASSWORD aos Secrets do aplicativo "
-            "e reinicie a NAVE."
-        )
-        return False
 
-    with st.form("nave_app_login"):
-        password = st.text_input(
-            "Senha de acesso",
-            type="password",
-            autocomplete="current-password",
-        )
-        submitted = st.form_submit_button(
-            "Entrar na NAVE",
-            type="primary",
-            use_container_width=True,
-        )
-    if submitted:
-        if _password_matches(
-            password,
-            expected_password,
-        ):
-            st.session_state[
-                "nave_app_authenticated"
-            ] = True
-            st.rerun()
-        else:
-            st.error("Senha incorreta.")
+        if not expected_password:
+            st.error(
+                "O acesso à NAVE ainda não foi configurado."
+            )
+            st.info(
+                "Adicione NAVE_APP_PASSWORD aos Secrets do aplicativo "
+                "e reinicie a NAVE."
+            )
+            return False
+
+        with st.form("nave_app_login"):
+            password = st.text_input(
+                "Senha de acesso",
+                type="password",
+                autocomplete="current-password",
+            )
+            submitted = st.form_submit_button(
+                "Entrar na NAVE",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if submitted:
+            if _password_matches(
+                password,
+                expected_password,
+            ):
+                st.session_state[
+                    "nave_app_authenticated"
+                ] = True
+                st.rerun()
+            else:
+                st.error("Senha incorreta.")
 
     return False
 
