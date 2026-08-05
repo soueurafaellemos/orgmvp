@@ -15,7 +15,12 @@ from branding import (
 
 from runtime_ui import report_service_error, require_app_access
 from exporters import format_pt_br_number
+from curation_ui import (
+    VALIDATION_LABELS,
+    render_curation_editor,
+)
 from supabase_db import (
+    fetch_curation_states,
     fetch_supplier_by_id,
     fetch_supplier_coverage,
     get_supabase_client,
@@ -106,6 +111,43 @@ if coverage.empty:
     )
     st.stop()
 
+try:
+    supplier_states = fetch_curation_states(
+        client,
+        [
+            ("supplier", str(row.get("supplier_id")))
+            for _, row in coverage.iterrows()
+        ],
+    )
+except Exception:
+    supplier_states = {}
+
+coverage["validation_status"] = coverage.apply(
+    lambda row: supplier_states.get(
+        (
+            "supplier",
+            str(row.get("supplier_id")),
+        ),
+        {},
+    ).get(
+        "validation_status",
+        "not_reviewed",
+    ),
+    axis=1,
+)
+coverage["is_archived"] = coverage.apply(
+    lambda row: bool(
+        supplier_states.get(
+            (
+                "supplier",
+                str(row.get("supplier_id")),
+            ),
+            {},
+        ).get("is_archived", False)
+    ),
+    axis=1,
+)
+
 total = len(coverage)
 national = int(
     coverage["coverage_level"]
@@ -134,8 +176,8 @@ m4.metric("Sem cobertura cadastrada", missing)
 
 st.divider()
 
-filter1, filter2, filter3 = st.columns(
-    [2.2, 1.3, 1]
+filter1, filter2, filter3, filter4 = st.columns(
+    [2.2, 1.3, 1.3, 1]
 )
 
 with filter1:
@@ -163,6 +205,21 @@ with filter2:
     )
 
 with filter3:
+    curation_filter = st.selectbox(
+        "Curadoria",
+        [
+            "Ativos",
+            "Não revisados",
+            "Em revisão",
+            "Validados",
+            "Precisam atualização",
+            "Arquivados",
+            "Todos",
+        ],
+        key="supplier_curation_filter",
+    )
+
+with filter4:
     page_size = st.selectbox(
         "Itens por página",
         [25, 50, 100],
@@ -171,6 +228,27 @@ with filter3:
     )
 
 filtered = coverage.copy()
+
+if curation_filter == "Ativos":
+    filtered = filtered[
+        ~filtered["is_archived"].fillna(False)
+    ]
+elif curation_filter == "Arquivados":
+    filtered = filtered[
+        filtered["is_archived"].fillna(False)
+    ]
+elif curation_filter != "Todos":
+    status_map = {
+        "Não revisados": "not_reviewed",
+        "Em revisão": "in_review",
+        "Validados": "validated",
+        "Precisam atualização": "needs_update",
+    }
+    filtered = filtered[
+        filtered["validation_status"].fillna(
+            "not_reviewed"
+        ).eq(status_map[curation_filter])
+    ]
 
 if search.strip():
     term = search.strip().lower()
@@ -303,6 +381,11 @@ overview["Locais"] = pd.to_numeric(
     overview["venues_count"],
     errors="coerce",
 ).fillna(0).astype(int)
+overview["Validação"] = overview[
+    "validation_status"
+].fillna("not_reviewed").map(
+    VALIDATION_LABELS
+).fillna("Não revisado")
 
 st.caption(
     "Selecione uma linha para abrir os dados completos e "
@@ -321,6 +404,7 @@ supplier_event = st.dataframe(
             "Soluções",
             "Produtos",
             "Locais",
+            "Validação",
         ]
     ],
     use_container_width=True,
@@ -354,6 +438,10 @@ supplier_event = st.dataframe(
                 width="large",
             )
         ),
+        "Validação": st.column_config.TextColumn(
+            "Validação",
+            width="medium",
+        ),
     },
 )
 
@@ -377,16 +465,95 @@ selected_supplier_rows = _selected_rows(
     supplier_event
 )
 
-if not selected_supplier_rows:
+focus = st.session_state.get(
+    "nave_curation_focus"
+)
+
+if selected_supplier_rows:
+    selected_overview = overview.iloc[
+        selected_supplier_rows[0]
+    ].to_dict()
+elif (
+    isinstance(focus, dict)
+    and focus.get("entity_type") == "supplier"
+):
+    focus_id = str(focus.get("entity_id"))
+    focused_rows = coverage[
+        coverage["supplier_id"].astype(str).eq(
+            focus_id
+        )
+    ]
+
+    if focused_rows.empty:
+        st.warning(
+            "O fornecedor direcionado não foi localizado."
+        )
+        st.stop()
+
+    selected_overview = focused_rows.iloc[
+        0
+    ].to_dict()
+    selected_overview["Fornecedor"] = (
+        selected_overview.get("name")
+        or "Fornecedor sem nome"
+    )
+    selected_overview["Cobertura"] = (
+        selected_overview.get("coverage_level")
+        or "Cobertura não cadastrada"
+    )
+    selected_overview["Base"] = ", ".join(
+        value
+        for value in [
+            str(
+                selected_overview.get("base_city")
+                or ""
+            ).strip(),
+            str(
+                selected_overview.get("base_state")
+                or ""
+            ).strip(),
+        ]
+        if value
+    ) or "Não informada"
+    selected_overview["Soluções"] = int(
+        selected_overview.get(
+            "activations_count"
+        )
+        or 0
+    )
+    selected_overview["Produtos"] = int(
+        selected_overview.get(
+            "products_count"
+        )
+        or 0
+    )
+    selected_overview["Locais"] = int(
+        selected_overview.get(
+            "venues_count"
+        )
+        or 0
+    )
+
+    st.info(
+        "Fornecedor aberto a partir do painel "
+        "de prontidão."
+    )
+
+    if st.button(
+        "Fechar fornecedor direcionado",
+        key="close_supplier_curation_focus",
+    ):
+        st.session_state.pop(
+            "nave_curation_focus",
+            None,
+        )
+        st.rerun()
+else:
     st.info(
         "Selecione um fornecedor na tabela para consultar "
         "seus dados e editar a cobertura."
     )
     st.stop()
-
-selected_overview = overview.iloc[
-    selected_supplier_rows[0]
-].to_dict()
 
 supplier_id = str(
     selected_overview.get("supplier_id") or ""
@@ -474,6 +641,17 @@ with contact3:
         )
     else:
         st.write("Não informado")
+
+st.divider()
+st.subheader("Curadoria")
+
+render_curation_editor(
+    client,
+    entity_type="supplier",
+    entity_id=supplier_id,
+    record=supplier,
+    supplier_options={},
+)
 
 st.divider()
 st.subheader("Editar cobertura e logística")

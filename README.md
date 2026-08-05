@@ -720,3 +720,24 @@ Antes de usar, execute:
 - detalhes e formulário aparecem somente após selecionar a linha;
 - o patch não contém arquivos de logo;
 - não exige novo SQL.
+
+
+## V23 — Fase 10: curadoria e edição da base
+
+- edição direta de brindes, ativações, locais e fornecedores;
+- status: não revisado, em revisão, validado,
+  precisa de atualização e arquivado;
+- responsável e fonte da revisão;
+- data da próxima revisão;
+- observações internas;
+- histórico campo a campo de todas as alterações;
+- arquivamento retira o cadastro das recomendações;
+- filtro de curadoria na Base e em Fornecedores;
+- exclusão definitiva protegida pela senha administrativa;
+- exclusão bloqueada quando houver vínculos;
+- acesso direto aos itens prioritários pelo painel de prontidão;
+- o patch não contém arquivos de logo.
+
+Antes de usar, execute:
+
+`supabase_patch_curadoria_base_v1.sql`

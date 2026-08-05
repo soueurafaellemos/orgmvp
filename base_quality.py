@@ -573,6 +573,21 @@ def build_quality_records(
                 )
             ] = int(row.get("media_count") or 0)
 
+    curation = snapshot.get(
+        "curation_states",
+        pd.DataFrame(),
+    )
+    curation_map = {}
+
+    if not curation.empty:
+        curation_map = {
+            (
+                str(row.get("entity_type")),
+                str(row.get("entity_id")),
+            ): row.to_dict()
+            for _, row in curation.iterrows()
+        }
+
     supplier_names = {}
     supplier_counts = {}
 
@@ -675,6 +690,11 @@ def build_quality_records(
                 record,
             )
 
+            curation_state = curation_map.get(
+                (entity_type, entity_id),
+                {},
+            )
+
             rows.append(
                 {
                     "entity_type": entity_type,
@@ -726,6 +746,30 @@ def build_quality_records(
                         ]
                     )
                     or "Nenhuma",
+                    "Validação": {
+                        "not_reviewed": "Não revisado",
+                        "in_review": "Em revisão",
+                        "validated": "Validado",
+                        "needs_update": "Precisa de atualização",
+                        "archived": "Arquivado",
+                    }.get(
+                        str(
+                            curation_state.get(
+                                "validation_status"
+                            )
+                            or "not_reviewed"
+                        ),
+                        "Não revisado",
+                    ),
+                    "Arquivado": (
+                        "Sim"
+                        if bool(
+                            curation_state.get(
+                                "is_archived"
+                            )
+                        )
+                        else "Não"
+                    ),
                     "_missing": result[
                         "missing_fields_quality"
                     ],
@@ -760,6 +804,13 @@ def build_quality_records(
 def type_summary(
     quality: pd.DataFrame,
 ) -> pd.DataFrame:
+    if quality.empty:
+        return pd.DataFrame()
+
+    quality = quality[
+        quality["Arquivado"].ne("Sim")
+    ].copy()
+
     if quality.empty:
         return pd.DataFrame()
 
@@ -817,6 +868,13 @@ def missing_field_summary(
     if quality.empty:
         return pd.DataFrame()
 
+    quality = quality[
+        quality["Arquivado"].ne("Sim")
+    ].copy()
+
+    if quality.empty:
+        return pd.DataFrame()
+
     rows = []
 
     for entity_type, group in quality.groupby(
@@ -857,6 +915,10 @@ def missing_field_summary(
 def overall_readiness(
     quality: pd.DataFrame,
 ) -> dict:
+    quality = quality[
+        quality["Arquivado"].ne("Sim")
+    ].copy()
+
     if quality.empty:
         return {
             "score": 0,

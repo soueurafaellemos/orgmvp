@@ -32,11 +32,17 @@ from media_library import (
 )
 from exporters import format_pt_br_number
 from knowledge_details import render_complete_record
+from curation_ui import (
+    VALIDATION_LABELS,
+    render_curation_editor,
+)
 from selection_pdf import build_selection_pdf
 from supabase_db import (
     database_counts,
     fetch_enrichment_history,
+    fetch_curation_state,
     fetch_knowledge_item,
+    fetch_supplier_options,
     fetch_recommendation_candidates,
     get_supabase_client,
 )
@@ -107,6 +113,7 @@ def _cached_candidates(
     )
     return fetch_recommendation_candidates(
         cached_client,
+        include_archived=True,
     )
 
 
@@ -155,8 +162,8 @@ type_labels = {
     "venue": "Locais / espaços",
 }
 
-col1, col2, col3, col4 = st.columns(
-    [2, 1, 1, 1]
+col1, col2, col3, col4, col5 = st.columns(
+    [2, 1, 1, 1, 1.2]
 )
 
 with col1:
@@ -194,7 +201,42 @@ with col4:
         ],
     )
 
+with col5:
+    curation_filter = st.selectbox(
+        "Curadoria",
+        options=[
+            "Ativos",
+            "Não revisados",
+            "Em revisão",
+            "Validados",
+            "Precisam atualização",
+            "Arquivados",
+            "Todos",
+        ],
+    )
+
 filtered = candidates.copy()
+
+if curation_filter == "Ativos":
+    filtered = filtered[
+        ~filtered["is_archived"].fillna(False)
+    ]
+elif curation_filter == "Arquivados":
+    filtered = filtered[
+        filtered["is_archived"].fillna(False)
+    ]
+elif curation_filter != "Todos":
+    status_map = {
+        "Não revisados": "not_reviewed",
+        "Em revisão": "in_review",
+        "Validados": "validated",
+        "Precisam atualização": "needs_update",
+    }
+    filtered = filtered[
+        filtered["validation_status"].fillna(
+            "not_reviewed"
+        ).eq(status_map[curation_filter])
+    ]
 
 if selected_types:
     filtered = filtered[
@@ -305,7 +347,8 @@ total_pages = max(
 filter_signature = hashlib.sha1(
     (
         f"{search}|{selected_types}|{max_price}|"
-        f"{media_filter}|{page_size}|{total_items}"
+        f"{media_filter}|{curation_filter}|"
+        f"{page_size}|{total_items}"
     ).encode("utf-8")
 ).hexdigest()
 
@@ -449,6 +492,11 @@ display["Mídia"] = display[
 ].apply(
     lambda value: f"{int(value)} arquivo(s)"
 )
+display["Validação"] = display[
+    "validation_status"
+].fillna("not_reviewed").map(
+    VALIDATION_LABELS
+).fillna("Não revisado")
 
 columns = [
     "Capa",
@@ -461,6 +509,7 @@ columns = [
     "Capacidade",
     "location",
     "Mídia",
+    "Validação",
 ]
 
 table = display[columns].rename(
@@ -503,6 +552,10 @@ table_event = st.dataframe(
         "Mídia": st.column_config.TextColumn(
             "Mídia",
             width="small",
+        ),
+        "Validação": st.column_config.TextColumn(
+            "Validação",
+            width="medium",
         ),
     },
 )
@@ -1079,6 +1132,51 @@ selected_records = [
     if 0 <= index < len(display)
 ]
 
+focus = st.session_state.get(
+    "nave_curation_focus"
+)
+
+if (
+    not selected_records
+    and isinstance(focus, dict)
+    and focus.get("entity_type")
+    in {"product", "activation", "venue"}
+):
+    focus_type = str(
+        focus.get("entity_type")
+    )
+    focus_id = str(
+        focus.get("entity_id")
+    )
+
+    matched = candidates[
+        candidates["item_type"].astype(str).eq(
+            focus_type
+        )
+        & candidates["item_id"].astype(str).eq(
+            focus_id
+        )
+    ]
+
+    if not matched.empty:
+        selected_records = [
+            matched.iloc[0].to_dict()
+        ]
+        st.info(
+            "Cadastro aberto a partir do painel "
+            "de prontidão."
+        )
+
+        if st.button(
+            "Fechar cadastro direcionado",
+            key="close_curation_focus",
+        ):
+            st.session_state.pop(
+                "nave_curation_focus",
+                None,
+            )
+            st.rerun()
+
 selection_signature = "|".join(
     sorted(
         (
@@ -1324,6 +1422,22 @@ if selected_records:
         render_complete_record(
             entity_type,
             complete_record,
+        )
+
+        try:
+            supplier_options = fetch_supplier_options(
+                client
+            )
+        except Exception:
+            supplier_options = {}
+
+        st.markdown("### Curadoria")
+        render_curation_editor(
+            client,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            record=complete_record,
+            supplier_options=supplier_options,
         )
 
         try:

@@ -346,6 +346,8 @@ with priorities_tab:
         "Cidade",
         "Pontuação",
         "Status",
+        "Validação",
+        "Arquivado",
         "Mídia",
         "Preço / logística",
         "Lacunas críticas",
@@ -355,11 +357,14 @@ with priorities_tab:
     st.caption(
         "Os itens de menor pontuação aparecem primeiro."
     )
-    st.dataframe(
+    priority_event = st.dataframe(
         priorities[visible_columns],
         use_container_width=True,
         hide_index=True,
         height=560,
+        key="quality_priority_table",
+        on_select="rerun",
+        selection_mode="single-row",
         column_config={
             "Pontuação": st.column_config.ProgressColumn(
                 "Pontuação",
@@ -381,6 +386,52 @@ with priorities_tab:
             ),
         },
     )
+
+    try:
+        selected_priority_rows = list(
+            priority_event.selection.rows
+        )
+    except Exception:
+        selected_priority_rows = []
+
+    if selected_priority_rows:
+        selected_priority = priorities.iloc[
+            selected_priority_rows[0]
+        ].to_dict()
+
+        st.info(
+            "Cadastro selecionado: "
+            + str(selected_priority.get("Item"))
+        )
+
+        if st.button(
+            "Abrir cadastro para completar",
+            type="primary",
+            use_container_width=True,
+            key="open_priority_record",
+        ):
+            st.session_state[
+                "nave_curation_focus"
+            ] = {
+                "entity_type": selected_priority[
+                    "entity_type"
+                ],
+                "entity_id": selected_priority[
+                    "entity_id"
+                ],
+            }
+
+            if (
+                selected_priority["entity_type"]
+                == "supplier"
+            ):
+                st.switch_page(
+                    "pages/5_Cobertura_de_Fornecedores.py"
+                )
+            else:
+                st.switch_page(
+                    "pages/2_Consultar_Base.py"
+                )
 
     export_frame = priorities[
         visible_columns

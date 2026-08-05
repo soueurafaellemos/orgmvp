@@ -2286,6 +2286,627 @@ def save_briefing(
 
 
 
+CURATION_ENTITY_TABLES = {
+    "product": "products",
+    "activation": "activation_solutions",
+    "venue": "venues",
+    "supplier": "suppliers",
+}
+
+CURATION_EDIT_COLUMNS = {
+    "product": PRODUCT_COLUMNS
+    | {
+        "name",
+        "sku",
+        "category",
+        "supplier_id",
+    },
+    "activation": ACTIVATION_COLUMNS
+    | {
+        "name",
+        "category",
+        "supplier_id",
+    },
+    "venue": VENUE_COLUMNS
+    | {
+        "name",
+        "venue_type",
+        "operator_id",
+    },
+    "supplier": {
+        "name",
+        "website_url",
+        "contact_name",
+        "contact_role",
+        "email",
+        "phone",
+        "whatsapp",
+        "instagram_url",
+        "linkedin_url",
+        "address",
+        "notes",
+    },
+}
+
+CURATION_ARRAY_FIELDS = {
+    "tags",
+    "included_items",
+    "excluded_items",
+    "infrastructure_requirements",
+    "rooms_or_areas",
+    "infrastructure",
+    "restrictions",
+}
+
+
+def fetch_supplier_options(
+    client: Client,
+) -> dict[str, str]:
+    response = (
+        client.table("suppliers")
+        .select("id,name")
+        .order("name")
+        .limit(2000)
+        .execute()
+    )
+
+    return {
+        str(row["id"]): str(
+            row.get("name")
+            or "Fornecedor sem nome"
+        )
+        for row in response.data or []
+    }
+
+
+def fetch_curation_state(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+) -> dict:
+    response = (
+        client.table("knowledge_curation_states")
+        .select("*")
+        .eq("entity_type", entity_type)
+        .eq("entity_id", entity_id)
+        .limit(1)
+        .execute()
+    )
+
+    return response.data[0] if response.data else {}
+
+
+def fetch_curation_states(
+    client: Client,
+    items: list[tuple[str, str]],
+) -> dict[tuple[str, str], dict]:
+    if not items:
+        return {}
+
+    grouped: dict[str, list[str]] = {}
+
+    for entity_type, entity_id in items:
+        grouped.setdefault(
+            entity_type,
+            [],
+        ).append(str(entity_id))
+
+    result = {}
+
+    for entity_type, entity_ids in grouped.items():
+        unique_ids = list(
+            dict.fromkeys(entity_ids)
+        )
+
+        for start in range(
+            0,
+            len(unique_ids),
+            150,
+        ):
+            chunk = unique_ids[
+                start:start + 150
+            ]
+
+            response = (
+                client.table(
+                    "knowledge_curation_states"
+                )
+                .select("*")
+                .eq("entity_type", entity_type)
+                .in_("entity_id", chunk)
+                .execute()
+            )
+
+            for row in response.data or []:
+                result[
+                    (
+                        str(row["entity_type"]),
+                        str(row["entity_id"]),
+                    )
+                ] = row
+
+    return result
+
+
+def fetch_curation_history(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+    limit: int = 100,
+) -> pd.DataFrame:
+    response = (
+        client.table("knowledge_edit_events")
+        .select("*")
+        .eq("entity_type", entity_type)
+        .eq("entity_id", entity_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+
+    return pd.DataFrame(response.data or [])
+
+
+def _curation_values_equal(
+    first: Any,
+    second: Any,
+) -> bool:
+    return json.dumps(
+        _json_safe(first),
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    ) == json.dumps(
+        _json_safe(second),
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
+def _clean_curation_update(
+    field: str,
+    value: Any,
+) -> Any:
+    if field in CURATION_ARRAY_FIELDS:
+        if isinstance(value, str):
+            return split_pipe(value)
+
+        if isinstance(value, (list, tuple, set)):
+            return [
+                item
+                for item in value
+                if not _is_missing(item)
+            ]
+
+        return []
+
+    return _json_safe(value)
+
+
+def _insert_edit_events(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+    events: list[dict],
+    editor_name: str | None,
+    edit_notes: str | None,
+) -> None:
+    if not events:
+        return
+
+    payload = []
+
+    for event in events:
+        payload.append(
+            {
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "event_type": event.get(
+                    "event_type",
+                    "manual_update",
+                ),
+                "field_name": event["field_name"],
+                "field_label": event.get(
+                    "field_label"
+                ),
+                "old_value": _json_safe(
+                    event.get("old_value")
+                ),
+                "new_value": _json_safe(
+                    event.get("new_value")
+                ),
+                "editor_name": editor_name,
+                "edit_source": "manual",
+                "edit_notes": edit_notes,
+            }
+        )
+
+    (
+        client.table("knowledge_edit_events")
+        .insert(payload)
+        .execute()
+    )
+
+
+def update_curated_entity(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+    updates: dict,
+    editor_name: str,
+    edit_notes: str | None,
+    field_labels: dict[str, str],
+    curation_payload: dict,
+) -> dict:
+    table = CURATION_ENTITY_TABLES.get(
+        entity_type
+    )
+
+    if not table:
+        raise ValueError(
+            "Tipo de cadastro não suportado."
+        )
+
+    current_response = (
+        client.table(table)
+        .select("*")
+        .eq("id", entity_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not current_response.data:
+        raise ValueError(
+            "O cadastro não foi encontrado."
+        )
+
+    current = current_response.data[0]
+    allowed = CURATION_EDIT_COLUMNS[
+        entity_type
+    ]
+    cleaned = {}
+    events = []
+
+    for field, value in updates.items():
+        if field not in allowed:
+            continue
+
+        cleaned_value = _clean_curation_update(
+            field,
+            value,
+        )
+        old_value = current.get(field)
+
+        if _curation_values_equal(
+            old_value,
+            cleaned_value,
+        ):
+            continue
+
+        cleaned[field] = cleaned_value
+        events.append(
+            {
+                "field_name": field,
+                "field_label": field_labels.get(
+                    field,
+                    field,
+                ),
+                "old_value": old_value,
+                "new_value": cleaned_value,
+                "event_type": "manual_update",
+            }
+        )
+
+    if (
+        entity_type == "supplier"
+        and "name" in cleaned
+        and cleaned["name"]
+    ):
+        cleaned["normalized_name"] = (
+            normalize_name(cleaned["name"])
+        )
+
+    if cleaned:
+        (
+            client.table(table)
+            .update(cleaned)
+            .eq("id", entity_id)
+            .execute()
+        )
+
+    current_state = fetch_curation_state(
+        client,
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+
+    state_payload = {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "validation_status": (
+            curation_payload.get(
+                "validation_status"
+            )
+            or "not_reviewed"
+        ),
+        "reviewed_at": (
+            pd.Timestamp.utcnow().isoformat()
+        ),
+        "reviewed_by": _json_safe(
+            curation_payload.get("reviewed_by")
+        ),
+        "review_source": _json_safe(
+            curation_payload.get("review_source")
+        ),
+        "next_review_date": _json_safe(
+            curation_payload.get(
+                "next_review_date"
+            )
+        ),
+        "internal_notes": _json_safe(
+            curation_payload.get(
+                "internal_notes"
+            )
+        ),
+        "is_archived": bool(
+            curation_payload.get("is_archived")
+        ),
+    }
+
+    for field in (
+        "validation_status",
+        "reviewed_by",
+        "review_source",
+        "next_review_date",
+        "internal_notes",
+        "is_archived",
+    ):
+        old_value = current_state.get(field)
+        new_value = state_payload.get(field)
+
+        if _curation_values_equal(
+            old_value,
+            new_value,
+        ):
+            continue
+
+        event_type = "status_update"
+
+        if field == "is_archived":
+            event_type = (
+                "archive"
+                if bool(new_value)
+                else "restore"
+            )
+
+        events.append(
+            {
+                "field_name": field,
+                "field_label": field_labels.get(
+                    field,
+                    field,
+                ),
+                "old_value": old_value,
+                "new_value": new_value,
+                "event_type": event_type,
+            }
+        )
+
+    (
+        client.table("knowledge_curation_states")
+        .upsert(
+            state_payload,
+            on_conflict="entity_type,entity_id",
+        )
+        .execute()
+    )
+
+    _insert_edit_events(
+        client,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        events=events,
+        editor_name=editor_name,
+        edit_notes=edit_notes,
+    )
+
+    return {
+        "fields_changed": len(events),
+        "record_changes": cleaned,
+        "curation_state": state_payload,
+    }
+
+
+def knowledge_entity_dependency_counts(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+) -> dict[str, int]:
+    dependencies = {}
+
+    if entity_type == "supplier":
+        checks = [
+            ("Brindes associados", "products", "supplier_id"),
+            (
+                "Ativações associadas",
+                "activation_solutions",
+                "supplier_id",
+            ),
+            ("Locais associados", "venues", "operator_id"),
+        ]
+    else:
+        checks = [
+            (
+                "Recomendações salvas",
+                "recommendation_results",
+                "item_id",
+            ),
+            (
+                "Recomendações por execução",
+                "execution_recommendation_results",
+                "item_id",
+            ),
+        ]
+
+    for label, table, field in checks:
+        query = (
+            client.table(table)
+            .select("id", count="exact")
+            .eq(field, entity_id)
+            .limit(1)
+        )
+
+        if entity_type != "supplier":
+            query = query.eq(
+                "item_type",
+                entity_type,
+            )
+
+        try:
+            response = query.execute()
+            dependencies[label] = int(
+                response.count or 0
+            )
+        except Exception:
+            dependencies[label] = 0
+
+    return dependencies
+
+
+def delete_knowledge_entity(
+    client: Client,
+    *,
+    entity_type: str,
+    entity_id: str,
+    editor_name: str,
+) -> None:
+    dependencies = knowledge_entity_dependency_counts(
+        client,
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+
+    if sum(dependencies.values()):
+        raise ValueError(
+            "O cadastro possui vínculos e deve ser arquivado."
+        )
+
+    table = CURATION_ENTITY_TABLES[
+        entity_type
+    ]
+
+    current_response = (
+        client.table(table)
+        .select("*")
+        .eq("id", entity_id)
+        .limit(1)
+        .execute()
+    )
+    current = (
+        current_response.data[0]
+        if current_response.data
+        else {}
+    )
+
+    media_response = (
+        client.table("media_assets")
+        .select("*")
+        .eq("entity_type", entity_type)
+        .eq("entity_id", entity_id)
+        .execute()
+    )
+
+    for media in media_response.data or []:
+        bucket = str(
+            media.get("storage_bucket")
+            or ""
+        ).strip()
+        storage_path = str(
+            media.get("storage_path")
+            or ""
+        ).strip()
+
+        if bucket and storage_path:
+            try:
+                (
+                    client.storage
+                    .from_(bucket)
+                    .remove([storage_path])
+                )
+            except Exception:
+                pass
+
+    (
+        client.table("media_assets")
+        .delete()
+        .eq("entity_type", entity_type)
+        .eq("entity_id", entity_id)
+        .execute()
+    )
+
+    if entity_type == "activation":
+        (
+            client.table("activation_costs")
+            .delete()
+            .eq("solution_id", entity_id)
+            .execute()
+        )
+
+    (
+        client.table(
+            "knowledge_duplicate_candidates"
+        )
+        .delete()
+        .eq("entity_type", entity_type)
+        .or_(
+            f"source_entity_id.eq.{entity_id},"
+            f"candidate_entity_id.eq.{entity_id}"
+        )
+        .execute()
+    )
+
+    (
+        client.table("knowledge_curation_states")
+        .delete()
+        .eq("entity_type", entity_type)
+        .eq("entity_id", entity_id)
+        .execute()
+    )
+
+    _insert_edit_events(
+        client,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        events=[
+            {
+                "field_name": "__record__",
+                "field_label": "Cadastro excluído",
+                "old_value": current,
+                "new_value": None,
+                "event_type": "delete",
+            }
+        ],
+        editor_name=editor_name,
+        edit_notes=(
+            "Exclusão definitiva realizada "
+            "pela Administração."
+        ),
+    )
+
+    (
+        client.table(table)
+        .delete()
+        .eq("id", entity_id)
+        .execute()
+    )
+
+
 def fetch_supplier_coverage(
     client: Client,
     *,
@@ -2490,6 +3111,19 @@ def fetch_base_quality_snapshot(
     except Exception:
         pending_duplicates = 0
 
+    try:
+        curation_states = _fetch_all_rows(
+            client,
+            table="knowledge_curation_states",
+            columns=(
+                "entity_type,entity_id,validation_status,"
+                "reviewed_at,reviewed_by,next_review_date,"
+                "is_archived"
+            ),
+        )
+    except Exception:
+        curation_states = pd.DataFrame()
+
     return {
         "products": products,
         "activations": activations,
@@ -2497,6 +3131,7 @@ def fetch_base_quality_snapshot(
         "suppliers": suppliers,
         "media": media,
         "supplier_overview": supplier_overview,
+        "curation_states": curation_states,
         "pending_duplicates": pending_duplicates,
     }
 
@@ -2582,6 +3217,7 @@ def fetch_recommendation_candidates(
     client: Client,
     *,
     limit: int = 2000,
+    include_archived: bool = False,
 ) -> pd.DataFrame:
     response = (
         client.table("recommendation_candidates")
@@ -2590,7 +3226,72 @@ def fetch_recommendation_candidates(
         .limit(limit)
         .execute()
     )
-    return pd.DataFrame(response.data or [])
+
+    frame = pd.DataFrame(response.data or [])
+
+    if frame.empty:
+        return frame
+
+    keys = [
+        (
+            str(row.get("item_type")),
+            str(row.get("item_id")),
+        )
+        for _, row in frame.iterrows()
+    ]
+
+    try:
+        states = fetch_curation_states(
+            client,
+            keys,
+        )
+    except Exception:
+        states = {}
+
+    frame["validation_status"] = frame.apply(
+        lambda row: states.get(
+            (
+                str(row.get("item_type")),
+                str(row.get("item_id")),
+            ),
+            {},
+        ).get(
+            "validation_status",
+            "not_reviewed",
+        ),
+        axis=1,
+    )
+
+    frame["is_archived"] = frame.apply(
+        lambda row: bool(
+            states.get(
+                (
+                    str(row.get("item_type")),
+                    str(row.get("item_id")),
+                ),
+                {},
+            ).get("is_archived", False)
+        ),
+        axis=1,
+    )
+
+    frame["reviewed_at"] = frame.apply(
+        lambda row: states.get(
+            (
+                str(row.get("item_type")),
+                str(row.get("item_id")),
+            ),
+            {},
+        ).get("reviewed_at"),
+        axis=1,
+    )
+
+    if not include_archived:
+        frame = frame[
+            ~frame["is_archived"]
+        ]
+
+    return frame.reset_index(drop=True)
 
 
 
