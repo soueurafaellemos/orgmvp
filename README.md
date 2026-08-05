@@ -676,3 +676,29 @@ Antes de usar, execute:
 - permite incluir ou ocultar valores;
 - permite incluir ou ocultar a pontuação da NAVE;
 - não exige novo SQL.
+
+
+## V20.1 — login resiliente
+
+- corrige o FileNotFoundError do logo de login;
+- tenta usar primeiro o logo recortado;
+- usa o logo principal automaticamente como alternativa;
+- usa assinatura textual caso nenhum asset esteja disponível;
+- a ausência de um arquivo visual não derruba mais o aplicativo;
+- não exige SQL.
+
+
+## V21 — Fase 8: qualidade e prontidão da base
+
+- painel de prontidão da base;
+- avaliação de brindes, ativações, locais e fornecedores;
+- pontuação de completude de 0 a 100;
+- identificação de registros prontos para recomendação;
+- lista priorizada de cadastros que precisam ser enriquecidos;
+- campos críticos e campos complementares ausentes;
+- indicadores de mídia, preço e logística;
+- visão agregada por tipo de cadastro;
+- filtro, busca e exportação do diagnóstico em CSV;
+- acesso direto para organizar documentos e consultar a base;
+- não altera ou substitui o SVG de login corrigido pelo usuário;
+- não exige novo SQL.

@@ -493,6 +493,10 @@ def render_sidebar() -> None:
             unsafe_allow_html=True,
         )
         st.page_link(
+            "pages/8_Qualidade_da_Base.py",
+            label="Prontidão da base",
+        )
+        st.page_link(
             "pages/7_Revisar_Duplicidades.py",
             label="Revisar duplicidades",
         )

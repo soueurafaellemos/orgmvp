@@ -2363,6 +2363,144 @@ def update_supplier_coverage(
 
 
 
+def _fetch_all_rows(
+    client: Client,
+    *,
+    table: str,
+    columns: str = "*",
+    page_size: int = 1000,
+) -> pd.DataFrame:
+    rows = []
+    start = 0
+
+    while True:
+        response = (
+            client.table(table)
+            .select(columns)
+            .range(
+                start,
+                start + page_size - 1,
+            )
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+
+        if len(batch) < page_size:
+            break
+
+        start += page_size
+
+    return pd.DataFrame(rows)
+
+
+def fetch_base_quality_snapshot(
+    client: Client,
+) -> dict[str, Any]:
+    products = _fetch_all_rows(
+        client,
+        table="products",
+        columns=(
+            "id,supplier_id,name,category,description,"
+            "unit_price,price_min,price_max,currency,"
+            "price_status,min_order_qty,material,"
+            "dimensions_raw,capacity,capacity_ml,finish,"
+            "customizable,decoration,licensing_notes,"
+            "tags,source_file,catalog_name"
+        ),
+    )
+
+    activations = _fetch_all_rows(
+        client,
+        table="activation_solutions",
+        columns=(
+            "id,supplier_id,name,category,description,"
+            "base_price,currency,price_status,"
+            "lead_time_days,infrastructure_requirements,"
+            "internet_requirement,included_items,"
+            "excluded_items,location,tags,source_file"
+        ),
+    )
+
+    venues = _fetch_all_rows(
+        client,
+        table="venues",
+        columns=(
+            "id,operator_id,name,venue_type,description,"
+            "city,state,standing_capacity,seated_capacity,"
+            "auditorium_capacity,base_price,price_min,"
+            "price_max,currency,price_status,"
+            "infrastructure,power_supply,internet,"
+            "air_conditioning,audiovisual,"
+            "kitchen_or_catering,bathrooms,furniture,"
+            "parking,accessibility,loading_access,"
+            "website_url,map_url,document_name"
+        ),
+    )
+
+    suppliers = _fetch_all_rows(
+        client,
+        table="suppliers",
+        columns=(
+            "id,name,website_url,contact_name,email,phone,"
+            "whatsapp,base_city,base_state,base_country,"
+            "serves_nationally,served_states,served_cities,"
+            "local_team_locations,travel_pricing_mode,"
+            "default_travel_cost_brl,"
+            "freight_pricing_mode,"
+            "default_freight_cost_brl,"
+            "travel_lead_days,coverage_notes,notes"
+        ),
+    )
+
+    media = _fetch_all_rows(
+        client,
+        table="media_asset_counts",
+        columns=(
+            "entity_type,entity_id,media_count,"
+            "image_count,document_count,has_primary"
+        ),
+    )
+
+    try:
+        supplier_overview = _fetch_all_rows(
+            client,
+            table="supplier_coverage_overview",
+            columns=(
+                "supplier_id,products_count,"
+                "activations_count,venues_count"
+            ),
+        )
+    except Exception:
+        supplier_overview = pd.DataFrame()
+
+    try:
+        duplicate_response = (
+            client.table(
+                "knowledge_duplicate_candidates"
+            )
+            .select("id", count="exact")
+            .eq("status", "pending")
+            .limit(1)
+            .execute()
+        )
+        pending_duplicates = int(
+            duplicate_response.count or 0
+        )
+    except Exception:
+        pending_duplicates = 0
+
+    return {
+        "products": products,
+        "activations": activations,
+        "venues": venues,
+        "suppliers": suppliers,
+        "media": media,
+        "supplier_overview": supplier_overview,
+        "pending_duplicates": pending_duplicates,
+    }
+
+
 def database_counts(client: Client) -> dict[str, int]:
     tables = {
         "Fornecedores": "suppliers",
