@@ -700,6 +700,10 @@ def _compact_memory_raw_data(
             ],
             "coverage": extraction.get("coverage") or {},
             "coverage_diagnostic": {
+                "mode": (
+                    diagnostic.get("mode")
+                    or "memory"
+                ),
                 "summary": _clip_text(
                     diagnostic.get("summary"),
                     1800,

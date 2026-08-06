@@ -71,7 +71,10 @@ class SchemaSuggestion(BaseModel):
 
 
 class CoverageDiagnostic(BaseModel):
-    mode: str
+    # Older saved Memory diagnostics did not persist this field.
+    # "unknown" keeps those records readable; the UI supplies
+    # the correct context whenever it is known.
+    mode: str = "unknown"
     summary: str
     coverage_score: int = Field(default=0, ge=0, le=100)
     source_units_total: int = 0
@@ -81,6 +84,67 @@ class CoverageDiagnostic(BaseModel):
     findings: list[CoverageFinding] = Field(default_factory=list)
     suggested_schema_additions: list[SchemaSuggestion] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+def coerce_coverage_diagnostic(
+    value: CoverageDiagnostic | dict | None,
+    *,
+    default_mode: str | None = None,
+) -> CoverageDiagnostic | None:
+    """
+    Converts current and legacy diagnostic payloads safely.
+
+    V25.7 compacted Memory diagnostics without persisting ``mode``.
+    Existing records therefore need a contextual default when opened.
+    """
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        CoverageDiagnostic,
+    ):
+        if (
+            default_mode
+            and value.mode in {
+                "",
+                "unknown",
+            }
+        ):
+            value.mode = default_mode
+        return value
+
+    if not isinstance(
+        value,
+        dict,
+    ):
+        raise TypeError(
+            "O diagnóstico salvo não possui "
+            "um formato reconhecido."
+        )
+
+    payload = dict(value)
+
+    if not str(
+        payload.get("mode")
+        or ""
+    ).strip():
+        payload["mode"] = (
+            default_mode
+            or "unknown"
+        )
+
+    if not str(
+        payload.get("summary")
+        or ""
+    ).strip():
+        payload["summary"] = (
+            "Diagnóstico salvo sem resumo."
+        )
+
+    return CoverageDiagnostic.model_validate(
+        payload
+    )
 
 
 MODE_LABELS = {
@@ -598,11 +662,11 @@ def diagnose_coverage(
 def diagnostic_dataframe(value: CoverageDiagnostic | dict | None) -> pd.DataFrame:
     if value is None:
         return pd.DataFrame()
-    diagnostic = (
+    diagnostic = coerce_coverage_diagnostic(
         value
-        if isinstance(value, CoverageDiagnostic)
-        else CoverageDiagnostic.model_validate(value)
     )
+    if diagnostic is None:
+        return pd.DataFrame()
     rows = []
     for finding in diagnostic.findings:
         rows.append(
@@ -625,11 +689,11 @@ def diagnostic_dataframe(value: CoverageDiagnostic | dict | None) -> pd.DataFram
 def suggestions_dataframe(value: CoverageDiagnostic | dict | None) -> pd.DataFrame:
     if value is None:
         return pd.DataFrame()
-    diagnostic = (
+    diagnostic = coerce_coverage_diagnostic(
         value
-        if isinstance(value, CoverageDiagnostic)
-        else CoverageDiagnostic.model_validate(value)
     )
+    if diagnostic is None:
+        return pd.DataFrame()
     return pd.DataFrame(
         [
             {
@@ -647,9 +711,11 @@ def suggestions_dataframe(value: CoverageDiagnostic | dict | None) -> pd.DataFra
 
 
 def diagnostic_json_bytes(value: CoverageDiagnostic | dict) -> bytes:
-    diagnostic = (
+    diagnostic = coerce_coverage_diagnostic(
         value
-        if isinstance(value, CoverageDiagnostic)
-        else CoverageDiagnostic.model_validate(value)
     )
-    return diagnostic.model_dump_json(indent=2).encode("utf-8")
+    if diagnostic is None:
+        return b"{}"
+    return diagnostic.model_dump_json(
+        indent=2
+    ).encode("utf-8")

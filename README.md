@@ -937,3 +937,16 @@ Antes de usar, execute:
 - não exige novo SQL;
 - não altera a Base de conhecimento nem o motor de recomendações;
 - não contém arquivos da pasta assets.
+
+
+## V25.7.2 — Diagnóstico retrocompatível
+
+- corrige `ValidationError` ao abrir diagnósticos antigos da Memória;
+- reconhece registros legados que não possuem o campo `mode`;
+- usa `memory` como contexto explícito dentro da página Memória;
+- novos salvamentos preservam `mode` no `raw_data`;
+- um diagnóstico inválido não interrompe mais todo o projeto;
+- apresentações, cards, imagens e documentos permanecem acessíveis;
+- não exige SQL;
+- não altera a Fase 14;
+- não contém arquivos da pasta `assets`.

@@ -4,6 +4,7 @@ import streamlit as st
 
 from coverage_diagnostic import (
     CoverageDiagnostic,
+    coerce_coverage_diagnostic,
     diagnostic_dataframe,
     diagnostic_json_bytes,
     suggestions_dataframe,
@@ -16,15 +17,44 @@ def render_coverage_diagnostic(
     heading: str = "Diagnóstico de cobertura",
     expanded: bool = True,
     download_key: str = "coverage_diagnostic",
+    default_mode: str | None = None,
 ) -> None:
     if not value:
         return
 
-    diagnostic = (
-        value
-        if isinstance(value, CoverageDiagnostic)
-        else CoverageDiagnostic.model_validate(value)
-    )
+    try:
+        diagnostic = (
+            coerce_coverage_diagnostic(
+                value,
+                default_mode=default_mode,
+            )
+        )
+    except Exception as exc:
+        st.warning(
+            "O diagnóstico salvo utiliza uma estrutura "
+            "antiga ou incompleta. O restante do projeto "
+            "continua disponível normalmente."
+        )
+
+        if isinstance(value, dict):
+            summary = str(
+                value.get("summary")
+                or ""
+            ).strip()
+            if summary:
+                st.write(summary)
+
+        with st.expander(
+            "Detalhe técnico do diagnóstico",
+            expanded=False,
+        ):
+            st.code(
+                str(exc)
+            )
+        return
+
+    if diagnostic is None:
+        return
 
     st.subheader(heading)
     st.caption(

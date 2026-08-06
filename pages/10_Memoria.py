@@ -535,6 +535,7 @@ with consult_tab:
                                             "memory_saved_"
                                             + str(latest.get("id"))
                                         ),
+                                        default_mode="memory",
                                     )
 
                                 with st.expander(
@@ -1216,6 +1217,7 @@ with upload_tab:
                 ),
                 expanded=True,
                 download_key="memory_review",
+                default_mode="memory",
             )
 
             if editor.empty:
