@@ -464,32 +464,32 @@ def render_sidebar() -> None:
             unsafe_allow_html=True,
         )
         st.page_link(
-            "pages/3_Nova_Recomendacao.py",
-            label="Analisar e recomendar",
+            "streamlit_app.py",
+            label="Home",
+        )
+        st.page_link(
+            "pages/1_Organizar_Conhecimento.py",
+            label="Upload de Conhecimento",
         )
         st.page_link(
             "pages/2_Consultar_Base.py",
-            label="Base de conhecimento",
+            label="Base de Conhecimento",
+        )
+        st.page_link(
+            "pages/3_Nova_Recomendacao.py",
+            label="Analisar e Recomendar",
         )
         st.page_link(
             "pages/5_Cobertura_de_Fornecedores.py",
             label="Fornecedores",
         )
         st.page_link(
-            "streamlit_app.py",
-            label="Início",
-        )
-        st.page_link(
-            "pages/10_Memoria.py",
-            label="Memória",
-        )
-        st.page_link(
             "pages/4_Historico_de_Projetos.py",
             label="Projetos",
         )
         st.page_link(
-            "pages/1_Organizar_Conhecimento.py",
-            label="Upload de Conhecimento",
+            "pages/10_Memoria.py",
+            label="Memória",
         )
 
         st.markdown(
