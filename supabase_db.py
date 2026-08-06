@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
+from numbers import Integral, Real
 from datetime import date
 from typing import Any
 
@@ -182,6 +185,21 @@ ARRAY_FIELDS = {
 }
 
 
+INTEGER_FIELDS = {
+    "source_page",
+    "document_year",
+    "capacity",
+    "capacity_ml",
+    "price_reference_qty",
+    "min_order_qty",
+    "lead_time_days",
+    "travel_lead_days",
+    "standing_capacity",
+    "seated_capacity",
+    "auditorium_capacity",
+}
+
+
 def get_supabase_client(
     url: str | None = None,
     secret_key: str | None = None,
@@ -232,6 +250,53 @@ def _is_missing(value: Any) -> bool:
     except (TypeError, ValueError):
         pass
     return not str(value).strip()
+
+
+def _integer_or_none(value: Any) -> int | None:
+    """Return an exact integer or ``None`` without rounding values."""
+    if _is_missing(value) or isinstance(value, bool):
+        return None
+
+    if isinstance(value, Integral):
+        return int(value)
+
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            return None
+        if value == value.to_integral_value():
+            return int(value)
+        return None
+
+    if isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number):
+            return None
+        if number.is_integer():
+            return int(number)
+        return None
+
+    text = str(value).replace("\u00a0", " ").strip()
+    if not text:
+        return None
+
+    compact = re.sub(r"\s+", "", text)
+
+    # Accept common thousands-grouped forms such as 2.000 or 6,400.
+    if re.fullmatch(r"[+-]?\d{1,3}(?:[.,]\d{3})+", compact):
+        compact = compact.replace(".", "").replace(",", "")
+    else:
+        compact = compact.replace(",", ".")
+
+    try:
+        number = Decimal(compact)
+    except (InvalidOperation, ValueError):
+        return None
+
+    if not number.is_finite():
+        return None
+    if number != number.to_integral_value():
+        return None
+    return int(number)
 
 
 def _json_safe(value: Any) -> Any:
@@ -296,6 +361,8 @@ def _prepare_record(
         value = raw.get(key)
         if key in ARRAY_FIELDS:
             value = split_pipe(value)
+        elif key in INTEGER_FIELDS:
+            value = _integer_or_none(value)
         else:
             value = _json_safe(value)
 
