@@ -19,7 +19,6 @@ from document_io import prepare_documents, render_pdf_page
 from memory_db import (
     create_memory_signed_url,
     delete_memory_document,
-    create_memory_project,
     MemorySaveError,
     fetch_memory_documents,
     fetch_memory_items,
@@ -34,7 +33,6 @@ from memory_learning_db import (
     delete_memory_project,
 )
 from memory_learning_ui import (
-    render_briefing_adherence_tab,
     render_budget_adherence_tab,
     render_results_learning_tab,
 )
@@ -64,7 +62,7 @@ from supabase_db import get_supabase_client
 
 
 st.set_page_config(
-    page_title="NAVE by VOE | Memória",
+    page_title="NAVE by VOE | Memória do Projeto",
     page_icon=NAVE_APP_ICON,
     layout="wide",
     initial_sidebar_state="expanded",
@@ -75,10 +73,18 @@ if not require_app_access():
 
 apply_nave_branding()
 page_header(
-    "Memória",
-    "Arquivo vivo do repertório criativo e estratégico "
-    "dos projetos da VOE.",
+    "Memória do Projeto",
+    "Apresentação final, repertório criativo, custos, "
+    "resultados e aprendizados do projeto selecionado.",
 )
+
+if st.button(
+    "← Voltar para Projetos",
+    width="stretch",
+):
+    st.switch_page(
+        "pages/4_Historico_de_Projetos.py"
+    )
 
 
 def _setting(name: str, default: str = "") -> str:
@@ -111,14 +117,73 @@ if not supabase_url or not supabase_key:
     )
     st.stop()
 
-client = get_supabase_client(supabase_url, supabase_key)
-
-consult_tab, upload_tab = st.tabs(
-    [
-        "Consultar Memória",
-        "Adicionar novo projeto",
-    ]
+client = get_supabase_client(
+    supabase_url,
+    supabase_key,
 )
+
+focused_project_id = str(
+    st.session_state.get(
+        "nave_project_hub_focus_id"
+    )
+    or ""
+).strip()
+
+if not focused_project_id:
+    st.info(
+        "Selecione primeiro um projeto na área Projetos."
+    )
+
+    if st.button(
+        "Ir para Projetos",
+        type="primary",
+        width="stretch",
+    ):
+        st.switch_page(
+            "pages/4_Historico_de_Projetos.py"
+        )
+
+    st.stop()
+
+project_response = (
+    client.table("projects")
+    .select("*")
+    .eq(
+        "id",
+        focused_project_id,
+    )
+    .limit(1)
+    .execute()
+)
+
+if not project_response.data:
+    st.error(
+        "O projeto selecionado não foi encontrado."
+    )
+    st.stop()
+
+focused_project = project_response.data[0]
+memory_mode = str(
+    st.session_state.get(
+        "nave_project_hub_memory_mode"
+    )
+    or "consult"
+)
+
+if memory_mode == "upload":
+    upload_tab, consult_tab = st.tabs(
+        [
+            "Adicionar apresentação final",
+            "Memória do Projeto",
+        ]
+    )
+else:
+    consult_tab, upload_tab = st.tabs(
+        [
+            "Memória do Projeto",
+            "Adicionar apresentação final",
+        ]
+    )
 
 
 def _selected_rows(event) -> list[int]:
@@ -136,7 +201,14 @@ def _selected_rows(event) -> list[int]:
 
 with consult_tab:
     try:
-        overview = fetch_memory_projects_overview(client)
+        overview = fetch_memory_projects_overview(
+            client
+        )
+        overview = overview[
+            overview["project_id"]
+            .astype(str)
+            .eq(focused_project_id)
+        ].reset_index(drop=True)
     except Exception as exc:
         report_service_error(
             "consulta da Memória",
@@ -281,7 +353,12 @@ with consult_tab:
 
             selected_project = None
 
-            if selected_rows:
+            if not project_page.empty:
+                selected_project = (
+                    project_page.iloc[0]
+                    .to_dict()
+                )
+            elif selected_rows:
                 selected_project = (
                     project_page.iloc[
                         selected_rows[0]
@@ -409,11 +486,9 @@ with consult_tab:
                                         with st.spinner(
                                             "Excluindo projeto e arquivos..."
                                         ):
-                                            delete_result = (
-                                                delete_memory_project(
-                                                    client,
-                                                    project_id=project_id,
-                                                )
+                                            delete_memory_project(
+                                                client,
+                                                project_id=project_id,
                                             )
 
                                         st.session_state.pop(
@@ -421,21 +496,9 @@ with consult_tab:
                                             None,
                                         )
                                         st.cache_data.clear()
-
-                                        if delete_result.get(
-                                            "project_record_retained"
-                                        ):
-                                            st.success(
-                                                "O conteúdo foi removido da "
-                                                "Memória. O cadastro geral do "
-                                                "projeto foi preservado porque "
-                                                "possui histórico de recomendações."
-                                            )
-                                        else:
-                                            st.success(
-                                                "Projeto excluído da Memória."
-                                            )
-
+                                        st.success(
+                                            "Projeto excluído da Memória."
+                                        )
                                         st.rerun()
 
                                     except Exception as exc:
@@ -573,7 +636,6 @@ with consult_tab:
                         (
                             item_outcomes_by_id,
                             cost_links_by_item_id,
-                            briefing_links_by_item_id,
                         ) = build_item_learning_maps(
                             client,
                             project_id=project_id,
@@ -581,13 +643,11 @@ with consult_tab:
                     except Exception:
                         item_outcomes_by_id = {}
                         cost_links_by_item_id = {}
-                        briefing_links_by_item_id = {}
 
                     sections = section_labels_present(items)
                     tab_keys = [
                         "overview",
                         *sections,
-                        "briefing_adherence",
                         "results_learning",
                         "budget_adherence",
                         "documents",
@@ -598,7 +658,6 @@ with consult_tab:
                             MEMORY_SECTION_LABELS[section]
                             for section in sections
                         ],
-                        "Briefing & Aderência",
                         "Resultados & Aprendizados",
                         "Orçamento & Aderência",
                         "Documentos & Versões",
@@ -780,15 +839,6 @@ with consult_tab:
                                                 ),
                                                 exception=exc,
                                             )
-
-                            elif tab_key == "briefing_adherence":
-                                render_briefing_adherence_tab(
-                                    client,
-                                    project_id=project_id,
-                                    memory_items=items,
-                                    api_key=api_key,
-                                    model=model,
-                                )
 
                             elif tab_key == "results_learning":
                                 render_results_learning_tab(
@@ -1029,20 +1079,22 @@ with consult_tab:
                                     cost_links_by_item_id=(
                                         cost_links_by_item_id
                                     ),
-                                    briefing_links_by_item_id=(
-                                        briefing_links_by_item_id
-                                    ),
                                 )
 
 
 with upload_tab:
     st.subheader(
-        "Adicionar novo projeto"
+        "Adicionar apresentação final"
     )
     st.caption(
-        "Envie a apresentação final já enviada ao cliente. "
-        "Cada envio cria um novo projeto na Memória; "
-        "nenhum projeto existente será alterado."
+        "O PDF será anexado ao projeto "
+        + str(
+            focused_project.get(
+                "project_name"
+            )
+            or "selecionado"
+        )
+        + ". Nenhum novo projeto será criado."
     )
 
     if not api_key:
@@ -1051,10 +1103,9 @@ with upload_tab:
         )
     else:
         st.info(
-            "Nenhum preenchimento inicial é necessário. "
-            "A NAVE identificará projeto, cliente, evento, "
-            "título e versão a partir do PDF. Tudo poderá "
-            "ser revisado antes e depois de salvar."
+            "A NAVE identificará o conteúdo e os dados da "
+            "apresentação. As informações do projeto já vêm "
+            "do cadastro selecionado e podem ser revisadas."
         )
 
         uploaded = st.file_uploader(
@@ -1179,7 +1230,10 @@ with upload_tab:
                 ).stem
 
                 detected_project_name = (
-                    extraction.get(
+                    focused_project.get(
+                        "project_name"
+                    )
+                    or extraction.get(
                         "project_name"
                     )
                     or extraction.get(
@@ -1188,13 +1242,19 @@ with upload_tab:
                     or file_title
                 )
                 detected_client_brand = (
-                    extraction.get(
+                    focused_project.get(
+                        "client_brand"
+                    )
+                    or extraction.get(
                         "client_brand"
                     )
                     or ""
                 )
                 detected_event_name = (
-                    extraction.get(
+                    focused_project.get(
+                        "event_name"
+                    )
+                    or extraction.get(
                         "event_name"
                     )
                     or ""
@@ -1224,7 +1284,10 @@ with upload_tab:
                 st.session_state[
                     "memory_document_meta"
                 ] = {
-                    "creates_new_project": True,
+                    "selected_project_id": (
+                        focused_project_id
+                    ),
+                    "creates_new_project": False,
                 }
 
                 st.session_state[
@@ -1649,20 +1712,25 @@ with upload_tab:
                             st.stop()
 
                         project_id = (
-                            create_memory_project(
-                                client,
-                                project_name=(
-                                    review_project_name
-                                ),
-                                client_brand=(
-                                    review_client_brand
-                                    or None
-                                ),
-                                event_name=(
-                                    review_event_name
-                                    or None
-                                ),
-                            )
+                            focused_project_id
+                        )
+
+                        update_memory_project_metadata(
+                            client,
+                            project_id=(
+                                project_id
+                            ),
+                            project_name=(
+                                review_project_name
+                            ),
+                            client_brand=(
+                                review_client_brand
+                                or None
+                            ),
+                            event_name=(
+                                review_event_name
+                                or None
+                            ),
                         )
 
                         extraction_for_save = {
@@ -1747,10 +1815,12 @@ with upload_tab:
                                         "• " + str(warning)
                                     )
 
-                        st.session_state.pop(
-                            "nave_memory_focus_project",
-                            None,
-                        )
+                        st.session_state[
+                            "nave_project_hub_focus_id"
+                        ] = project_id
+                        st.session_state[
+                            "nave_project_hub_memory_mode"
+                        ] = "consult"
 
                         for key in [
                             "memory_source_document",
@@ -1770,12 +1840,6 @@ with upload_tab:
                         st.rerun()
 
                     except MemorySaveError as exc:
-                        if project_id:
-                            delete_memory_project(
-                                client,
-                                project_id=str(project_id),
-                            )
-
                         st.error(exc.safe_message)
                         st.caption(
                             "Etapa interrompida: "
@@ -1798,12 +1862,6 @@ with upload_tab:
                         )
 
                     except Exception as exc:
-                        if project_id:
-                            delete_memory_project(
-                                client,
-                                project_id=str(project_id),
-                            )
-
                         report_service_error(
                             "salvamento da Memória",
                             user_message=(

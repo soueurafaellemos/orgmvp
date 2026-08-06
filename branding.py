@@ -487,10 +487,6 @@ def render_sidebar() -> None:
             "pages/4_Historico_de_Projetos.py",
             label="Projetos",
         )
-        st.page_link(
-            "pages/10_Memoria.py",
-            label="Memória",
-        )
 
         st.markdown(
             '<div class="nave-sidebar-section">Qualidade da base</div>',

@@ -54,7 +54,7 @@ with first_row[2]:
         width="stretch",
     )
 
-second_row = st.columns(3)
+second_row = st.columns(2)
 
 with second_row[0]:
     st.page_link(
@@ -69,13 +69,5 @@ with second_row[1]:
         "pages/4_Historico_de_Projetos.py",
         label="Projetos",
         icon="📚",
-        width="stretch",
-    )
-
-with second_row[2]:
-    st.page_link(
-        "pages/10_Memoria.py",
-        label="Memória",
-        icon="🗃️",
         width="stretch",
     )

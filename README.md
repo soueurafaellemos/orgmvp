@@ -1060,27 +1060,24 @@ Antes de usar, execute:
 - não contém arquivos da pasta assets.
 
 
-## V26.3 — Fase 14.1: Briefing & Aderência
+## V26.3 — Projetos unificados
 
-- adiciona a aba “Briefing & Aderência” dentro de cada projeto;
-- aceita PDF, DOCX, PPTX, TXT e Markdown;
-- identifica objetivos, público, budget, entregáveis,
-  obrigatoriedades, restrições, operação, comunicação e KPIs;
-- separa demandas diferentes em fichas independentes;
-- permite revisar a extração antes de salvar;
-- preserva o briefing original em armazenamento privado;
-- sugere correlações entre demandas e fichas da apresentação;
-- cria uma matriz editável de aderência;
-- registra demandas cumpridas, parciais, não cumpridas,
-  superadas ou retiradas por budget/prazo;
-- permite guardar evidência e justificativa;
-- apresenta a relação com o briefing dentro de “Abrir ficha”;
-- sincroniza o budget identificado com Orçamento & Aderência;
-- corrige o upload de planilhas XLSM no Supabase Storage;
-- atualiza buckets antigos para aceitar o MIME normalizado;
-- usa MIME genérico de Excel como compatibilidade adicional;
-- corrige a exclusão de projetos relacionados a recomendações;
-- remove somente a camada da Memória quando o projeto precisa ser
-  preservado no histórico geral;
-- não altera automaticamente o ranking das recomendações;
+- remove Memória do menu principal e da Home;
+- mantém somente Projetos como acesso ao histórico contextual;
+- cria uma lista única reunindo projetos com recomendações e/ou Memória;
+- cada linha mostra versões, apresentações finais e conteúdos;
+- o projeto selecionado funciona como hub;
+- Briefing & Recomendações passa a ser uma área interna;
+- Memória do Projeto passa a ser uma área interna;
+- permite anexar apresentação final ao project_id selecionado;
+- o upload de PDF não cria mais um projeto paralelo;
+- preserva apresentações, imagens, custos, feedbacks e resultados existentes;
+- mantém exclusão integral protegida por senha administrativa;
+- corrige o upload de XLSM com um novo bucket privado sem restrições
+  frágeis de MIME;
+- arquivos de custo antigos continuam acessíveis no bucket original;
+- não exige novo SQL;
 - não contém arquivos da pasta assets.
+
+A Fase 14.1 — Briefing & Aderência deve ser construída sobre este
+hub unificado, usando o mesmo project_id.
