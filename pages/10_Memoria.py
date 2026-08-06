@@ -1,0 +1,1084 @@
+from __future__ import annotations
+
+import math
+import os
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import streamlit as st
+
+from branding import (
+    NAVE_APP_ICON,
+    apply_nave_branding,
+    page_header,
+)
+from document_io import prepare_documents, render_pdf_page
+from memory_db import (
+    create_memory_signed_url,
+    delete_memory_document,
+    ensure_memory_project,
+    fetch_memory_documents,
+    fetch_memory_items,
+    fetch_memory_pages,
+    fetch_memory_project_options,
+    fetch_memory_projects_overview,
+    save_memory_presentation,
+)
+from memory_extractor import (
+    extract_memory,
+    memory_editor_dataframe,
+    memory_section_counts,
+    merge_memory_batches,
+    selected_memory_items,
+)
+from memory_prompts import (
+    MEMORY_SECTION_LABELS,
+    MEMORY_STATUS_OPTIONS,
+)
+from memory_ui import (
+    DOCUMENT_STATUS_LABELS,
+    DOCUMENT_STATUS_OPTIONS,
+    render_memory_section,
+    section_labels_present,
+)
+from runtime_ui import (
+    report_service_error,
+    require_admin_access,
+    require_app_access,
+)
+from supabase_db import get_supabase_client
+
+
+st.set_page_config(
+    page_title="NAVE by VOE | Memória",
+    page_icon=NAVE_APP_ICON,
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+if not require_app_access():
+    st.stop()
+
+apply_nave_branding()
+page_header(
+    "Memória",
+    "Arquivo vivo do repertório criativo e estratégico "
+    "dos projetos da VOE.",
+)
+
+st.info(
+    "A Memória é um módulo isolado. Nada armazenado aqui "
+    "entra na Base de conhecimento, nas recomendações ou "
+    "em cadastros comerciais."
+)
+
+
+def _setting(name: str, default: str = "") -> str:
+    try:
+        return str(
+            st.secrets.get(
+                name,
+                os.getenv(name, default),
+            )
+        )
+    except Exception:
+        return str(os.getenv(name, default))
+
+
+api_key = _setting("GEMINI_API_KEY")
+model = st.session_state.get(
+    "nave_model",
+    _setting("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+)
+supabase_url = _setting("SUPABASE_URL")
+supabase_key = (
+    _setting("SUPABASE_SECRET_KEY")
+    or _setting("SUPABASE_SERVICE_ROLE_KEY")
+)
+
+if not supabase_url or not supabase_key:
+    st.error(
+        "A Memória não está disponível. "
+        "Consulte a área de Administração."
+    )
+    st.stop()
+
+client = get_supabase_client(supabase_url, supabase_key)
+
+consult_tab, upload_tab = st.tabs(
+    [
+        "Consultar Memória",
+        "Adicionar apresentação",
+    ]
+)
+
+
+def _selected_rows(event) -> list[int]:
+    try:
+        return list(event.selection.rows)
+    except Exception:
+        try:
+            return list(
+                event.get("selection", {}).get("rows", [])
+            )
+        except Exception:
+            return []
+
+
+def _project_label(row: dict) -> str:
+    name = str(row.get("project_name") or "Projeto sem nome")
+    client_name = str(row.get("client_brand") or "").strip()
+    return f"{name} · {client_name}" if client_name else name
+
+
+with consult_tab:
+    try:
+        overview = fetch_memory_projects_overview(client)
+    except Exception as exc:
+        report_service_error(
+            "consulta da Memória",
+            user_message=(
+                "Não foi possível carregar os projetos da Memória."
+            ),
+            exception=exc,
+        )
+        overview = pd.DataFrame()
+
+    if overview.empty:
+        st.info(
+            "Nenhuma apresentação foi adicionada à Memória ainda."
+        )
+    else:
+        filter1, filter2 = st.columns([3, 1])
+
+        with filter1:
+            project_search = st.text_input(
+                "Buscar projeto, cliente ou evento",
+                placeholder=(
+                    "Ex.: Creator Lab, Nissin, Oktoberfest..."
+                ),
+                key="memory_project_search",
+            )
+
+        with filter2:
+            page_size = st.selectbox(
+                "Projetos por página",
+                [25, 50, 100],
+                key="memory_project_page_size",
+            )
+
+        visible_projects = overview.copy()
+
+        if project_search.strip():
+            term = project_search.strip().casefold()
+            searchable = (
+                visible_projects["project_name"]
+                .fillna("")
+                .astype(str)
+                + " "
+                + visible_projects["client_brand"]
+                .fillna("")
+                .astype(str)
+                + " "
+                + visible_projects["event_name"]
+                .fillna("")
+                .astype(str)
+            ).str.casefold()
+
+            visible_projects = visible_projects[
+                searchable.str.contains(term, regex=False)
+            ]
+
+        visible_projects = visible_projects.reset_index(drop=True)
+        total_projects = len(visible_projects)
+
+        if total_projects == 0:
+            st.warning("Nenhum projeto corresponde à busca.")
+        else:
+            total_pages = max(
+                1,
+                math.ceil(total_projects / page_size),
+            )
+            page_col, summary_col = st.columns([1, 4])
+
+            with page_col:
+                current_page = st.number_input(
+                    "Página",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=1,
+                    step=1,
+                    key="memory_projects_page",
+                )
+
+            with summary_col:
+                st.caption(
+                    f"{total_projects} projeto(s) com Memória · "
+                    f"página {int(current_page)} de {total_pages}"
+                )
+
+            start = (int(current_page) - 1) * page_size
+            end = min(start + page_size, total_projects)
+
+            project_page = (
+                visible_projects.iloc[start:end]
+                .copy()
+                .reset_index(drop=True)
+            )
+
+            project_page["Projeto"] = project_page[
+                "project_name"
+            ].fillna("Projeto sem nome")
+            project_page["Cliente"] = project_page[
+                "client_brand"
+            ].fillna("Não informado")
+            project_page["Evento"] = project_page[
+                "event_name"
+            ].fillna("Não informado")
+            project_page["Apresentações"] = pd.to_numeric(
+                project_page["memory_documents_count"],
+                errors="coerce",
+            ).fillna(0).astype(int)
+            project_page["Conteúdos"] = pd.to_numeric(
+                project_page["memory_items_count"],
+                errors="coerce",
+            ).fillna(0).astype(int)
+            project_page["Última atualização"] = project_page[
+                "latest_memory_activity"
+            ].apply(
+                lambda value: (
+                    str(value)[:10]
+                    if value
+                    else "Não informada"
+                )
+            )
+
+            project_event = st.dataframe(
+                project_page[
+                    [
+                        "Projeto",
+                        "Cliente",
+                        "Evento",
+                        "Apresentações",
+                        "Conteúdos",
+                        "Última atualização",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                row_height=52,
+                on_select="rerun",
+                selection_mode="single-row",
+                key=f"memory_project_table_{int(current_page)}",
+            )
+
+            selected_rows = _selected_rows(project_event)
+            focused_project = st.session_state.get(
+                "nave_memory_focus_project"
+            )
+
+            selected_project = None
+
+            if selected_rows:
+                selected_project = project_page.iloc[
+                    selected_rows[0]
+                ].to_dict()
+            elif focused_project:
+                matches = overview[
+                    overview["project_id"]
+                    .astype(str)
+                    .eq(str(focused_project))
+                ]
+                if not matches.empty:
+                    selected_project = matches.iloc[0].to_dict()
+
+            if not selected_project:
+                st.info(
+                    "Selecione um projeto para abrir sua Memória."
+                )
+            else:
+                project_id = str(selected_project["project_id"])
+                st.session_state[
+                    "nave_memory_focus_project"
+                ] = project_id
+
+                st.divider()
+                st.subheader(
+                    selected_project.get("project_name")
+                    or selected_project.get("Projeto")
+                    or "Projeto"
+                )
+
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric(
+                    "Cliente",
+                    selected_project.get("client_brand")
+                    or selected_project.get("Cliente")
+                    or "Não informado",
+                )
+                m2.metric(
+                    "Apresentações",
+                    int(
+                        selected_project.get("memory_documents_count")
+                        or selected_project.get("Apresentações")
+                        or 0
+                    ),
+                )
+                m3.metric(
+                    "Conteúdos",
+                    int(
+                        selected_project.get("memory_items_count")
+                        or selected_project.get("Conteúdos")
+                        or 0
+                    ),
+                )
+                m4.metric(
+                    "Slides preservados",
+                    int(
+                        selected_project.get("memory_pages_count")
+                        or 0
+                    ),
+                )
+
+                try:
+                    documents = fetch_memory_documents(
+                        client,
+                        project_id=project_id,
+                    )
+                except Exception as exc:
+                    report_service_error(
+                        "consulta dos documentos da Memória",
+                        user_message=(
+                            "Não foi possível abrir este projeto."
+                        ),
+                        exception=exc,
+                    )
+                    documents = pd.DataFrame()
+
+                if documents.empty:
+                    st.info(
+                        "Este projeto ainda não possui apresentações."
+                    )
+                else:
+                    document_labels = {
+                        (
+                            str(
+                                row.get("title")
+                                or row.get("file_name")
+                            )
+                            + (
+                                " · " + str(row.get("version_label"))
+                                if row.get("version_label")
+                                else ""
+                            )
+                        ): str(row["id"])
+                        for _, row in documents.iterrows()
+                    }
+
+                    filter_col1, filter_col2 = st.columns([1.5, 2.5])
+
+                    with filter_col1:
+                        selected_document = st.selectbox(
+                            "Versão",
+                            ["Todas", *document_labels.keys()],
+                            key="memory_document_filter",
+                        )
+
+                    with filter_col2:
+                        item_search = st.text_input(
+                            "Buscar dentro do projeto",
+                            placeholder=(
+                                "Ex.: photo-op, KV, sampling, palco..."
+                            ),
+                            key="memory_item_search",
+                        )
+
+                    selected_document_ids = (
+                        None
+                        if selected_document == "Todas"
+                        else [document_labels[selected_document]]
+                    )
+
+                    try:
+                        pages = fetch_memory_pages(
+                            client,
+                            project_id=project_id,
+                            document_ids=selected_document_ids,
+                        )
+                        items = fetch_memory_items(
+                            client,
+                            project_id=project_id,
+                            document_ids=selected_document_ids,
+                        )
+                    except Exception as exc:
+                        report_service_error(
+                            "consulta dos itens da Memória",
+                            user_message=(
+                                "Não foi possível carregar as galerias."
+                            ),
+                            exception=exc,
+                        )
+                        pages = pd.DataFrame()
+                        items = pd.DataFrame()
+
+                    documents_by_id = {
+                        str(row["id"]): row.to_dict()
+                        for _, row in documents.iterrows()
+                    }
+                    pages_by_id = {
+                        str(row["id"]): row.to_dict()
+                        for _, row in pages.iterrows()
+                    }
+
+                    sections = section_labels_present(items)
+                    tab_keys = [
+                        "overview",
+                        *sections,
+                        "documents",
+                    ]
+                    tab_labels = [
+                        "Visão geral",
+                        *[
+                            MEMORY_SECTION_LABELS[section]
+                            for section in sections
+                        ],
+                        "Documentos & Versões",
+                    ]
+                    tabs = st.tabs(tab_labels)
+
+                    for tab, tab_key in zip(tabs, tab_keys):
+                        with tab:
+                            if tab_key == "overview":
+                                latest = documents.iloc[0].to_dict()
+                                cover_page = pages[
+                                    pages["document_id"]
+                                    .astype(str)
+                                    .eq(str(latest["id"]))
+                                    & pages["page_number"].eq(1)
+                                ]
+
+                                overview_col1, overview_col2 = st.columns(
+                                    [1.35, 2]
+                                )
+
+                                with overview_col1:
+                                    if not cover_page.empty:
+                                        cover_url = (
+                                            create_memory_signed_url(
+                                                client,
+                                                cover_page.iloc[0].get(
+                                                    "storage_path"
+                                                ),
+                                            )
+                                        )
+                                        if cover_url:
+                                            st.image(
+                                                cover_url,
+                                                use_container_width=True,
+                                            )
+
+                                with overview_col2:
+                                    st.markdown("### Síntese estratégica")
+                                    st.write(
+                                        latest.get("strategic_summary")
+                                        or (
+                                            "A apresentação ainda não "
+                                            "possui uma síntese."
+                                        )
+                                    )
+                                    if latest.get("creative_concept"):
+                                        st.markdown("**Conceito criativo:**")
+                                        st.write(latest["creative_concept"])
+                                    st.caption(
+                                        "Documento mais recente: "
+                                        + str(
+                                            latest.get("title")
+                                            or latest.get("file_name")
+                                        )
+                                    )
+
+                                if not items.empty:
+                                    counts = (
+                                        items.groupby("section_key")
+                                        .size()
+                                        .reset_index(name="Itens")
+                                    )
+                                    counts["Seção"] = counts[
+                                        "section_key"
+                                    ].map(MEMORY_SECTION_LABELS)
+
+                                    st.subheader("Conteúdo organizado")
+                                    st.dataframe(
+                                        counts[["Seção", "Itens"]],
+                                        use_container_width=True,
+                                        hide_index=True,
+                                    )
+
+                            elif tab_key == "documents":
+                                for _, document_row in documents.iterrows():
+                                    document = document_row.to_dict()
+                                    doc_id = str(document["id"])
+
+                                    with st.container(border=True):
+                                        col1, col2 = st.columns([3, 1])
+
+                                        with col1:
+                                            st.markdown(
+                                                "### "
+                                                + str(
+                                                    document.get("title")
+                                                    or document.get("file_name")
+                                                )
+                                            )
+                                            st.caption(
+                                                (
+                                                    document.get("version_label")
+                                                    or "Sem versão informada"
+                                                )
+                                                + " · "
+                                                + DOCUMENT_STATUS_LABELS.get(
+                                                    str(
+                                                        document.get(
+                                                            "document_status"
+                                                        )
+                                                    ),
+                                                    str(
+                                                        document.get(
+                                                            "document_status"
+                                                        )
+                                                    ),
+                                                )
+                                            )
+                                            st.write(
+                                                document.get(
+                                                    "strategic_summary"
+                                                )
+                                                or "Sem síntese."
+                                            )
+
+                                        with col2:
+                                            st.metric(
+                                                "Slides",
+                                                int(
+                                                    document.get("page_count")
+                                                    or 0
+                                                ),
+                                            )
+                                            st.metric(
+                                                "Itens",
+                                                int(
+                                                    document.get("items_count")
+                                                    or 0
+                                                ),
+                                            )
+
+                                        original_url = (
+                                            create_memory_signed_url(
+                                                client,
+                                                document.get("storage_path"),
+                                                download=True,
+                                            )
+                                        )
+                                        if original_url:
+                                            st.link_button(
+                                                "Abrir apresentação original",
+                                                original_url,
+                                                use_container_width=True,
+                                            )
+
+                                        with st.expander(
+                                            "Excluir esta apresentação",
+                                            expanded=False,
+                                        ):
+                                            st.error(
+                                                "A exclusão remove o documento, "
+                                                "os slides e todos os itens "
+                                                "ligados a ele."
+                                            )
+
+                                            if require_admin_access():
+                                                confirmation = st.text_input(
+                                                    "Digite EXCLUIR",
+                                                    key=f"memory_delete_{doc_id}",
+                                                )
+                                                if st.button(
+                                                    "Excluir apresentação",
+                                                    disabled=(
+                                                        confirmation
+                                                        .strip()
+                                                        .upper()
+                                                        != "EXCLUIR"
+                                                    ),
+                                                    key=(
+                                                        "memory_delete_button_"
+                                                        + doc_id
+                                                    ),
+                                                    use_container_width=True,
+                                                ):
+                                                    delete_memory_document(
+                                                        client,
+                                                        document_id=doc_id,
+                                                    )
+                                                    st.success(
+                                                        "Apresentação excluída."
+                                                    )
+                                                    st.cache_data.clear()
+                                                    st.rerun()
+
+                            else:
+                                render_memory_section(
+                                    client,
+                                    items=items,
+                                    pages_by_id=pages_by_id,
+                                    documents_by_id=documents_by_id,
+                                    section_key=tab_key,
+                                    search=item_search,
+                                )
+
+
+with upload_tab:
+    st.subheader("Adicionar apresentação estratégica")
+    st.caption(
+        "Envie o PDF final ou uma versão apresentada ao cliente. "
+        "A NAVE preservará o arquivo e organizará seu conteúdo "
+        "somente dentro do projeto."
+    )
+
+    if not api_key:
+        st.warning(
+            "O serviço de leitura não está configurado."
+        )
+    else:
+        try:
+            project_options = fetch_memory_project_options(client)
+        except Exception:
+            project_options = pd.DataFrame()
+
+        project_mode = st.radio(
+            "Projeto",
+            [
+                "Selecionar projeto existente",
+                "Criar novo projeto",
+            ],
+            horizontal=True,
+            key="memory_project_mode",
+        )
+
+        selected_project_id = None
+        project_name = ""
+        client_brand = ""
+        event_name = ""
+
+        if (
+            project_mode == "Selecionar projeto existente"
+            and not project_options.empty
+        ):
+            labels = {
+                _project_label(row.to_dict()): str(row["id"])
+                for _, row in project_options.iterrows()
+            }
+            project_label = st.selectbox(
+                "Projeto existente",
+                list(labels.keys()),
+                key="memory_existing_project",
+            )
+            selected_project_id = labels[project_label]
+        else:
+            if (
+                project_mode == "Selecionar projeto existente"
+                and project_options.empty
+            ):
+                st.info(
+                    "Ainda não existem projetos. Crie o primeiro abaixo."
+                )
+
+            project_name = st.text_input(
+                "Nome do projeto",
+                placeholder="Ex.: Amazon Creator Lab Black Friday",
+                key="memory_new_project_name",
+            )
+            project_col1, project_col2 = st.columns(2)
+
+            with project_col1:
+                client_brand = st.text_input(
+                    "Cliente / marca",
+                    key="memory_new_client",
+                )
+
+            with project_col2:
+                event_name = st.text_input(
+                    "Evento",
+                    key="memory_new_event",
+                )
+
+        uploaded = st.file_uploader(
+            "Apresentação em PDF",
+            type=["pdf"],
+            accept_multiple_files=False,
+            key="memory_pdf_upload",
+            help=(
+                "O PDF permite preservar o slide completo "
+                "e extrair imagens para as galerias."
+            ),
+        )
+
+        meta1, meta2, meta3 = st.columns([2, 1, 1.3])
+
+        with meta1:
+            document_title = st.text_input(
+                "Título da apresentação",
+                value=(
+                    Path(uploaded.name).stem
+                    if uploaded
+                    else ""
+                ),
+                key="memory_document_title",
+            )
+
+        with meta2:
+            version_label = st.text_input(
+                "Versão",
+                placeholder="Ex.: V3 final",
+                key="memory_version_label",
+            )
+
+        with meta3:
+            document_status = st.selectbox(
+                "Situação do documento",
+                DOCUMENT_STATUS_OPTIONS,
+                format_func=lambda value: DOCUMENT_STATUS_LABELS[value],
+                key="memory_document_status",
+            )
+
+        with st.expander("Configuração de leitura", expanded=False):
+            pages_per_batch = st.slider(
+                "Slides por etapa",
+                min_value=2,
+                max_value=8,
+                value=6,
+                help=(
+                    "A apresentação inteira será analisada. "
+                    "O valor controla somente cada etapa interna."
+                ),
+                key="memory_pages_per_batch",
+            )
+
+        analyze_clicked = st.button(
+            "Analisar apresentação",
+            type="primary",
+            use_container_width=True,
+            disabled=(uploaded is None or not api_key),
+            key="memory_analyze_button",
+        )
+
+        if analyze_clicked:
+            raw = [
+                (
+                    uploaded.name,
+                    uploaded.getvalue(),
+                    uploaded.type or "application/pdf",
+                )
+            ]
+
+            try:
+                docs = prepare_documents(raw)
+                progress = st.progress(0.0)
+                status = st.empty()
+
+                def update(done, total, message):
+                    progress.progress(
+                        done / total if total else 1
+                    )
+                    status.write(message)
+
+                batches = extract_memory(
+                    docs,
+                    api_key=api_key,
+                    model=model,
+                    pages_per_batch=int(pages_per_batch),
+                    progress_callback=update,
+                )
+                extraction = merge_memory_batches(batches)
+                editor = memory_editor_dataframe(extraction)
+
+                st.session_state["memory_source_document"] = docs[0]
+                st.session_state["memory_extraction"] = extraction
+                st.session_state["memory_editor"] = editor
+                st.session_state["memory_document_meta"] = {
+                    "document_title": (
+                        document_title
+                        or extraction.get("document_title")
+                        or uploaded.name
+                    ),
+                    "version_label": version_label,
+                    "document_status": document_status,
+                    "selected_project_id": selected_project_id,
+                    "project_name": (
+                        project_name
+                        or extraction.get("project_name")
+                        or ""
+                    ),
+                    "client_brand": (
+                        client_brand
+                        or extraction.get("client_brand")
+                        or ""
+                    ),
+                    "event_name": (
+                        event_name
+                        or extraction.get("event_name")
+                        or ""
+                    ),
+                }
+
+                st.success(
+                    "Apresentação analisada. Revise os itens abaixo."
+                )
+            except Exception as exc:
+                report_service_error(
+                    "leitura da apresentação estratégica",
+                    user_message=(
+                        "Não foi possível analisar esta apresentação."
+                    ),
+                    exception=exc,
+                )
+
+        extraction = st.session_state.get("memory_extraction")
+        editor = st.session_state.get("memory_editor")
+        source_document = st.session_state.get(
+            "memory_source_document"
+        )
+        saved_meta = (
+            st.session_state.get("memory_document_meta")
+            or {}
+        )
+
+        if (
+            extraction
+            and editor is not None
+            and source_document is not None
+        ):
+            st.divider()
+            st.subheader("Revisão antes de salvar")
+
+            preview_items = selected_memory_items(
+                extraction,
+                editor,
+            )
+            counts = memory_section_counts(preview_items)
+
+            metric1, metric2, metric3 = st.columns(3)
+            metric1.metric(
+                "Itens encontrados",
+                len(extraction.get("items", [])),
+            )
+            metric2.metric(
+                "Itens selecionados",
+                len(preview_items),
+            )
+            metric3.metric(
+                "Slides com conteúdo",
+                len(
+                    {
+                        int(item.get("source_page") or 0)
+                        for item in preview_items
+                    }
+                ),
+            )
+
+            if not counts.empty:
+                st.dataframe(
+                    counts,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            edited = st.data_editor(
+                editor,
+                use_container_width=True,
+                hide_index=True,
+                height=520,
+                key="memory_extraction_editor",
+                column_config={
+                    "_row_id": None,
+                    "Incluir": st.column_config.CheckboxColumn(
+                        "Incluir"
+                    ),
+                    "Seção": st.column_config.SelectboxColumn(
+                        "Seção",
+                        options=list(
+                            MEMORY_SECTION_LABELS.values()
+                        ),
+                    ),
+                    "Status": st.column_config.SelectboxColumn(
+                        "Status",
+                        options=MEMORY_STATUS_OPTIONS,
+                    ),
+                    "Resumo": st.column_config.TextColumn(
+                        "Resumo",
+                        width="large",
+                    ),
+                    "Confiança": st.column_config.ProgressColumn(
+                        "Confiança",
+                        min_value=0,
+                        max_value=100,
+                        format="%.1f%%",
+                    ),
+                },
+                disabled=[
+                    "Página",
+                    "Arquivo",
+                    "Confiança",
+                ],
+            )
+            st.session_state["memory_editor"] = edited
+
+            preview_options = {
+                (
+                    f"Slide {int(row.get('Página') or 0)} · "
+                    f"{row.get('Título')}"
+                ): str(row.get("_row_id"))
+                for _, row in edited[
+                    edited["Incluir"].eq(True)
+                ].iterrows()
+            }
+
+            if preview_options:
+                selected_preview = st.selectbox(
+                    "Visualizar item no slide",
+                    list(preview_options.keys()),
+                    key="memory_preview_item",
+                )
+                preview_row_id = preview_options[selected_preview]
+
+                original_item = next(
+                    (
+                        item
+                        for item in extraction.get("items", [])
+                        if str(item.get("_row_id")) == preview_row_id
+                    ),
+                    None,
+                )
+
+                if original_item:
+                    try:
+                        slide_bytes = render_pdf_page(
+                            source_document,
+                            int(original_item["source_page"]),
+                            zoom=1.2,
+                        )
+                        st.image(
+                            slide_bytes,
+                            caption=(
+                                "Slide original — página "
+                                f"{original_item['source_page']}"
+                            ),
+                            use_container_width=True,
+                        )
+                    except Exception:
+                        pass
+
+            if extraction.get("warnings"):
+                with st.expander("Alertas da leitura", expanded=False):
+                    for warning in extraction["warnings"]:
+                        st.write("• " + str(warning))
+
+            save_clicked = st.button(
+                "Salvar na Memória",
+                type="primary",
+                use_container_width=True,
+                key="memory_save_button",
+            )
+
+            if save_clicked:
+                final_items = selected_memory_items(
+                    extraction,
+                    st.session_state["memory_editor"],
+                )
+
+                if not final_items:
+                    st.warning(
+                        "Mantenha pelo menos um item selecionado."
+                    )
+                else:
+                    try:
+                        project_id = saved_meta.get(
+                            "selected_project_id"
+                        )
+
+                        if not project_id:
+                            project_id = ensure_memory_project(
+                                client,
+                                project_name=(
+                                    saved_meta.get("project_name")
+                                    or extraction.get("project_name")
+                                    or "Projeto sem nome"
+                                ),
+                                client_brand=(
+                                    saved_meta.get("client_brand")
+                                    or extraction.get("client_brand")
+                                ),
+                                event_name=(
+                                    saved_meta.get("event_name")
+                                    or extraction.get("event_name")
+                                ),
+                            )
+
+                        with st.spinner(
+                            "Preservando documento, slides e galerias..."
+                        ):
+                            result = save_memory_presentation(
+                                client,
+                                project_id=str(project_id),
+                                source_document=source_document,
+                                extraction=extraction,
+                                selected_items=final_items,
+                                document_title=(
+                                    saved_meta.get("document_title")
+                                    or extraction.get("document_title")
+                                    or source_document.name
+                                ),
+                                version_label=saved_meta.get(
+                                    "version_label"
+                                ),
+                                document_status=(
+                                    saved_meta.get("document_status")
+                                    or "sent_to_client"
+                                ),
+                            )
+
+                        if result.get("status") == "duplicate":
+                            st.warning(
+                                "Esta mesma apresentação já está "
+                                "na Memória do projeto."
+                            )
+                        else:
+                            st.success(
+                                f"{result.get('items_saved', 0)} item(ns) "
+                                f"e {result.get('pages_saved', 0)} slide(s) "
+                                "preservados."
+                            )
+
+                        st.session_state[
+                            "nave_memory_focus_project"
+                        ] = str(project_id)
+
+                        for key in [
+                            "memory_source_document",
+                            "memory_extraction",
+                            "memory_editor",
+                            "memory_document_meta",
+                        ]:
+                            st.session_state.pop(key, None)
+
+                        st.cache_data.clear()
+                        st.rerun()
+
+                    except Exception as exc:
+                        report_service_error(
+                            "salvamento da Memória",
+                            user_message=(
+                                "Não foi possível salvar esta apresentação."
+                            ),
+                            exception=exc,
+                        )

@@ -799,3 +799,30 @@ Antes de usar, execute:
 Antes de usar, execute:
 
 `supabase_patch_taxonomia_pesquisada_v24_1.sql`
+
+
+## V25 — Fase 12: Memória
+
+- novo menu principal “Memória”;
+- módulo isolado da Base de conhecimento;
+- upload de apresentações estratégicas em PDF;
+- seleção de projeto existente ou criação de projeto;
+- preservação do PDF original;
+- preservação dos slides completos usados como contexto;
+- extração de imagens para galerias;
+- revisão dos itens antes de salvar;
+- classificação em estratégia, cenografia, ativações, brindes,
+  jornada, comunicação, conteúdo, parceiros e legado;
+- abas opcionais aparecem somente quando possuem conteúdo;
+- status interno: referência, proposto, opção, recomendado,
+  aprovado, descartado, executado ou não identificado;
+- revisão manual da classificação na própria ficha;
+- versões e documentos consultáveis por projeto;
+- exclusão de apresentação protegida pela senha administrativa;
+- nenhuma tabela da Memória alimenta produtos, ativações,
+  locais, fornecedores ou recomendações;
+- o patch não contém arquivos da pasta assets.
+
+Antes de usar, execute:
+
+`supabase_patch_memoria_v1.sql`

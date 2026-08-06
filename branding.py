@@ -484,6 +484,10 @@ def render_sidebar() -> None:
             label="Projetos",
         )
         st.page_link(
+            "pages/10_Memoria.py",
+            label="Memória",
+        )
+        st.page_link(
             "pages/5_Cobertura_de_Fornecedores.py",
             label="Fornecedores",
         )
