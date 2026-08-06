@@ -464,32 +464,32 @@ def render_sidebar() -> None:
             unsafe_allow_html=True,
         )
         st.page_link(
-            "streamlit_app.py",
-            label="Início",
-        )
-        st.page_link(
-            "pages/1_Organizar_Conhecimento.py",
-            label="Upload de Conhecimento",
+            "pages/3_Nova_Recomendacao.py",
+            label="Analisar e recomendar",
         )
         st.page_link(
             "pages/2_Consultar_Base.py",
             label="Base de conhecimento",
         )
         st.page_link(
-            "pages/3_Nova_Recomendacao.py",
-            label="Analisar e recomendar",
+            "pages/5_Cobertura_de_Fornecedores.py",
+            label="Fornecedores",
         )
         st.page_link(
-            "pages/4_Historico_de_Projetos.py",
-            label="Projetos",
+            "streamlit_app.py",
+            label="Início",
         )
         st.page_link(
             "pages/10_Memoria.py",
             label="Memória",
         )
         st.page_link(
-            "pages/5_Cobertura_de_Fornecedores.py",
-            label="Fornecedores",
+            "pages/4_Historico_de_Projetos.py",
+            label="Projetos",
+        )
+        st.page_link(
+            "pages/1_Organizar_Conhecimento.py",
+            label="Upload de Conhecimento",
         )
 
         st.markdown(
@@ -501,12 +501,12 @@ def render_sidebar() -> None:
             label="Prontidão da base",
         )
         st.page_link(
-            "pages/9_Taxonomia_NAVE.py",
-            label="Taxonomia NAVE",
-        )
-        st.page_link(
             "pages/7_Revisar_Duplicidades.py",
             label="Revisar duplicidades",
+        )
+        st.page_link(
+            "pages/9_Taxonomia_NAVE.py",
+            label="Taxonomia NAVE",
         )
 
         st.markdown(
