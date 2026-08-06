@@ -30,6 +30,7 @@ from project_workspace_reports import (
     render_report_analyses,
 )
 from project_workspace_visuals import render_visual_section
+from project_workspace_intelligence import render_project_intelligence
 
 
 PROJECT_SECTIONS = [
@@ -902,42 +903,16 @@ def _render_briefing(
 
 
 def _render_recommendations(
+    client: Client,
     *,
+    project_id: str,
     snapshot: dict[str, Any],
 ) -> None:
-    _section_title(
-        "Diagnóstico e recomendações",
-        "Histórico de diagnósticos, versões e recomendações geradas para o projeto.",
+    render_project_intelligence(
+        client,
+        project_id=project_id,
+        snapshot=snapshot,
     )
-
-    rows = snapshot.get("recommendation_queries", [])
-
-    if not rows:
-        st.markdown(
-            '<div class="nave-workspace-empty">'
-            "Nenhum diagnóstico ou recomendação foi encontrado para este projeto."
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        return
-
-    for index, row in enumerate(rows, start=1):
-        title = (
-            row.get("query_label")
-            or row.get("project_name")
-            or f"Análise {index}"
-        )
-        objective = row.get("objective") or "Objetivo não informado"
-        created = _format_datetime(row.get("created_at"))
-
-        with st.expander(f"{title} · {created}", expanded=index == 1):
-            st.markdown(f"**Objetivo:** {objective}")
-            if row.get("briefing_text"):
-                st.markdown("**Briefing analisado**")
-                st.write(row.get("briefing_text"))
-            if isinstance(row.get("parsed_brief"), dict):
-                st.markdown("**Leitura estruturada**")
-                st.json(row.get("parsed_brief"))
 
 
 def _render_memory_cards(
@@ -1997,7 +1972,11 @@ def render_project_workspace(
                 snapshot=snapshot,
             )
         elif selected_section == "Diagnóstico e recomendações":
-            _render_recommendations(snapshot=snapshot)
+            _render_recommendations(
+                client,
+                project_id=project_id,
+                snapshot=snapshot,
+            )
         elif selected_section == "Estratégia e conceito":
             _render_strategy(
                 client,

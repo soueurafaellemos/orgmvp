@@ -1,0 +1,26 @@
+NAVE by VOE — V27.2
+FASE 15.2 — DIAGNÓSTICO INTEGRADO E MATRIZ DE EXECUÇÃO
+
+EXECUTAR NO SUPABASE
+- supabase_patch_fase_15_2_diagnostico_integrado_v1.sql
+
+ADICIONAR NO GITHUB
+- project_workspace_intelligence.py
+
+SUBSTITUIR NO GITHUB
+- project_workspace_visuals.py
+- project_workspace_ui.py
+- project_workspace_db.py
+
+MANTER DA V27.1
+- project_report_extractor.py
+- project_workspace_reports.py
+- project_workspace_runtime.py
+- project_hub.py
+- pages/4_Historico_de_Projetos.py
+
+REQUIREMENTS
+- Nenhuma alteração.
+
+DEPOIS
+- Manage app -> Reboot app

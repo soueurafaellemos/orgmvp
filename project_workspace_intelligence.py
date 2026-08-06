@@ -1,0 +1,938 @@
+from __future__ import annotations
+
+import difflib
+import hashlib
+import json
+import re
+import unicodedata
+from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Any, Iterable
+
+import pandas as pd
+import streamlit as st
+from supabase import Client
+
+
+VISUAL_SECTIONS = {"scenography", "activations", "gifts"}
+DELIVERY_SECTIONS = {
+    "scenography",
+    "activations",
+    "gifts",
+    "journey_operation",
+    "communication",
+    "content_agenda",
+    "partners_sponsorship",
+    "pr_esg_legacy",
+}
+
+SECTION_LABELS = {
+    "strategy": "Estratégia e conceito",
+    "scenography": "Cenografia e ambientes",
+    "activations": "Ativações e experiências",
+    "gifts": "Brindes e press kits",
+    "journey_operation": "Jornada e operação",
+    "communication": "Comunicação",
+    "content_agenda": "Conteúdo e agenda",
+    "partners_sponsorship": "Parceiros e patrocínios",
+    "pr_esg_legacy": "PR, ESG e legado",
+}
+
+SECTION_KEYWORDS = {
+    "scenography": {
+        "cenografia": 5, "cenografico": 5, "ambientacao": 5,
+        "ambiente": 3, "espaco": 2, "estande": 4, "stand": 4,
+        "fachada": 4, "palco": 4, "lounge": 4, "arquitetura": 4,
+        "mobiliario": 4, "estrutura": 2, "marcenaria": 4,
+        "implantacao": 4, "layout": 3, "planta": 3, "render": 4,
+        "area externa": 3, "area interna": 3, "casa chambinho": 6,
+        "backdrop": 3, "painel cenografico": 5, "portal": 3,
+        "entrada": 2, "balcao": 3, "testeira": 4,
+    },
+    "activations": {
+        "ativacao": 5, "experiencia": 4, "dinamica": 4,
+        "game": 5, "jogo": 5, "brincadeira": 5, "oficina": 4,
+        "interacao": 4, "gamificacao": 5, "desafio": 4,
+        "amarelinha": 7, "pescaria": 7, "jogo da memoria": 7,
+        "roleta": 6, "quiz": 6, "photo op": 5, "photopp": 5,
+        "foto oportunidade": 4, "karaoke": 5, "simulador": 5,
+    },
+    "gifts": {
+        "brinde": 6, "press kit": 7, "presskit": 7, "gift": 5,
+        "giveaway": 5, "mimo": 4, "lembranca": 4, "kit": 2,
+        "chaveiro": 7, "adesivo": 6, "tatuagem": 6, "faixa": 4,
+        "meia": 6, "sacola": 5, "bone": 5, "camiseta": 5,
+        "copo": 5, "caneca": 5, "pulseira": 5, "cordao": 5,
+        "asas": 4, "origami": 4, "cadaco": 4, "personalize": 3,
+    },
+}
+
+GENERIC_TOKENS = {
+    "de", "da", "do", "das", "dos", "e", "em", "para", "por",
+    "com", "sem", "um", "uma", "ao", "aos", "na", "no", "nas",
+    "nos", "projeto", "evento", "item", "servico", "material",
+    "fornecimento", "locacao", "producao", "geral", "diversos",
+}
+
+EXECUTED_STATUSES = {"executed"}
+NO_EXECUTION_STATUSES = {"not_executed"}
+POSITIVE_ADHERENCE = {"fulfilled", "partially_fulfilled", "exceeded", "changed_justified"}
+
+DIAGNOSTIC_CSS = """
+<style>
+.nave-source-card {
+    background: #FFFFFF;
+    border: 1px solid #E1E6EF;
+    border-radius: 13px;
+    min-height: 118px;
+    padding: 0.85rem 0.9rem;
+}
+.nave-source-label {
+    color: #18AFC9;
+    font-size: 0.64rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.nave-source-title {
+    color: #121B42;
+    font-size: 0.92rem;
+    font-weight: 800;
+    margin-top: 0.3rem;
+}
+.nave-source-status {
+    color: #667188;
+    font-size: 0.75rem;
+    line-height: 1.35;
+    margin-top: 0.4rem;
+}
+.nave-diagnostic-callout {
+    background: #F0FAFC;
+    border-left: 4px solid #18CDEA;
+    border-radius: 9px;
+    color: #34405D;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    margin: 0.45rem 0;
+    padding: 0.75rem 0.85rem;
+}
+.nave-diagnostic-alert {
+    background: #FFF8E7;
+    border-left: 4px solid #E0A11B;
+    border-radius: 9px;
+    color: #5E4A1B;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    margin: 0.45rem 0;
+    padding: 0.75rem 0.85rem;
+}
+</style>
+"""
+
+
+def normalise_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    text = text.casefold().replace("&", " e ")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _tokens(value: Any) -> set[str]:
+    return {
+        token for token in normalise_text(value).split()
+        if len(token) > 2 and token not in GENERIC_TOKENS
+    }
+
+
+def _record_text(record: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key in (
+        "title", "slide_title", "summary", "slide_summary", "description",
+        "item_type", "evidence", "category", "item_name", "source_sheet",
+    ):
+        if record.get(key):
+            values.append(str(record.get(key)))
+    for key in ("tags", "objectives", "mechanics", "technologies"):
+        value = record.get(key)
+        if isinstance(value, (list, tuple, set)):
+            values.extend(str(item) for item in value)
+    raw = record.get("raw_data")
+    if isinstance(raw, dict):
+        for key in ("suggested_title", "suggested_section", "slide_title", "slide_summary"):
+            if raw.get(key):
+                values.append(str(raw.get(key)))
+    return normalise_text(" ".join(values))
+
+
+def _section_scores(record: dict[str, Any]) -> dict[str, float]:
+    text = _record_text(record)
+    scores = {section: 0.0 for section in VISUAL_SECTIONS}
+    for section, keywords in SECTION_KEYWORDS.items():
+        for phrase, weight in keywords.items():
+            if normalise_text(phrase) in text:
+                scores[section] += float(weight)
+    return scores
+
+
+def infer_section_from_record(
+    record: dict[str, Any],
+    *,
+    explicit_section: str | None = None,
+) -> str | None:
+    explicit = str(explicit_section or record.get("section_key") or record.get("primary_section") or "").strip()
+    scores = _section_scores(record)
+    best = max(scores, key=scores.get)
+    best_score = scores[best]
+
+    if explicit in VISUAL_SECTIONS:
+        # A classificação já revisada tem prioridade, salvo evidência textual muito forte.
+        if best != explicit and best_score >= scores.get(explicit, 0) + 8:
+            return best
+        return explicit
+
+    if best_score >= 3:
+        return best
+    return explicit or None
+
+
+def infer_cost_section(cost: dict[str, Any]) -> str | None:
+    return infer_section_from_record(
+        {
+            "title": cost.get("item_name"),
+            "summary": cost.get("description"),
+            "category": cost.get("category"),
+            "item_type": cost.get("billing_type"),
+            "raw_data": cost.get("raw_data"),
+        }
+    )
+
+
+def _similarity(left: Any, right: Any) -> float:
+    left_text = normalise_text(left)
+    right_text = normalise_text(right)
+    if not left_text or not right_text:
+        return 0.0
+    if left_text == right_text:
+        return 1.0
+    left_tokens = _tokens(left_text)
+    right_tokens = _tokens(right_text)
+    union = left_tokens | right_tokens
+    overlap = len(left_tokens & right_tokens) / max(len(union), 1)
+    containment = 0.0
+    if left_text in right_text or right_text in left_text:
+        containment = 0.94
+    sequence = difflib.SequenceMatcher(None, left_text, right_text).ratio()
+    return max(sequence * 0.82, overlap, containment)
+
+
+def _item_cost_score(item: dict[str, Any], cost: dict[str, Any]) -> tuple[float, str]:
+    title = item.get("title") or item.get("slide_title")
+    item_body = " ".join(
+        str(value or "")
+        for value in (
+            title, item.get("summary"), item.get("description"),
+            " ".join(item.get("tags") or []) if isinstance(item.get("tags"), list) else item.get("tags"),
+        )
+    )
+    cost_title = cost.get("item_name")
+    cost_body = " ".join(
+        str(value or "")
+        for value in (cost_title, cost.get("category"), cost.get("description"))
+    )
+    title_score = _similarity(title, cost_title)
+    body_score = _similarity(item_body, cost_body)
+    item_section = infer_section_from_record(item)
+    cost_section = infer_cost_section(cost)
+    section_bonus = 0.10 if item_section and item_section == cost_section else 0.0
+    score = min(1.0, max(title_score, body_score * 0.88) + section_bonus)
+    reason = (
+        f"Título {title_score:.0%}; conteúdo {body_score:.0%}"
+        + (f"; mesma seção {SECTION_LABELS.get(item_section, item_section)}" if section_bonus else "")
+    )
+    return score, reason
+
+
+def _requirement_item_score(requirement: dict[str, Any], item: dict[str, Any]) -> tuple[float, str]:
+    requirement_text = " ".join(
+        str(value or "")
+        for value in (
+            requirement.get("title"), requirement.get("description"),
+            requirement.get("source_quote"),
+            " ".join(requirement.get("tags") or []) if isinstance(requirement.get("tags"), list) else requirement.get("tags"),
+        )
+    )
+    item_text = " ".join(
+        str(value or "")
+        for value in (
+            item.get("title"), item.get("summary"), item.get("description"),
+            item.get("evidence"),
+            " ".join(item.get("tags") or []) if isinstance(item.get("tags"), list) else item.get("tags"),
+        )
+    )
+    title_score = _similarity(requirement.get("title"), item.get("title"))
+    body_score = _similarity(requirement_text, item_text)
+    score = max(title_score, body_score * 0.92)
+    return score, f"Demanda × ficha: título {title_score:.0%}; conteúdo {body_score:.0%}"
+
+
+def ensure_automatic_cost_links(
+    client: Client,
+    *,
+    project_id: str,
+    snapshot: dict[str, Any],
+) -> int:
+    items = [row for row in snapshot.get("memory_items", []) if row.get("id")]
+    costs = [row for row in snapshot.get("cost_items", []) if row.get("id")]
+    if not items or not costs:
+        return 0
+
+    existing_pairs = {
+        (str(row.get("cost_item_id")), str(row.get("memory_item_id")))
+        for row in snapshot.get("cost_links", [])
+        if row.get("cost_item_id") and row.get("memory_item_id")
+    }
+    inserted_count = 0
+    new_rows: list[dict[str, Any]] = []
+
+    for cost in costs:
+        candidates: list[tuple[float, str, dict[str, Any]]] = []
+        for item in items:
+            pair = (str(cost.get("id")), str(item.get("id")))
+            if pair in existing_pairs:
+                continue
+            score, reason = _item_cost_score(item, cost)
+            if score >= 0.58:
+                candidates.append((score, reason, item))
+        candidates.sort(key=lambda row: row[0], reverse=True)
+        if not candidates:
+            continue
+        best_score = candidates[0][0]
+        selected = [row for row in candidates[:2] if row[0] >= max(0.58, best_score - 0.06)]
+        for score, reason, item in selected:
+            payload = {
+                "project_id": project_id,
+                "cost_item_id": cost.get("id"),
+                "memory_item_id": item.get("id"),
+                "match_score": round(score, 4),
+                "match_reason": "Correlação automática V27.2 — " + reason,
+                "link_status": "suggested",
+            }
+            try:
+                response = client.table("memory_cost_links").insert(payload).execute()
+                saved = dict(response.data[0]) if response.data else payload
+                new_rows.append(saved)
+                existing_pairs.add((str(cost.get("id")), str(item.get("id"))))
+                inserted_count += 1
+            except Exception:
+                continue
+
+    if new_rows:
+        snapshot.setdefault("cost_links", []).extend(new_rows)
+    return inserted_count
+
+
+def ensure_automatic_briefing_links(
+    client: Client,
+    *,
+    project_id: str,
+    snapshot: dict[str, Any],
+) -> int:
+    requirements = [row for row in snapshot.get("briefing_requirements", []) if row.get("id")]
+    items = [row for row in snapshot.get("memory_items", []) if row.get("id")]
+    if not requirements or not items:
+        return 0
+
+    existing_pairs = {
+        (str(row.get("requirement_id")), str(row.get("memory_item_id")))
+        for row in snapshot.get("briefing_links", [])
+        if row.get("requirement_id") and row.get("memory_item_id")
+    }
+    inserted_count = 0
+    new_rows: list[dict[str, Any]] = []
+
+    for requirement in requirements:
+        candidates: list[tuple[float, str, dict[str, Any]]] = []
+        for item in items:
+            pair = (str(requirement.get("id")), str(item.get("id")))
+            if pair in existing_pairs:
+                continue
+            score, reason = _requirement_item_score(requirement, item)
+            if score >= 0.55:
+                candidates.append((score, reason, item))
+        candidates.sort(key=lambda row: row[0], reverse=True)
+        if not candidates:
+            continue
+        best_score = candidates[0][0]
+        selected = [row for row in candidates[:2] if row[0] >= max(0.55, best_score - 0.05)]
+        for score, reason, item in selected:
+            payload = {
+                "project_id": project_id,
+                "requirement_id": requirement.get("id"),
+                "memory_item_id": item.get("id"),
+                "match_score": round(score, 4),
+                "match_reason": "Correlação automática V27.2 — " + reason,
+                "link_status": "suggested",
+                "adherence_status": "not_assessed",
+                "evidence": None,
+                "notes": None,
+            }
+            try:
+                response = client.table("memory_briefing_links").insert(payload).execute()
+                saved = dict(response.data[0]) if response.data else payload
+                new_rows.append(saved)
+                existing_pairs.add((str(requirement.get("id")), str(item.get("id"))))
+                inserted_count += 1
+            except Exception:
+                continue
+
+    if new_rows:
+        snapshot.setdefault("briefing_links", []).extend(new_rows)
+    return inserted_count
+
+
+def section_cost_context(snapshot: dict[str, Any], section: str) -> dict[str, Any]:
+    active_links = [row for row in snapshot.get("cost_links", []) if row.get("link_status") != "rejected"]
+    linked_cost_ids = {str(row.get("cost_item_id")) for row in active_links if row.get("cost_item_id")}
+    section_costs = [row for row in snapshot.get("cost_items", []) if infer_cost_section(row) == section]
+    unallocated = [row for row in section_costs if str(row.get("id")) not in linked_cost_ids]
+    return {
+        "section_costs": section_costs,
+        "unallocated": unallocated,
+        "section_total": sum(_safe_float(row.get("client_total")) for row in section_costs),
+        "unallocated_total": sum(_safe_float(row.get("client_total")) for row in unallocated),
+    }
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+def _money(value: Any) -> str:
+    number = _safe_float(value)
+    formatted = f"{number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {formatted}"
+
+
+def _best_item_match(name: str, items: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, float]:
+    best = None
+    best_score = 0.0
+    for item in items:
+        score = _similarity(name, item.get("title"))
+        if score > best_score:
+            best = item
+            best_score = score
+    return best, best_score
+
+
+def _coverage_state(structured: int, attached: int, label: str) -> dict[str, Any]:
+    if structured > 0:
+        return {"state": "structured", "label": label, "detail": f"{structured} registro(s) estruturado(s)"}
+    if attached > 0:
+        return {"state": "attached", "label": label, "detail": "Arquivo anexado, ainda sem leitura estruturada"}
+    return {"state": "missing", "label": label, "detail": "Pendente"}
+
+
+def _active_links(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get("link_status") != "rejected"]
+
+
+def _source_signature(snapshot: dict[str, Any]) -> str:
+    keys = (
+        "briefing_documents", "briefing_requirements", "memory_documents",
+        "memory_pages", "memory_items", "cost_documents", "cost_items",
+        "cost_links", "item_outcomes", "briefing_links", "feedback_entries",
+        "project_files", "report_analyses",
+    )
+    compact: dict[str, Any] = {}
+    for key in keys:
+        rows = []
+        for row in snapshot.get(key, []):
+            rows.append({
+                "id": row.get("id") or row.get("item_id"),
+                "updated_at": row.get("updated_at"),
+                "created_at": row.get("created_at"),
+                "status": row.get("link_status") or row.get("outcome_status") or row.get("analysis_status"),
+                "value": row.get("client_total") or row.get("actual_cost") or row.get("adherence_status"),
+            })
+        compact[key] = rows
+    compact["outcome"] = snapshot.get("outcome") or {}
+    payload = json.dumps(compact, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
+    project_files = [row for row in snapshot.get("project_files", []) if not row.get("is_archived")]
+    role_count = defaultdict(int)
+    for row in project_files:
+        role_count[str(row.get("file_role"))] += 1
+
+    coverage = {
+        "briefing": _coverage_state(len(snapshot.get("briefing_documents", [])), role_count["briefing_original"], "Briefing"),
+        "presentation": _coverage_state(len(snapshot.get("memory_documents", [])), role_count["final_presentation"], "Apresentação"),
+        "cost": _coverage_state(len(snapshot.get("cost_documents", [])), role_count["cost_sheet"], "Planilha de custos"),
+        "report": _coverage_state(len(snapshot.get("report_analyses", [])), role_count["post_execution_report"] + role_count["closure_report"], "Pós-evento / encerramento"),
+        "feedback": _coverage_state(len(snapshot.get("feedback_entries", [])), role_count["feedback"] + role_count["approval"], "Feedbacks"),
+    }
+
+    items = []
+    for row in snapshot.get("memory_items", []):
+        section = infer_section_from_record(row, explicit_section=row.get("section_key"))
+        enriched = dict(row)
+        enriched["inferred_section"] = section
+        if section in DELIVERY_SECTIONS:
+            items.append(enriched)
+
+    cost_by_id = {str(row.get("id")): row for row in snapshot.get("cost_items", []) if row.get("id")}
+    req_by_id = {str(row.get("id")): row for row in snapshot.get("briefing_requirements", []) if row.get("id")}
+    outcomes = {str(row.get("item_id")): row for row in snapshot.get("item_outcomes", []) if row.get("item_id")}
+
+    costs_by_item: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    active_cost_links = _active_links(snapshot.get("cost_links", []))
+    for link in active_cost_links:
+        cost = cost_by_id.get(str(link.get("cost_item_id")))
+        if cost:
+            costs_by_item[str(link.get("memory_item_id"))].append({"link": link, "cost": cost})
+
+    requirements_by_item: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    active_brief_links = _active_links(snapshot.get("briefing_links", []))
+    for link in active_brief_links:
+        requirement = req_by_id.get(str(link.get("requirement_id")))
+        if requirement:
+            requirements_by_item[str(link.get("memory_item_id"))].append({"link": link, "requirement": requirement})
+
+    matrix: list[dict[str, Any]] = []
+    executed_count = 0
+    explicit_not_executed = 0
+    no_execution_evidence = 0
+
+    for item in items:
+        item_id = str(item.get("id") or "")
+        outcome = outcomes.get(item_id) or {}
+        outcome_status = str(outcome.get("outcome_status") or "unassessed")
+        if outcome_status in EXECUTED_STATUSES:
+            execution_reading = "Executado com evidência"
+            executed_count += 1
+        elif outcome_status in NO_EXECUTION_STATUSES:
+            execution_reading = "Não executado — evidência explícita"
+            explicit_not_executed += 1
+        else:
+            execution_reading = "Sem evidência de execução"
+            no_execution_evidence += 1
+
+        linked_costs = costs_by_item.get(item_id, [])
+        direct_cost = sum(_safe_float(row["cost"].get("client_total")) for row in linked_costs)
+        confirmed = any(row["link"].get("link_status") == "confirmed" for row in linked_costs)
+        best_cost_score = max((_safe_float(row["link"].get("match_score")) for row in linked_costs), default=0)
+
+        briefing_links = requirements_by_item.get(item_id, [])
+        adherence_values = [
+            str(row["link"].get("adherence_status") or row["requirement"].get("adherence_status") or "not_assessed")
+            for row in briefing_links
+        ]
+        if any(value in {"not_fulfilled"} for value in adherence_values):
+            adherence = "Não cumprida"
+        elif any(value in POSITIVE_ADHERENCE for value in adherence_values):
+            adherence = "Com evidência de aderência"
+        elif briefing_links:
+            adherence = "Relacionada, ainda não avaliada"
+        else:
+            adherence = "Sem demanda relacionada"
+
+        matrix.append({
+            "Item apresentado": item.get("title") or "Sem título",
+            "Área": SECTION_LABELS.get(item.get("inferred_section"), item.get("inferred_section") or "Não classificada"),
+            "Situação na apresentação": item.get("item_status") or "Não informada",
+            "Briefing": adherence,
+            "Custo direto": direct_cost,
+            "Correlação do custo": (
+                "Confirmada" if confirmed else
+                f"Sugerida · {best_cost_score:.0%}" if linked_costs else
+                "Sem linha direta"
+            ),
+            "Execução": execution_reading,
+            "Evidência / resultado": outcome.get("feedback_summary") or outcome.get("execution_notes") or outcome.get("decision_reason") or "—",
+            "item_id": item_id,
+            "section_key": item.get("inferred_section"),
+        })
+
+    linked_cost_ids = {str(row.get("cost_item_id")) for row in active_cost_links if row.get("cost_item_id")}
+    cost_only = []
+    for cost in snapshot.get("cost_items", []):
+        if str(cost.get("id")) in linked_cost_ids:
+            continue
+        cost_only.append({
+            "Linha da planilha": cost.get("item_name") or "Sem nome",
+            "Categoria": cost.get("category") or "Não informada",
+            "Valor": _safe_float(cost.get("client_total")),
+            "Situação": cost.get("item_status") or "Não informada",
+            "Leitura": "Custo sem correspondência direta na apresentação",
+        })
+
+    report_results: list[dict[str, Any]] = []
+    for report in snapshot.get("report_analyses", []):
+        for key in ("activation_results", "item_results"):
+            for row in report.get(key) or []:
+                if isinstance(row, dict):
+                    report_results.append(row)
+    report_only = []
+    matched_report_names: set[str] = set()
+    for result in report_results:
+        name = str(result.get("name") or result.get("item_name") or "").strip()
+        if not name:
+            continue
+        item, score = _best_item_match(name, items)
+        if item and score >= 0.56:
+            matched_report_names.add(normalise_text(name))
+            continue
+        report_only.append({
+            "Entrega no relatório": name,
+            "Resultado": result.get("result") or result.get("feedback") or "Não detalhado",
+            "Situação": result.get("status") or result.get("outcome_status") or "Não informada",
+            "Evidência": result.get("evidence") or "—",
+            "Leitura": "Entrega registrada no pós-evento sem correspondência clara na apresentação",
+        })
+
+    linked_requirement_ids = {str(row.get("requirement_id")) for row in active_brief_links if row.get("requirement_id")}
+    briefing_gaps = []
+    for requirement in snapshot.get("briefing_requirements", []):
+        req_id = str(requirement.get("id") or "")
+        status = str(requirement.get("adherence_status") or "not_assessed")
+        if req_id in linked_requirement_ids and status in POSITIVE_ADHERENCE:
+            continue
+        briefing_gaps.append({
+            "Demanda do briefing": requirement.get("title") or "Sem título",
+            "Tipo": requirement.get("requirement_type") or "Não informado",
+            "Obrigatória": "Sim" if requirement.get("mandatory") else "Não",
+            "Aderência": status.replace("_", " ").title(),
+            "Leitura": "Sem evidência consolidada de atendimento" if req_id not in linked_requirement_ids else "Relacionada, mas sem conclusão positiva",
+        })
+
+    proposed_without_cost = [row for row in matrix if row["Custo direto"] <= 0]
+
+    cost_total = sum(_safe_float(row.get("client_total")) for row in snapshot.get("cost_items", []))
+    linked_cost_total = sum(
+        _safe_float(cost_by_id.get(str(cost_id), {}).get("client_total"))
+        for cost_id in linked_cost_ids
+    )
+
+    metrics = {
+        "briefing_requirements": len(snapshot.get("briefing_requirements", [])),
+        "presentation_items": len(items),
+        "cost_items": len(snapshot.get("cost_items", [])),
+        "items_with_cost": len(matrix) - len(proposed_without_cost),
+        "executed_with_evidence": executed_count,
+        "explicit_not_executed": explicit_not_executed,
+        "without_execution_evidence": no_execution_evidence,
+        "cost_only_items": len(cost_only),
+        "report_only_items": len(report_only),
+        "briefing_gaps": len(briefing_gaps),
+        "cost_total": cost_total,
+        "linked_cost_total": linked_cost_total,
+    }
+
+    findings: list[dict[str, str]] = []
+    if items:
+        findings.append({
+            "level": "info",
+            "title": "Proposta × execução",
+            "text": (
+                f"A apresentação contém {len(items)} entrega(s) estruturada(s). "
+                f"{executed_count} possuem evidência de execução; "
+                f"{explicit_not_executed} foram registradas explicitamente como não executadas; "
+                f"{no_execution_evidence} ainda não possuem evidência suficiente."
+            ),
+        })
+    if snapshot.get("cost_items"):
+        findings.append({
+            "level": "warning" if cost_only else "info",
+            "title": "Proposta × planilha",
+            "text": (
+                f"A planilha contém {len(snapshot.get('cost_items', []))} linha(s), totalizando {_money(cost_total)}. "
+                f"{len(cost_only)} linha(s) ainda não têm correspondência direta na apresentação."
+            ),
+        })
+    if report_only:
+        findings.append({
+            "level": "warning",
+            "title": "Entregas adicionais",
+            "text": f"O relatório registra {len(report_only)} entrega(s) sem correspondência clara na apresentação final.",
+        })
+    if briefing_gaps:
+        findings.append({
+            "level": "warning",
+            "title": "Briefing × evidências",
+            "text": f"{len(briefing_gaps)} demanda(s) do briefing ainda não possuem evidência consolidada de atendimento.",
+        })
+    for key, source in coverage.items():
+        if source["state"] == "attached":
+            findings.append({
+                "level": "warning",
+                "title": f"{source['label']} sem estruturação",
+                "text": "O arquivo está salvo no projeto, mas seu conteúdo ainda não entrou no cruzamento inteligente.",
+            })
+
+    recommendations: list[str] = []
+    if cost_only:
+        recommendations.append("Revisar as linhas de custo sem correspondência e confirmar se representam entregas adicionais, custos transversais ou itens omitidos da apresentação.")
+    if proposed_without_cost:
+        recommendations.append("Revisar as propostas sem custo direto: algumas podem estar agrupadas em linhas cenográficas ou operacionais e precisam de confirmação humana.")
+    if no_execution_evidence:
+        recommendations.append("Validar as entregas sem evidência no relatório. Ausência de evidência não significa que o item não foi executado.")
+    if report_only:
+        recommendations.append("Classificar as entregas identificadas apenas no pós-evento como adaptações de produção, escopo adicional ou substituições da proposta.")
+    if briefing_gaps:
+        recommendations.append("Revisar a matriz de aderência do briefing e registrar evidência, justificativa ou retirada por budget/prazo para cada lacuna.")
+    if not snapshot.get("feedback_entries"):
+        recommendations.append("O diagnóstico já usa os arquivos disponíveis; quando feedbacks forem adicionados, as conclusões passam a incorporar intenção e decisão do cliente.")
+    if not recommendations:
+        recommendations.append("Manter o projeto atualizado com novas versões, feedbacks e resultados para preservar o ciclo de aprendizado.")
+
+    latest_report = snapshot.get("report_analyses", [None])[0] if snapshot.get("report_analyses") else None
+    result_summary = {
+        "executive_summary": (latest_report or {}).get("executive_summary"),
+        "highlights": (latest_report or {}).get("highlights") or [],
+        "issues": (latest_report or {}).get("issues") or [],
+        "learnings": (latest_report or {}).get("learnings") or [],
+        "recommendations": (latest_report or {}).get("recommendations") or [],
+        "kpis": (latest_report or {}).get("kpis") or [],
+        "participants_count": (latest_report or {}).get("participants_count"),
+        "planned_cost": (latest_report or {}).get("planned_cost"),
+        "actual_cost": (latest_report or {}).get("actual_cost"),
+    }
+
+    return {
+        "source_signature": _source_signature(snapshot),
+        "coverage": coverage,
+        "metrics": metrics,
+        "matrix": matrix,
+        "findings": findings,
+        "recommendations": recommendations,
+        "discrepancies": {
+            "cost_only": cost_only,
+            "report_only": report_only,
+            "briefing_gaps": briefing_gaps,
+            "proposed_without_cost": proposed_without_cost,
+        },
+        "result_summary": result_summary,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def persist_project_intelligence(
+    client: Client,
+    *,
+    project_id: str,
+    intelligence: dict[str, Any],
+) -> None:
+    payload = {
+        "project_id": project_id,
+        "source_signature": intelligence.get("source_signature"),
+        "coverage": intelligence.get("coverage") or {},
+        "metrics": intelligence.get("metrics") or {},
+        "matrix": intelligence.get("matrix") or [],
+        "findings": intelligence.get("findings") or [],
+        "recommendations": intelligence.get("recommendations") or [],
+        "discrepancies": intelligence.get("discrepancies") or {},
+    }
+    try:
+        client.table("project_intelligence_snapshots").upsert(
+            payload,
+            on_conflict="project_id,source_signature",
+        ).execute()
+    except Exception:
+        # A página continua funcionando mesmo antes da execução do SQL.
+        pass
+
+
+def _render_source_card(source: dict[str, Any]) -> str:
+    state_label = {
+        "structured": "Estruturado e cruzado",
+        "attached": "Anexado, aguardando leitura",
+        "missing": "Pendente",
+    }.get(source.get("state"), "Pendente")
+    return f"""
+    <div class="nave-source-card">
+        <div class="nave-source-label">Fonte do diagnóstico</div>
+        <div class="nave-source-title">{source.get('label')}</div>
+        <div class="nave-source-status"><strong>{state_label}</strong><br>{source.get('detail')}</div>
+    </div>
+    """
+
+
+def _dataframe_money(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
+    copy = df.copy()
+    for column in columns:
+        if column in copy.columns:
+            copy[column] = pd.to_numeric(copy[column], errors="coerce").fillna(0).map(_money)
+    return copy
+
+
+def render_project_intelligence(
+    client: Client,
+    *,
+    project_id: str,
+    snapshot: dict[str, Any],
+) -> None:
+    st.markdown(DIAGNOSTIC_CSS, unsafe_allow_html=True)
+
+    with st.spinner("Cruzando briefing, apresentação, custos e resultados..."):
+        new_cost_links = ensure_automatic_cost_links(
+            client, project_id=project_id, snapshot=snapshot
+        )
+        new_brief_links = ensure_automatic_briefing_links(
+            client, project_id=project_id, snapshot=snapshot
+        )
+        intelligence = build_project_intelligence(snapshot)
+        persist_project_intelligence(
+            client, project_id=project_id, intelligence=intelligence
+        )
+
+    st.subheader("Diagnóstico, recomendações, resultados e aprendizados")
+    st.caption(
+        "Leitura cumulativa do projeto. O diagnóstico é recalculado sempre que briefing, "
+        "apresentação, planilha, relatório ou feedback recebe uma nova informação."
+    )
+
+    if new_cost_links or new_brief_links:
+        st.success(
+            f"A NAVE criou {new_cost_links} nova(s) sugestão(ões) de custo e "
+            f"{new_brief_links} nova(s) sugestão(ões) de aderência para revisão."
+        )
+
+    st.markdown("#### Cobertura das fontes")
+    coverage = intelligence["coverage"]
+    columns = st.columns(5)
+    for column, key in zip(columns, ("briefing", "presentation", "cost", "report", "feedback")):
+        with column:
+            st.markdown(_render_source_card(coverage[key]), unsafe_allow_html=True)
+
+    metrics = intelligence["metrics"]
+    st.markdown("#### Visão executiva")
+    metric_columns = st.columns(6)
+    metric_columns[0].metric("Demandas do briefing", metrics["briefing_requirements"])
+    metric_columns[1].metric("Entregas apresentadas", metrics["presentation_items"])
+    metric_columns[2].metric("Com custo direto", metrics["items_with_cost"])
+    metric_columns[3].metric("Executadas com evidência", metrics["executed_with_evidence"])
+    metric_columns[4].metric("Sem evidência de execução", metrics["without_execution_evidence"])
+    metric_columns[5].metric("Custos sem proposta", metrics["cost_only_items"])
+
+    st.info(
+        "A classificação ‘sem evidência de execução’ não significa que a entrega não aconteceu. "
+        "Ela indica apenas que os arquivos atuais ainda não comprovam o resultado."
+    )
+
+    left, right = st.columns(2, gap="large")
+    with left:
+        st.markdown("#### Diagnóstico")
+        for finding in intelligence["findings"]:
+            css_class = "nave-diagnostic-alert" if finding.get("level") == "warning" else "nave-diagnostic-callout"
+            st.markdown(
+                f'<div class="{css_class}"><strong>{finding.get("title")}</strong><br>{finding.get("text")}</div>',
+                unsafe_allow_html=True,
+            )
+    with right:
+        st.markdown("#### Recomendações")
+        for index, recommendation in enumerate(intelligence["recommendations"], start=1):
+            st.markdown(f"**{index}.** {recommendation}")
+
+    st.markdown("#### Matriz integrada do projeto")
+    matrix = pd.DataFrame(intelligence["matrix"])
+    if matrix.empty:
+        st.warning("Ainda não há entregas estruturadas suficientes para montar a matriz.")
+    else:
+        display = matrix.drop(columns=["item_id", "section_key"], errors="ignore")
+        display = _dataframe_money(display, ["Custo direto"])
+        st.dataframe(display, hide_index=True, width="stretch", height=min(680, 95 + len(display) * 38))
+
+    discrepancies = intelligence["discrepancies"]
+    tabs = st.tabs([
+        "Proposta × execução",
+        "Custos sem proposta",
+        "Entregas fora da apresentação",
+        "Briefing sem evidência",
+        "Resultados e aprendizados",
+    ])
+
+    with tabs[0]:
+        if matrix.empty:
+            st.caption("Nenhuma entrega estruturada.")
+        else:
+            execution_view = matrix[[
+                "Item apresentado", "Área", "Execução", "Evidência / resultado"
+            ]]
+            st.dataframe(execution_view, hide_index=True, width="stretch")
+
+    with tabs[1]:
+        rows = discrepancies["cost_only"]
+        if rows:
+            df = _dataframe_money(pd.DataFrame(rows), ["Valor"])
+            st.dataframe(df, hide_index=True, width="stretch")
+        else:
+            st.success("Todas as linhas da planilha possuem alguma correspondência sugerida ou confirmada.")
+
+    with tabs[2]:
+        rows = discrepancies["report_only"]
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        else:
+            st.caption("Nenhuma entrega adicional foi identificada no relatório atual.")
+
+    with tabs[3]:
+        rows = discrepancies["briefing_gaps"]
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        else:
+            st.success("Não foram identificadas demandas sem evidência consolidada.")
+
+    with tabs[4]:
+        result = intelligence["result_summary"]
+        if not result.get("executive_summary"):
+            st.caption("O relatório pós-evento ainda não possui leitura estruturada.")
+        else:
+            result_metrics = st.columns(4)
+            result_metrics[0].metric("Participantes", result.get("participants_count") or "—")
+            result_metrics[1].metric("Custo previsto", _money(result.get("planned_cost")))
+            result_metrics[2].metric("Custo realizado", _money(result.get("actual_cost")))
+            variation = _safe_float(result.get("actual_cost")) - _safe_float(result.get("planned_cost"))
+            result_metrics[3].metric("Variação", _money(variation) if result.get("actual_cost") is not None and result.get("planned_cost") is not None else "—")
+            st.info(str(result.get("executive_summary")))
+            two = st.columns(2)
+            with two[0]:
+                st.markdown("**Destaques**")
+                for value in result.get("highlights") or []:
+                    st.markdown(f"- {value}")
+                st.markdown("**Aprendizados**")
+                for value in result.get("learnings") or []:
+                    st.markdown(f"- {value}")
+            with two[1]:
+                st.markdown("**Ocorrências**")
+                for value in result.get("issues") or []:
+                    st.markdown(f"- {value}")
+                st.markdown("**Recomendações do relatório**")
+                for value in result.get("recommendations") or []:
+                    st.markdown(f"- {value}")
+            if result.get("kpis"):
+                st.markdown("**KPIs extraídos**")
+                st.dataframe(pd.DataFrame(result["kpis"]), hide_index=True, width="stretch")
+
+    history = snapshot.get("recommendation_queries", [])
+    if history:
+        st.markdown("#### Histórico de análises anteriores")
+        for index, row in enumerate(history, start=1):
+            title = row.get("query_label") or row.get("project_name") or f"Análise {index}"
+            with st.expander(str(title), expanded=False):
+                if row.get("objective"):
+                    st.markdown(f"**Objetivo:** {row.get('objective')}")
+                if row.get("briefing_text"):
+                    st.write(row.get("briefing_text"))
+                if isinstance(row.get("parsed_brief"), dict):
+                    st.json(row.get("parsed_brief"))
+
+    st.caption(
+        "Snapshot atualizado a partir da combinação atual de fontes. "
+        "Novos arquivos e feedbacks geram uma nova consolidação sem apagar o histórico anterior."
+    )

@@ -1,0 +1,36 @@
+{
+  "name": "NAVE by VOE — V27.2",
+  "phase": "Fase 15.2 — Diagnóstico Integrado e Matriz de Execução",
+  "base_expected": [
+    "V27.1 instalada"
+  ],
+  "sql": [
+    "supabase_patch_fase_15_2_diagnostico_integrado_v1.sql"
+  ],
+  "add": [
+    "project_workspace_intelligence.py"
+  ],
+  "replace": [
+    "project_workspace_visuals.py",
+    "project_workspace_ui.py",
+    "project_workspace_db.py"
+  ],
+  "unchanged": [
+    "project_report_extractor.py",
+    "project_workspace_reports.py",
+    "project_workspace_runtime.py",
+    "project_hub.py",
+    "pages/4_Historico_de_Projetos.py"
+  ],
+  "compile": {
+    "pages/4_Historico_de_Projetos.py": "OK",
+    "project_hub.py": "OK",
+    "project_report_extractor.py": "OK",
+    "project_workspace_db.py": "OK",
+    "project_workspace_intelligence.py": "OK",
+    "project_workspace_reports.py": "OK",
+    "project_workspace_runtime.py": "OK",
+    "project_workspace_ui.py": "OK",
+    "project_workspace_visuals.py": "OK"
+  }
+}

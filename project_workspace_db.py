@@ -607,6 +607,7 @@ def fetch_project_workspace_snapshot(
         "feedback_entries": "memory_feedback_entries",
         "project_files": "project_files",
         "report_analyses": "project_report_analyses",
+        "intelligence_snapshots": "project_intelligence_snapshots",
         "recommendation_queries": "recommendation_queries",
     }
 
