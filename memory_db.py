@@ -85,15 +85,21 @@ def ensure_memory_bucket(client: Client) -> None:
             return
 
         try:
+            # Do not impose a bucket-level size limit here. Supabase
+            # requires this value to be less than or equal to the
+            # project's global Storage limit. The previous 100 MB
+            # setting caused bucket creation itself to fail with 413
+            # on projects whose global limit was lower.
+            #
+            # The bucket inherits the project's global limit, while
+            # this application continues validating file type and
+            # size before each upload.
             client.storage.create_bucket(
                 MEMORY_BUCKET,
                 options={
                     "public": False,
                     "allowed_mime_types": (
                         MEMORY_ALLOWED_MIME_TYPES
-                    ),
-                    "file_size_limit": (
-                        MEMORY_MAX_FILE_SIZE
                     ),
                 },
             )
@@ -190,6 +196,25 @@ def _upload_bytes(
         _retry(upload)
     except Exception as exc:
         if critical:
+            message = str(exc).casefold()
+            if (
+                "413" in message
+                or "payload too large" in message
+                or "entity too large" in message
+                or "maximum allowed size" in message
+            ):
+                file_size_mb = len(file_bytes) / (1024 * 1024)
+                raise MemorySaveError(
+                    "upload",
+                    (
+                        f"O arquivo tem {file_size_mb:.1f} MB e ultrapassa "
+                        "o limite global configurado no Storage do Supabase. "
+                        "Aumente esse limite para um valor superior ao tamanho "
+                        "do PDF e tente novamente."
+                    ),
+                    original=exc,
+                ) from exc
+
             raise MemorySaveError(
                 "upload",
                 (
