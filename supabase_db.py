@@ -16,7 +16,11 @@ import pandas as pd
 from supabase import Client, create_client
 
 from document_io import InputDocument
-from entity_matching import best_candidate_match
+from entity_matching import (
+    best_candidate_match,
+    name_similarity,
+    normalize_match_name,
+)
 from enrichment_engine import (
     is_blank as enrichment_is_blank,
     merge_record,
@@ -663,6 +667,169 @@ def _find_existing_venue(
     return (
         response.data[0] if response.data else None,
         method,
+    )
+
+
+def _normalized_location_value(value: Any) -> str:
+    return normalize_match_name(value)
+
+
+def _venue_values_conflict(first: Any, second: Any) -> bool:
+    first_value = _normalized_location_value(first)
+    second_value = _normalized_location_value(second)
+    return bool(
+        first_value
+        and second_value
+        and first_value != second_value
+    )
+
+
+def _venue_completeness_score(record: dict) -> float:
+    weights = {
+        "name": 8,
+        "venue_type": 4,
+        "description": 7,
+        "address": 6,
+        "neighborhood": 2,
+        "city": 4,
+        "state": 2,
+        "website_url": 4,
+        "source_image_url": 4,
+        "total_area_sqm": 3,
+        "indoor_area_sqm": 2,
+        "outdoor_area_sqm": 2,
+        "ceiling_height_m": 3,
+        "standing_capacity": 4,
+        "seated_capacity": 4,
+        "auditorium_capacity": 4,
+        "parking": 2,
+        "accessibility": 2,
+        "loading_access": 2,
+        "kitchen_or_catering": 2,
+        "audiovisual": 2,
+        "infrastructure": 3,
+        "rooms_or_areas": 3,
+        "raw_data": 4,
+    }
+    score = 0.0
+    for field, weight in weights.items():
+        value = record.get(field)
+        if enrichment_is_blank(value):
+            continue
+        score += weight
+        if isinstance(value, str):
+            score += min(len(value.strip()) / 600, 1.0)
+        elif isinstance(value, (list, tuple, set, dict)):
+            score += min(len(value) / 10, 1.0)
+    return round(score, 4)
+
+
+def _venue_candidate_pool(
+    candidates: list[dict],
+    *,
+    operator_id: str | None,
+    incoming: dict,
+) -> list[dict]:
+    result = []
+    for candidate in candidates:
+        if (
+            operator_id
+            and candidate.get("operator_id")
+            and str(candidate.get("operator_id")) != str(operator_id)
+        ):
+            continue
+        if _venue_values_conflict(
+            incoming.get("city"),
+            candidate.get("city"),
+        ):
+            continue
+        if _venue_values_conflict(
+            incoming.get("state"),
+            candidate.get("state"),
+        ):
+            continue
+        result.append(candidate)
+    return result
+
+
+def _find_existing_venue_from_pool(
+    candidates: list[dict],
+    *,
+    operator_id: str | None,
+    incoming: dict,
+) -> tuple[dict | None, str]:
+    normalized_name = normalize_match_name(
+        incoming.get("name")
+    )
+    if not normalized_name:
+        return None, "missing_name"
+
+    exact = [
+        candidate
+        for candidate in _venue_candidate_pool(
+            candidates,
+            operator_id=operator_id,
+            incoming=incoming,
+        )
+        if normalize_match_name(candidate.get("name"))
+        == normalized_name
+    ]
+
+    if not exact:
+        return None, "no_exact_normalized_name"
+
+    incoming_address = incoming.get("address")
+
+    def rank(candidate: dict) -> tuple[float, float]:
+        address_score = name_similarity(
+            incoming_address,
+            candidate.get("address"),
+        )
+        location_bonus = 0.0
+        if (
+            _normalized_location_value(incoming.get("city"))
+            and _normalized_location_value(incoming.get("city"))
+            == _normalized_location_value(candidate.get("city"))
+        ):
+            location_bonus += 2.0
+        if (
+            _normalized_location_value(incoming.get("state"))
+            and _normalized_location_value(incoming.get("state"))
+            == _normalized_location_value(candidate.get("state"))
+        ):
+            location_bonus += 1.0
+        if (
+            operator_id
+            and candidate.get("operator_id")
+            and str(candidate.get("operator_id")) == str(operator_id)
+        ):
+            location_bonus += 1.0
+        if incoming_address and candidate.get("address"):
+            location_bonus += address_score * 4.0
+        return (
+            location_bonus,
+            _venue_completeness_score(candidate),
+        )
+
+    exact.sort(key=rank, reverse=True)
+    return exact[0], "normalized_name_compatible_location"
+
+
+def _similar_venue_match_from_pool(
+    candidates: list[dict],
+    *,
+    operator_id: str | None,
+    incoming: dict,
+) -> dict:
+    compatible = _venue_candidate_pool(
+        candidates,
+        operator_id=operator_id,
+        incoming=incoming,
+    )
+    return best_candidate_match(
+        "venue",
+        incoming,
+        compatible,
     )
 
 
@@ -2095,6 +2262,17 @@ def save_venues(
     }
     conflict_rows: list[dict] = []
 
+    existing_response = (
+        client.table("venues")
+        .select("*")
+        .limit(10000)
+        .execute()
+    )
+    venue_pool = [
+        dict(item)
+        for item in (existing_response.data or [])
+    ]
+
     for row_index, raw in enumerate(venues):
         operator_id = _supplier_id_for_record(
             raw,
@@ -2112,18 +2290,17 @@ def save_venues(
             str(raw.get("source_file") or "")
         )
 
-        existing, match_method = _find_existing_venue(
-            client,
+        existing, match_method = _find_existing_venue_from_pool(
+            venue_pool,
             operator_id=operator_id,
-            name=item_name,
-            city=raw.get("city"),
+            incoming=payload,
         )
 
         review_match = None
 
         if not existing:
-            similarity = _similar_venue_match(
-                client,
+            similarity = _similar_venue_match_from_pool(
+                venue_pool,
                 operator_id=operator_id,
                 incoming=payload,
             )
@@ -2144,7 +2321,9 @@ def save_venues(
             )
 
             if response.data:
-                entity_id = response.data[0]["id"]
+                inserted_record = dict(response.data[0])
+                entity_id = inserted_record["id"]
+                venue_pool.append(inserted_record)
                 inserted += 1
 
                 if review_match:
@@ -2197,6 +2376,10 @@ def save_venues(
                     .eq("id", entity_id)
                     .execute()
                 )
+                for pool_record in venue_pool:
+                    if str(pool_record.get("id")) == str(entity_id):
+                        pool_record.update(changes)
+                        break
                 enriched += 1
 
             if conflicts:
@@ -2288,6 +2471,333 @@ def save_venues(
             "duplicate"
         ],
         "visual_assets_pending": visual_counts["pending"],
+    }
+
+
+
+def _exact_venue_duplicate_groups(
+    records: list[dict],
+) -> tuple[list[list[dict]], list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for record in records:
+        key = normalize_match_name(record.get("name"))
+        if not key:
+            continue
+        grouped.setdefault(key, []).append(record)
+
+    safe_groups: list[list[dict]] = []
+    skipped: list[dict] = []
+
+    for key, group in grouped.items():
+        if len(group) < 2:
+            continue
+
+        cities = {
+            _normalized_location_value(item.get("city"))
+            for item in group
+            if _normalized_location_value(item.get("city"))
+        }
+        states = {
+            _normalized_location_value(item.get("state"))
+            for item in group
+            if _normalized_location_value(item.get("state"))
+        }
+
+        if len(cities) > 1 or len(states) > 1:
+            skipped.append(
+                {
+                    "normalized_name": key,
+                    "name": group[0].get("name"),
+                    "records": len(group),
+                    "reason": "localidades_conflitantes",
+                    "cities": sorted(cities),
+                    "states": sorted(states),
+                }
+            )
+            continue
+
+        safe_groups.append(group)
+
+    return safe_groups, skipped
+
+
+def preview_exact_venue_duplicates(
+    client: Client,
+) -> pd.DataFrame:
+    response = (
+        client.table("venues")
+        .select("*")
+        .limit(10000)
+        .execute()
+    )
+    records = [dict(item) for item in (response.data or [])]
+    safe_groups, skipped = _exact_venue_duplicate_groups(records)
+
+    rows = []
+    for group in safe_groups:
+        ranked = sorted(
+            group,
+            key=_venue_completeness_score,
+            reverse=True,
+        )
+        target = ranked[0]
+        rows.append(
+            {
+                "Local": target.get("name") or "Sem nome",
+                "Cadastros": len(group),
+                "Registro preservado": str(target.get("id")),
+                "Cidade": target.get("city") or "Não informado",
+                "Completude preservada": _venue_completeness_score(target),
+                "Situação": "Pronto para consolidar",
+            }
+        )
+
+    for item in skipped:
+        rows.append(
+            {
+                "Local": item.get("name") or "Sem nome",
+                "Cadastros": item.get("records") or 0,
+                "Registro preservado": "—",
+                "Cidade": ", ".join(item.get("cities") or []) or "Conflitante",
+                "Completude preservada": None,
+                "Situação": "Não será unido automaticamente",
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _move_venue_references(
+    client: Client,
+    *,
+    source_entity_id: str,
+    target_entity_id: str,
+) -> list[str]:
+    warnings: list[str] = []
+
+    for table in (
+        "recommendation_results",
+        "execution_recommendation_results",
+    ):
+        try:
+            (
+                client.table(table)
+                .update({"item_id": target_entity_id})
+                .eq("item_type", "venue")
+                .eq("item_id", source_entity_id)
+                .execute()
+            )
+        except Exception as exc:
+            warnings.append(f"{table}: {exc}")
+
+    for table in (
+        "knowledge_enrichment_events",
+        "knowledge_edit_events",
+    ):
+        try:
+            (
+                client.table(table)
+                .update({"entity_id": target_entity_id})
+                .eq("entity_type", "venue")
+                .eq("entity_id", source_entity_id)
+                .execute()
+            )
+        except Exception as exc:
+            warnings.append(f"{table}: {exc}")
+
+    try:
+        source_state_response = (
+            client.table("knowledge_curation_states")
+            .select("*")
+            .eq("entity_type", "venue")
+            .eq("entity_id", source_entity_id)
+            .limit(1)
+            .execute()
+        )
+        target_state_response = (
+            client.table("knowledge_curation_states")
+            .select("*")
+            .eq("entity_type", "venue")
+            .eq("entity_id", target_entity_id)
+            .limit(1)
+            .execute()
+        )
+        source_state = (
+            source_state_response.data[0]
+            if source_state_response.data
+            else None
+        )
+        target_state = (
+            target_state_response.data[0]
+            if target_state_response.data
+            else None
+        )
+
+        if source_state and not target_state:
+            (
+                client.table("knowledge_curation_states")
+                .update({"entity_id": target_entity_id})
+                .eq("entity_type", "venue")
+                .eq("entity_id", source_entity_id)
+                .execute()
+            )
+        elif source_state and target_state:
+            source_reviewed = str(source_state.get("reviewed_at") or "")
+            target_reviewed = str(target_state.get("reviewed_at") or "")
+            if source_reviewed > target_reviewed:
+                transferable = {
+                    key: value
+                    for key, value in source_state.items()
+                    if key not in {"id", "entity_type", "entity_id"}
+                    and not enrichment_is_blank(value)
+                }
+                if transferable:
+                    (
+                        client.table("knowledge_curation_states")
+                        .update(transferable)
+                        .eq("entity_type", "venue")
+                        .eq("entity_id", target_entity_id)
+                        .execute()
+                    )
+            (
+                client.table("knowledge_curation_states")
+                .delete()
+                .eq("entity_type", "venue")
+                .eq("entity_id", source_entity_id)
+                .execute()
+            )
+    except Exception as exc:
+        warnings.append(f"knowledge_curation_states: {exc}")
+
+    try:
+        (
+            client.table("knowledge_duplicate_candidates")
+            .delete()
+            .eq("entity_type", "venue")
+            .or_(
+                f"source_entity_id.eq.{source_entity_id},"
+                f"candidate_entity_id.eq.{source_entity_id}"
+            )
+            .execute()
+        )
+    except Exception as exc:
+        warnings.append(f"knowledge_duplicate_candidates: {exc}")
+
+    return warnings
+
+
+def consolidate_exact_venue_duplicates(
+    client: Client,
+) -> dict:
+    response = (
+        client.table("venues")
+        .select("*")
+        .limit(10000)
+        .execute()
+    )
+    records = [dict(item) for item in (response.data or [])]
+    safe_groups, skipped_groups = _exact_venue_duplicate_groups(records)
+
+    groups_merged = 0
+    records_removed = 0
+    fields_filled = 0
+    media_moved = 0
+    duplicate_media_removed = 0
+    failures: list[dict] = []
+    warnings: list[str] = []
+
+    for group in safe_groups:
+        ranked = sorted(
+            group,
+            key=_venue_completeness_score,
+            reverse=True,
+        )
+        target = dict(ranked[0])
+        target_id = str(target["id"])
+        sources = ranked[1:]
+        group_changes: dict[str, Any] = {}
+
+        for source in sources:
+            merge_result = merge_record(
+                target,
+                source,
+                allowed_fields=VENUE_COLUMNS,
+                strategy="enrich_safe",
+            )
+            changes = merge_result["applied_changes"]
+            if changes:
+                target.update(changes)
+                group_changes.update(changes)
+                fields_filled += len(
+                    merge_result.get("filled_fields") or []
+                )
+
+        if group_changes:
+            (
+                client.table("venues")
+                .update(group_changes)
+                .eq("id", target_id)
+                .execute()
+            )
+
+        group_removed = 0
+        group_failed = False
+
+        for source in sources:
+            source_id = str(source["id"])
+            try:
+                media_result = _move_media_to_target(
+                    client,
+                    entity_type="venue",
+                    source_entity_id=source_id,
+                    target_entity_id=target_id,
+                )
+                media_moved += int(media_result.get("media_moved") or 0)
+                duplicate_media_removed += int(
+                    media_result.get("duplicate_media_removed") or 0
+                )
+
+                warnings.extend(
+                    _move_venue_references(
+                        client,
+                        source_entity_id=source_id,
+                        target_entity_id=target_id,
+                    )
+                )
+
+                (
+                    client.table("venues")
+                    .delete()
+                    .eq("id", source_id)
+                    .execute()
+                )
+                records_removed += 1
+                group_removed += 1
+            except Exception as exc:
+                group_failed = True
+                failures.append(
+                    {
+                        "name": target.get("name"),
+                        "source_entity_id": source_id,
+                        "target_entity_id": target_id,
+                        "error": str(exc),
+                    }
+                )
+
+        if group_removed and not group_failed:
+            groups_merged += 1
+
+    return {
+        "groups_detected": len(safe_groups),
+        "groups_merged": groups_merged,
+        "records_removed": records_removed,
+        "fields_filled": fields_filled,
+        "media_moved": media_moved,
+        "duplicate_media_removed": duplicate_media_removed,
+        "groups_skipped": len(skipped_groups),
+        "skipped_groups": skipped_groups,
+        "failures": failures,
+        "warnings": warnings,
     }
 
 
