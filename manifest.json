@@ -1,0 +1,36 @@
+{
+  "name": "NAVE by VOE — V27",
+  "phase": "Fase 15 — Workspace Unificado do Projeto",
+  "base_expected": [
+    "V26",
+    "Fase 14",
+    "Fase 14.1",
+    "V26.3 Projetos unificados"
+  ],
+  "sql": [
+    "supabase_patch_fase_15_workspace_unificado_v1.sql"
+  ],
+  "add": [
+    "project_workspace_runtime.py",
+    "project_workspace_db.py",
+    "project_workspace_ui.py"
+  ],
+  "replace": [
+    "project_hub.py",
+    "pages/4_Historico_de_Projetos.py"
+  ],
+  "do_not_replace": [
+    "pages/10_Memoria.py",
+    "memory_ui.py",
+    "memory_learning_ui.py",
+    "memory_briefing.py",
+    "assets/"
+  ],
+  "compile": {
+    "project_hub.py": "OK",
+    "project_workspace_ui.py": "OK",
+    "project_workspace_db.py": "OK",
+    "project_workspace_runtime.py": "OK",
+    "pages/4_Historico_de_Projetos.py": "OK"
+  }
+}

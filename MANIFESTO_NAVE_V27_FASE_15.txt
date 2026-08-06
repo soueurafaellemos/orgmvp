@@ -1,0 +1,33 @@
+NAVE by VOE — V27
+FASE 15 — WORKSPACE UNIFICADO DO PROJETO
+
+EXECUTAR NO SUPABASE
+- supabase_patch_fase_15_workspace_unificado_v1.sql
+
+ADICIONAR NO GITHUB
+- project_workspace_runtime.py
+- project_workspace_db.py
+- project_workspace_ui.py
+
+SUBSTITUIR NO GITHUB
+- project_hub.py
+- pages/4_Historico_de_Projetos.py
+
+NÃO SUBSTITUIR
+- pages/10_Memoria.py
+- memory_ui.py
+- memory_learning_ui.py
+- memory_briefing.py
+- pasta assets
+
+REQUIREMENTS
+- Nenhuma alteração.
+
+BASE ESPERADA
+- V26
+- Fase 14
+- Fase 14.1
+- V26.3 Projetos unificados
+
+DEPOIS
+- Manage app -> Reboot app
