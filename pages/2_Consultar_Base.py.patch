@@ -1,0 +1,50 @@
+*** pages/2_Consultar_Base.py
+--- pages/2_Consultar_Base.py
+@@
++# Correção global do filtro de locais e agrupamento visual de duplicidades.
++from venue_filter_patch import TYPE_OPTIONS, filter_venues, option_code
++from venue_duplicate_review import (
++    collapse_duplicate_display_rows,
++    find_existing_venue_duplicates,
++)
+@@
+-# opções e comparação literal antigas do filtro de tipo
++# Use exatamente os rótulos abaixo. O valor interno é GRUPO_LOCAL.
++selected_type_label = st.selectbox(
++    "Tipo de local",
++    options=list(TYPE_OPTIONS.keys()),
++    key="venue_type_filter",
++)
++selected_type_code = option_code(selected_type_label)
+@@
+-# aplicação manual dos filtros de busca, tipo, estado e acervo
++# Aplique todos os filtros por um único motor normalizado.
++filtered_venues = filter_venues(
++    venues,
++    search=search_term,
++    type_code=selected_type_code,
++    state=selected_state,
++    collection=selected_collection,
++)
++
++# Não apaga registros. Apenas evita linhas repetidas na tabela enquanto a
++# revisão administrativa ainda não foi concluída.
++venue_duplicate_candidates = find_existing_venue_duplicates(filtered_venues)
++filtered_venues = collapse_duplicate_display_rows(
++    filtered_venues,
++    candidates=venue_duplicate_candidates,
++)
+@@
+-# dataframe da tabela
++# Inclua um aviso compacto quando a linha representa mais de um cadastro.
++for venue in filtered_venues:
++    count = int(venue.get("_duplicate_record_count") or 1)
++    venue["Revisão"] = (
++        f"{count} cadastros relacionados"
++        if count > 1
++        else ""
++    )
++
++# IMPORTANTE: remova qualquer segundo filtro literal posterior, por exemplo:
++# row["venue_type"] == selected_type_label
++# Esse tipo de comparação recria o erro de Estádios/Arenas.

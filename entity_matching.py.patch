@@ -1,0 +1,18 @@
+*** entity_matching.py
+--- entity_matching.py
+@@
++from venue_duplicate_review import compare_venues
+@@
++# Dentro da função que compara locais, antes do fallback genérico por nome:
++venue_candidate = compare_venues(incoming_record, existing_record)
++if venue_candidate is not None:
++    return {
++        "similarity_score": venue_candidate.similarity_score,
++        "match_method": venue_candidate.match_method,
++        "match_context": venue_candidate.match_context,
++        "needs_review": True,
++        "pair_key": venue_candidate.pair_key,
++    }
++
++# Não use somente endereço como confirmação automática. Um complexo pode ter
++# subespaços comercializados separadamente no mesmo endereço.

@@ -1,0 +1,47 @@
+*** pages/7_Revisar_Duplicidades.py
+--- pages/7_Revisar_Duplicidades.py
+@@
++from venue_duplicate_review import queue_existing_venue_duplicates
+@@
++# Coloque este bloco depois da validação da senha administrativa e antes da
++# leitura das pendências. A varredura é idempotente e inclui registros antigos,
++# que não passaram pelo fluxo de upload da V19.
++with st.expander("Verificar duplicidades já existentes", expanded=False):
++    st.caption(
++        "Analisa toda a base de locais e inclui na fila pares antigos, "
++        "nomes repetidos e variações de renomeação. Nenhum cadastro é unido "
++        "automaticamente."
++    )
++    if st.button(
++        "Verificar base agora",
++        type="primary",
++        key="scan_existing_venue_duplicates",
++    ):
++        with st.spinner("Verificando locais já cadastrados..."):
++            scan_result = queue_existing_venue_duplicates(database_client)
++        if scan_result["errors"]:
++            st.warning(
++                f"Foram incluídas {scan_result['inserted']} revisões, mas "
++                f"{len(scan_result['errors'])} pares apresentaram erro."
++            )
++            with st.expander("Detalhes dos erros"):
++                st.write(scan_result["errors"])
++        else:
++            st.success(
++                f"{scan_result['venues_scanned']} locais verificados; "
++                f"{scan_result['candidates_found']} pares encontrados; "
++                f"{scan_result['inserted']} novas revisões incluídas."
++            )
++        st.cache_data.clear()
++        st.rerun()
+@@
+-# consulta antiga da fila
++# A consulta deve carregar todas as pendências de venue. Não filtre por
++# import_id, porque o backfill de registros antigos não possui importação.
++pending_query = (
++    database_client.table("knowledge_duplicate_candidates")
++    .select("*")
++    .eq("status", "pending")
++    .order("similarity_score", desc=True)
++    .order("created_at", desc=False)
++)

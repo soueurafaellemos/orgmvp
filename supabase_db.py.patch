@@ -1,0 +1,16 @@
+*** supabase_db.py
+--- supabase_db.py
+@@
++# Ao inserir knowledge_duplicate_candidates, inclua os campos abaixo quando
++# estiverem presentes no resultado de entity_matching:
++duplicate_payload["pair_key"] = match_result.get("pair_key")
++duplicate_payload["scan_origin"] = "upload"
++
++# Não ignore candidatos por import_id nulo. Registros antigos e a varredura da
++# base não possuem importação vinculada.
++
++# Ao listar revisões, filtre somente por status/entity_type, e não por import_id:
++# .eq("status", "pending")
++
++# A restrição idempotente agora é (entity_type, pair_key). Um par já resolvido
++# como "different" não deve ser recriado em uploads futuros.
