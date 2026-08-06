@@ -758,7 +758,7 @@ def _render_overview(
                 unsafe_allow_html=True,
             )
 
-    st.markdown("#### Adicionar arquivos sem sair da Visão geral")
+    st.markdown("#### Arquivos principais")
 
     upload_columns = st.columns(2)
     with upload_columns[0]:
@@ -2084,11 +2084,6 @@ def render_projects_page(client: Client) -> None:
         return
 
     st.subheader("Projetos")
-    st.caption(
-        "Selecione um projeto para abrir seu workspace completo. "
-        "Não é necessário entrar novamente em Memória, orçamento "
-        "ou apresentação."
-    )
 
     dataframe = fetch_projects_workspace(client)
 

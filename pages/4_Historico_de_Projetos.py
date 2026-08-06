@@ -25,10 +25,7 @@ apply_nave_branding()
 
 page_header(
     "Projetos",
-    (
-        "Um ambiente único para briefing, recomendações, estratégia, "
-        "cenografia, brindes, orçamento, apresentações, feedbacks e resultados."
-    ),
+    "",
 )
 
 try:
