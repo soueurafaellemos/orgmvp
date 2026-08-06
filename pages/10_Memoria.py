@@ -79,13 +79,6 @@ page_header(
     "dos projetos da VOE.",
 )
 
-st.info(
-    "A Memória continua separada da Base de conhecimento. "
-    "A Fase 14 registra resultados, feedbacks e custos como "
-    "aprendizado histórico do projeto. Esses dados ainda não "
-    "alteram automaticamente o ranking das recomendações."
-)
-
 
 def _setting(name: str, default: str = "") -> str:
     try:
