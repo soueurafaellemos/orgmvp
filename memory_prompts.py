@@ -105,3 +105,27 @@ QUALIDADE:
 - summary deve ser curto.
 - description pode contextualizar sem inventar.
 """
+
+
+MEMORY_OVERVIEW_PROMPT = """
+Leia a apresentação completa para compreender o projeto como um todo.
+
+Nesta primeira leitura, NÃO liste slides e NÃO extraia fichas individuais.
+Retorne apenas:
+
+- source_file;
+- document_title;
+- project_name;
+- client_brand;
+- event_name;
+- version_label;
+- strategic_summary;
+- creative_concept;
+- warnings.
+
+A síntese deve considerar a narrativa completa, incluindo contexto,
+objetivos, conceito, jornada, ambientes, experiências, materiais,
+conteúdo, parceiros e legado quando existirem.
+
+Não invente informações e não use conhecimento externo.
+"""

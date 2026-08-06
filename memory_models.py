@@ -55,6 +55,18 @@ class MemorySlide(BaseModel):
     items: list[MemoryItem] = Field(default_factory=list)
 
 
+class MemoryOverview(BaseModel):
+    source_file: str
+    document_title: str | None = None
+    client_brand: str | None = None
+    project_name: str | None = None
+    event_name: str | None = None
+    version_label: str | None = None
+    strategic_summary: str | None = None
+    creative_concept: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class MemoryBatch(BaseModel):
     source_file: str
     document_title: str | None = None

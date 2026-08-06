@@ -843,3 +843,19 @@ Antes de usar, execute:
 - não exige novo SQL;
 - não altera o isolamento da Memória;
 - não contém arquivos da pasta assets.
+
+
+## V25.3 — Memória resiliente
+
+- corrige KeyError quando uma análise retorna zero itens;
+- tabelas vazias preservam todas as colunas esperadas;
+- a interface mostra uma mensagem recuperável em vez de travar;
+- mantém um único clique para analisar a apresentação completa;
+- primeira passagem lê o PDF inteiro e cria contexto global;
+- passagens internas automáticas extraem todos os detalhes dos slides;
+- o contexto global é enviado a cada passagem detalhada;
+- não existe controle de lotes na interface;
+- não exige novo SQL;
+- não altera o isolamento da Memória;
+- preserva o menu em ordem alfabética;
+- não contém arquivos da pasta assets.

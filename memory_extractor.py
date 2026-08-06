@@ -8,10 +8,14 @@ import pandas as pd
 
 import fitz
 
-from document_io import InputDocument
+from document_io import InputDocument, split_pdf
 from gemini_extractor import _structured_call, get_client
-from memory_models import MemoryBatch
-from memory_prompts import MEMORY_SECTION_LABELS, MEMORY_SYSTEM_PROMPT
+from memory_models import MemoryBatch, MemoryOverview
+from memory_prompts import (
+    MEMORY_OVERVIEW_PROMPT,
+    MEMORY_SECTION_LABELS,
+    MEMORY_SYSTEM_PROMPT,
+)
 
 
 
@@ -28,6 +32,82 @@ def _pdf_page_count(
         pdf.close()
 
 
+
+DETAIL_PAGES_PER_PASS = 6
+
+MEMORY_EDITOR_COLUMNS = [
+    "_row_id",
+    "Incluir",
+    "Seção",
+    "Tipo",
+    "Título",
+    "Resumo",
+    "Status",
+    "Página",
+    "Arquivo",
+    "Confiança",
+]
+
+
+def _overview_as_batch(
+    overview: MemoryOverview,
+) -> MemoryBatch:
+    return MemoryBatch(
+        source_file=overview.source_file,
+        document_title=overview.document_title,
+        client_brand=overview.client_brand,
+        project_name=overview.project_name,
+        event_name=overview.event_name,
+        version_label=overview.version_label,
+        strategic_summary=overview.strategic_summary,
+        creative_concept=overview.creative_concept,
+        slides=[],
+        warnings=overview.warnings,
+    )
+
+
+def _normalize_detailed_batch(
+    batch: MemoryBatch,
+    *,
+    source_file: str,
+    first_page: int,
+    last_page: int,
+) -> MemoryBatch:
+    batch.source_file = source_file
+
+    slides = list(
+        batch.slides or []
+    )
+    page_numbers = [
+        int(slide.source_page)
+        for slide in slides
+        if int(slide.source_page) > 0
+    ]
+    local_page_count = (
+        last_page - first_page + 1
+    )
+
+    uses_relative_numbering = (
+        first_page > 1
+        and bool(page_numbers)
+        and min(page_numbers) >= 1
+        and max(page_numbers)
+        <= local_page_count
+    )
+
+    for slide in slides:
+        slide.source_file = source_file
+
+        if uses_relative_numbering:
+            slide.source_page = (
+                int(slide.source_page)
+                + first_page
+                - 1
+            )
+
+    return batch
+
+
 def extract_memory(
     docs: list[InputDocument],
     *,
@@ -36,20 +116,19 @@ def extract_memory(
     progress_callback=None,
 ) -> list[MemoryBatch]:
     """
-    Analisa cada apresentação completa em uma única chamada.
+    Analisa cada apresentação inteira em um único fluxo.
 
-    A função não recorta nem divide o PDF em lotes. O modelo recebe
-    todos os slides juntos para compreender narrativa, sequência,
-    opções, jornada e relações entre as diferentes partes do projeto.
+    Primeiro, o PDF completo é lido para compreender narrativa,
+    estratégia e metadados. Depois, passagens internas automáticas
+    organizam os detalhes de todos os slides usando o contexto global.
+
+    Não existe configuração de lotes para a pessoa usuária.
     """
     client = get_client(api_key)
-    total = len(docs)
-    batches = []
 
-    for index, doc in enumerate(
-        docs,
-        start=1,
-    ):
+    plans = []
+
+    for doc in docs:
         if doc.mime_type != "application/pdf":
             raise ValueError(
                 "A Memória visual precisa de uma apresentação "
@@ -57,52 +136,144 @@ def extract_memory(
             )
 
         page_count = _pdf_page_count(doc)
+        parts = split_pdf(
+            doc,
+            pages_per_batch=(
+                DETAIL_PAGES_PER_PASS
+            ),
+            start_page=1,
+            end_page=None,
+        )
+        plans.append(
+            (
+                doc,
+                page_count,
+                parts,
+            )
+        )
 
+    total_steps = sum(
+        1 + len(parts)
+        for _, _, parts in plans
+    )
+    completed_steps = 0
+    batches = []
+
+    for doc, page_count, parts in plans:
         if progress_callback:
             progress_callback(
-                index - 1,
-                total,
+                completed_steps,
+                total_steps,
                 (
-                    f"Analisando a apresentação completa "
+                    "Compreendendo a apresentação completa "
                     f"{doc.name} — {page_count} slides"
                 ),
             )
 
-        instruction = (
-            f"\n\nARQUIVO ORIGINAL: {doc.name}\n"
-            f"TOTAL DE SLIDES: {page_count}\n"
-            "Você recebeu a apresentação completa em uma única análise. "
-            "Considere a narrativa do início ao fim e examine todos os "
-            "slides. Use o nome original em source_file e a numeração "
-            "original, começando em 1, em source_page."
-        )
-
-        batches.append(
-            _structured_call(
+        try:
+            overview = _structured_call(
                 client,
                 model=model,
                 prompt=(
-                    MEMORY_SYSTEM_PROMPT
-                    + instruction
+                    MEMORY_OVERVIEW_PROMPT
+                    + "\n\nARQUIVO ORIGINAL: "
+                    + doc.name
+                    + "\nTOTAL DE SLIDES: "
+                    + str(page_count)
                 ),
                 docs=[doc],
-                schema=MemoryBatch,
+                schema=MemoryOverview,
                 context=(
-                    f"Memória completa de {doc.name}, "
-                    f"{page_count} slides"
+                    "leitura global da Memória de "
+                    + doc.name
                 ),
+            )
+        except RuntimeError as exc:
+            overview = MemoryOverview(
+                source_file=doc.name,
+                document_title=(
+                    Path(doc.name).stem
+                ),
+                warnings=[
+                    (
+                        "A leitura global não retornou uma "
+                        "estrutura completa. A NAVE prosseguiu "
+                        "com a organização detalhada dos slides. "
+                        f"Detalhe técnico: {exc}"
+                    )
+                ],
+            )
+
+        overview.source_file = doc.name
+        batches.append(
+            _overview_as_batch(
+                overview
             )
         )
+        completed_steps += 1
 
-        if progress_callback:
-            progress_callback(
-                index,
-                total,
-                (
-                    f"Apresentação completa analisada — "
-                    f"{page_count} slides"
+        global_context = json.dumps(
+            overview.model_dump(),
+            ensure_ascii=False,
+            default=str,
+        )
+
+        for part, first, last in parts:
+            if progress_callback:
+                progress_callback(
+                    completed_steps,
+                    total_steps,
+                    (
+                        "Organizando o conteúdo da apresentação "
+                        f"— slides {first} a {last} "
+                        f"de {page_count}"
+                    ),
+                )
+
+            detailed_prompt = (
+                MEMORY_SYSTEM_PROMPT
+                + "\n\nCONTEXTO GLOBAL DA APRESENTAÇÃO:\n"
+                + global_context
+                + "\n\nARQUIVO ORIGINAL: "
+                + doc.name
+                + "\nSLIDES DESTA PASSAGEM: "
+                + str(first)
+                + " a "
+                + str(last)
+                + "\nAnalise todos os slides desta passagem. "
+                "Use a numeração ORIGINAL do PDF em source_page. "
+                "O contexto global acima deve orientar a leitura, "
+                "mas toda ficha precisa estar sustentada pelo slide."
+            )
+
+            detail_batch = _structured_call(
+                client,
+                model=model,
+                prompt=detailed_prompt,
+                docs=[part],
+                schema=MemoryBatch,
+                context=(
+                    f"Memória de {doc.name}, "
+                    f"slides {first}-{last}"
                 ),
             )
+
+            batches.append(
+                _normalize_detailed_batch(
+                    detail_batch,
+                    source_file=doc.name,
+                    first_page=first,
+                    last_page=last,
+                )
+            )
+            completed_steps += 1
+
+    if progress_callback:
+        progress_callback(
+            total_steps,
+            total_steps,
+            "Apresentação completa organizada.",
+        )
 
     return batches
 
@@ -215,7 +386,10 @@ def memory_editor_dataframe(extraction: dict) -> pd.DataFrame:
                 "Confiança": round(float(item.get("confidence") or 0) * 100, 1),
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows,
+        columns=MEMORY_EDITOR_COLUMNS,
+    )
 
 
 def selected_memory_items(extraction: dict, editor: pd.DataFrame) -> list[dict]:

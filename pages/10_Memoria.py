@@ -1199,6 +1199,67 @@ with upload_tab:
                     hide_index=True,
                 )
 
+            if editor.empty:
+                st.warning(
+                    "A apresentação foi compreendida, mas nenhum "
+                    "conteúdo individual foi estruturado. A NAVE "
+                    "não salvará uma tabela vazia nem interromperá "
+                    "a página."
+                )
+
+                if extraction.get(
+                    "strategic_summary"
+                ):
+                    st.markdown(
+                        "### Síntese identificada"
+                    )
+                    st.write(
+                        extraction[
+                            "strategic_summary"
+                        ]
+                    )
+
+                if extraction.get(
+                    "warnings"
+                ):
+                    with st.expander(
+                        "Detalhes da leitura",
+                        expanded=False,
+                    ):
+                        for warning in (
+                            extraction["warnings"]
+                        ):
+                            st.write(
+                                "• " + str(
+                                    warning
+                                )
+                            )
+
+                if st.button(
+                    "Limpar análise e tentar novamente",
+                    use_container_width=True,
+                    key="memory_empty_retry",
+                ):
+                    for state_key in [
+                        "memory_source_document",
+                        "memory_extraction",
+                        "memory_editor",
+                        "memory_document_meta",
+                        "memory_review_project_name",
+                        "memory_review_client_brand",
+                        "memory_review_event_name",
+                        "memory_review_document_title",
+                        "memory_review_version_label",
+                        "memory_review_document_status",
+                    ]:
+                        st.session_state.pop(
+                            state_key,
+                            None,
+                        )
+                    st.rerun()
+
+                st.stop()
+
             edited = st.data_editor(
                 editor,
                 use_container_width=True,
@@ -1239,14 +1300,26 @@ with upload_tab:
             )
             st.session_state["memory_editor"] = edited
 
+            if (
+                "Incluir" in edited.columns
+                and not edited.empty
+            ):
+                included_rows = edited[
+                    edited["Incluir"].fillna(
+                        False
+                    ).eq(True)
+                ]
+            else:
+                included_rows = edited.iloc[
+                    0:0
+                ]
+
             preview_options = {
                 (
                     f"Slide {int(row.get('Página') or 0)} · "
                     f"{row.get('Título')}"
                 ): str(row.get("_row_id"))
-                for _, row in edited[
-                    edited["Incluir"].eq(True)
-                ].iterrows()
+                for _, row in included_rows.iterrows()
             }
 
             if preview_options:
