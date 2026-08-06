@@ -61,6 +61,7 @@ class MemoryBatch(BaseModel):
     client_brand: str | None = None
     project_name: str | None = None
     event_name: str | None = None
+    version_label: str | None = None
     strategic_summary: str | None = None
     creative_concept: str | None = None
     slides: list[MemorySlide] = Field(default_factory=list)

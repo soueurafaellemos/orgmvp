@@ -203,6 +203,86 @@ def ensure_memory_project(
     return str(inserted.data[0]["id"])
 
 
+
+def update_memory_project_metadata(
+    client: Client,
+    *,
+    project_id: str,
+    project_name: str,
+    client_brand: str | None,
+    event_name: str | None,
+) -> None:
+    clean_name = str(
+        project_name or ""
+    ).strip()
+
+    if not clean_name:
+        raise ValueError(
+            "O projeto precisa ter um nome."
+        )
+
+    client.table("projects").update(
+        {
+            "project_name": clean_name,
+            "normalized_name": (
+                normalize_project_name(
+                    clean_name
+                )
+            ),
+            "client_brand": (
+                str(client_brand).strip()
+                if client_brand
+                else None
+            ),
+            "event_name": (
+                str(event_name).strip()
+                if event_name
+                else None
+            ),
+        }
+    ).eq(
+        "id",
+        project_id,
+    ).execute()
+
+
+def update_memory_document_metadata(
+    client: Client,
+    *,
+    document_id: str,
+    title: str,
+    version_label: str | None,
+    document_status: str,
+) -> None:
+    clean_title = str(
+        title or ""
+    ).strip()
+
+    if not clean_title:
+        raise ValueError(
+            "A apresentação precisa ter um título."
+        )
+
+    client.table(
+        "memory_documents"
+    ).update(
+        {
+            "title": clean_title,
+            "version_label": (
+                str(version_label).strip()
+                if version_label
+                else None
+            ),
+            "document_status": (
+                document_status
+            ),
+        }
+    ).eq(
+        "id",
+        document_id,
+    ).execute()
+
+
 def fetch_memory_projects_overview(client: Client) -> pd.DataFrame:
     response = (
         client.table("memory_project_overview")

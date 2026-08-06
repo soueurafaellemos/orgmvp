@@ -6,27 +6,26 @@ from collections import Counter
 
 import pandas as pd
 
-from document_io import InputDocument, split_pdf
+import fitz
+
+from document_io import InputDocument
 from gemini_extractor import _structured_call, get_client
 from memory_models import MemoryBatch
 from memory_prompts import MEMORY_SECTION_LABELS, MEMORY_SYSTEM_PROMPT
 
 
-def _memory_jobs(docs: list[InputDocument], *, pages_per_batch: int):
-    jobs = []
-    for doc in docs:
-        if doc.mime_type != "application/pdf":
-            raise ValueError(
-                "A Memória visual precisa de uma apresentação exportada em PDF."
-            )
-        for part, first, last in split_pdf(
-            doc,
-            pages_per_batch=pages_per_batch,
-            start_page=1,
-            end_page=None,
-        ):
-            jobs.append((part, first, last, doc.name))
-    return jobs
+
+def _pdf_page_count(
+    doc: InputDocument,
+) -> int:
+    pdf = fitz.open(
+        stream=doc.data,
+        filetype="pdf",
+    )
+    try:
+        return int(pdf.page_count)
+    finally:
+        pdf.close()
 
 
 def extract_memory(
@@ -34,42 +33,76 @@ def extract_memory(
     *,
     api_key: str | None,
     model: str,
-    pages_per_batch: int = 6,
     progress_callback=None,
 ) -> list[MemoryBatch]:
-    client = get_client(api_key)
-    jobs = _memory_jobs(docs, pages_per_batch=pages_per_batch)
-    batches = []
-    total = len(jobs)
+    """
+    Analisa cada apresentação completa em uma única chamada.
 
-    for index, (doc, first, last, original_name) in enumerate(jobs, start=1):
+    A função não recorta nem divide o PDF em lotes. O modelo recebe
+    todos os slides juntos para compreender narrativa, sequência,
+    opções, jornada e relações entre as diferentes partes do projeto.
+    """
+    client = get_client(api_key)
+    total = len(docs)
+    batches = []
+
+    for index, doc in enumerate(
+        docs,
+        start=1,
+    ):
+        if doc.mime_type != "application/pdf":
+            raise ValueError(
+                "A Memória visual precisa de uma apresentação "
+                "exportada em PDF."
+            )
+
+        page_count = _pdf_page_count(doc)
+
         if progress_callback:
             progress_callback(
                 index - 1,
                 total,
-                f"Analisando {original_name} — páginas {first} a {last}",
+                (
+                    f"Analisando a apresentação completa "
+                    f"{doc.name} — {page_count} slides"
+                ),
             )
 
         instruction = (
-            f"\n\nARQUIVO ORIGINAL: {original_name}\n"
-            f"INTERVALO DE PÁGINAS: {first} a {last}\n"
-            "Use o nome original em source_file e a numeração original "
-            "do arquivo em source_page."
+            f"\n\nARQUIVO ORIGINAL: {doc.name}\n"
+            f"TOTAL DE SLIDES: {page_count}\n"
+            "Você recebeu a apresentação completa em uma única análise. "
+            "Considere a narrativa do início ao fim e examine todos os "
+            "slides. Use o nome original em source_file e a numeração "
+            "original, começando em 1, em source_page."
         )
 
         batches.append(
             _structured_call(
                 client,
                 model=model,
-                prompt=MEMORY_SYSTEM_PROMPT + instruction,
+                prompt=(
+                    MEMORY_SYSTEM_PROMPT
+                    + instruction
+                ),
                 docs=[doc],
                 schema=MemoryBatch,
-                context=f"Memória de {original_name}, páginas {first}-{last}",
+                context=(
+                    f"Memória completa de {doc.name}, "
+                    f"{page_count} slides"
+                ),
             )
         )
 
-    if progress_callback:
-        progress_callback(total, total, "Leitura da apresentação concluída.")
+        if progress_callback:
+            progress_callback(
+                index,
+                total,
+                (
+                    f"Apresentação completa analisada — "
+                    f"{page_count} slides"
+                ),
+            )
 
     return batches
 
@@ -80,6 +113,7 @@ def merge_memory_batches(batches: list[MemoryBatch]) -> dict:
         "client_brand",
         "project_name",
         "event_name",
+        "version_label",
         "creative_concept",
     ]
     metadata = {field: None for field in metadata_fields}

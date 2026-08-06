@@ -44,6 +44,21 @@ OBJETIVO:
 Criar um arquivo vivo, visual e consultável do raciocínio estratégico,
 dos ambientes, das propostas criativas e da jornada daquele projeto.
 
+
+IDENTIFICAÇÃO AUTOMÁTICA DO DOCUMENTO:
+Antes de classificar os slides, identifique somente quando houver
+evidência no arquivo:
+
+- document_title: título da apresentação;
+- project_name: nome do projeto;
+- client_brand: cliente ou marca;
+- event_name: evento, propriedade ou ocasião;
+- version_label: versão indicada na capa, rodapé, nome do arquivo ou
+  identificação interna, como V3, final, revisão 2 ou semelhante.
+
+Não invente dados. Quando não houver evidência suficiente, retorne null.
+O nome do arquivo pode ser usado como evidência para título e versão.
+
 SEÇÕES:
 1. strategy: contexto, desafio, objetivos, público, insight, conceito,
 premissas, manifesto, narrativa, pilares e direcionais.

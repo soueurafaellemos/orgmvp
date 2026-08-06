@@ -24,6 +24,8 @@ from memory_db import (
     fetch_memory_project_options,
     fetch_memory_projects_overview,
     save_memory_presentation,
+    update_memory_document_metadata,
+    update_memory_project_metadata,
 )
 from memory_extractor import (
     extract_memory,
@@ -515,6 +517,91 @@ with consult_tab:
                                         hide_index=True,
                                     )
 
+                                with st.expander(
+                                    "Editar informações do projeto",
+                                    expanded=False,
+                                ):
+                                    with st.form(
+                                        "memory_project_metadata_"
+                                        + project_id
+                                    ):
+                                        edit_project_name = st.text_input(
+                                            "Nome do projeto",
+                                            value=str(
+                                                selected_project.get(
+                                                    "project_name"
+                                                )
+                                                or selected_project.get(
+                                                    "Projeto"
+                                                )
+                                                or ""
+                                            ),
+                                        )
+
+                                        edit_meta1, edit_meta2 = (
+                                            st.columns(2)
+                                        )
+
+                                        with edit_meta1:
+                                            edit_client_brand = st.text_input(
+                                                "Cliente / marca",
+                                                value=str(
+                                                    selected_project.get(
+                                                        "client_brand"
+                                                    )
+                                                    or selected_project.get(
+                                                        "Cliente"
+                                                    )
+                                                    or ""
+                                                ),
+                                            )
+
+                                        with edit_meta2:
+                                            edit_event_name = st.text_input(
+                                                "Evento",
+                                                value=str(
+                                                    selected_project.get(
+                                                        "event_name"
+                                                    )
+                                                    or selected_project.get(
+                                                        "Evento"
+                                                    )
+                                                    or ""
+                                                ),
+                                            )
+
+                                        save_project_meta = (
+                                            st.form_submit_button(
+                                                "Salvar informações do projeto",
+                                                type="primary",
+                                                use_container_width=True,
+                                            )
+                                        )
+
+                                    if save_project_meta:
+                                        try:
+                                            update_memory_project_metadata(
+                                                client,
+                                                project_id=project_id,
+                                                project_name=edit_project_name,
+                                                client_brand=edit_client_brand,
+                                                event_name=edit_event_name,
+                                            )
+                                            st.success(
+                                                "Informações do projeto atualizadas."
+                                            )
+                                            st.cache_data.clear()
+                                            st.rerun()
+                                        except Exception as exc:
+                                            report_service_error(
+                                                "edição do projeto na Memória",
+                                                user_message=(
+                                                    "Não foi possível atualizar "
+                                                    "as informações do projeto."
+                                                ),
+                                                exception=exc,
+                                            )
+
                             elif tab_key == "documents":
                                 for _, document_row in documents.iterrows():
                                     document = document_row.to_dict()
@@ -588,6 +675,105 @@ with consult_tab:
                                             )
 
                                         with st.expander(
+                                            "Editar informações da apresentação",
+                                            expanded=False,
+                                        ):
+                                            with st.form(
+                                                "memory_document_metadata_"
+                                                + doc_id
+                                            ):
+                                                edit_document_title = (
+                                                    st.text_input(
+                                                        "Título da apresentação",
+                                                        value=str(
+                                                            document.get(
+                                                                "title"
+                                                            )
+                                                            or document.get(
+                                                                "file_name"
+                                                            )
+                                                            or ""
+                                                        ),
+                                                    )
+                                                )
+
+                                                document_meta1, document_meta2 = (
+                                                    st.columns(2)
+                                                )
+
+                                                with document_meta1:
+                                                    edit_version_label = (
+                                                        st.text_input(
+                                                            "Versão",
+                                                            value=str(
+                                                                document.get(
+                                                                    "version_label"
+                                                                )
+                                                                or ""
+                                                            ),
+                                                        )
+                                                    )
+
+                                                with document_meta2:
+                                                    current_document_status = str(
+                                                        document.get(
+                                                            "document_status"
+                                                        )
+                                                        or "sent_to_client"
+                                                    )
+                                                    edit_document_status = (
+                                                        st.selectbox(
+                                                            "Situação do documento",
+                                                            DOCUMENT_STATUS_OPTIONS,
+                                                            index=(
+                                                                DOCUMENT_STATUS_OPTIONS.index(
+                                                                    current_document_status
+                                                                )
+                                                                if current_document_status
+                                                                in DOCUMENT_STATUS_OPTIONS
+                                                                else 0
+                                                            ),
+                                                            format_func=lambda value: (
+                                                                DOCUMENT_STATUS_LABELS[
+                                                                    value
+                                                                ]
+                                                            ),
+                                                        )
+                                                    )
+
+                                                save_document_meta = (
+                                                    st.form_submit_button(
+                                                        "Salvar informações da apresentação",
+                                                        type="primary",
+                                                        use_container_width=True,
+                                                    )
+                                                )
+
+                                            if save_document_meta:
+                                                try:
+                                                    update_memory_document_metadata(
+                                                        client,
+                                                        document_id=doc_id,
+                                                        title=edit_document_title,
+                                                        version_label=edit_version_label,
+                                                        document_status=edit_document_status,
+                                                    )
+                                                    st.success(
+                                                        "Informações da apresentação atualizadas."
+                                                    )
+                                                    st.cache_data.clear()
+                                                    st.rerun()
+                                                except Exception as exc:
+                                                    report_service_error(
+                                                        "edição da apresentação",
+                                                        user_message=(
+                                                            "Não foi possível atualizar "
+                                                            "esta apresentação."
+                                                        ),
+                                                        exception=exc,
+                                                    )
+
+                                        with st.expander(
                                             "Excluir esta apresentação",
                                             expanded=False,
                                         ):
@@ -640,9 +826,9 @@ with consult_tab:
 with upload_tab:
     st.subheader("Adicionar apresentação estratégica")
     st.caption(
-        "Envie o PDF final ou uma versão apresentada ao cliente. "
-        "A NAVE preservará o arquivo e organizará seu conteúdo "
-        "somente dentro do projeto."
+        "Selecione um projeto existente ou crie um novo e envie o PDF. "
+        "A NAVE identifica automaticamente projeto, cliente, evento, "
+        "título e versão ao analisar a apresentação completa."
     )
 
     if not api_key:
@@ -651,66 +837,85 @@ with upload_tab:
         )
     else:
         try:
-            project_options = fetch_memory_project_options(client)
+            project_options = fetch_memory_project_options(
+                client
+            )
         except Exception:
             project_options = pd.DataFrame()
 
         project_mode = st.radio(
-            "Projeto",
+            "Destino",
             [
                 "Selecionar projeto existente",
-                "Criar novo projeto",
+                "Criar novo projeto automaticamente",
             ],
             horizontal=True,
             key="memory_project_mode",
         )
 
         selected_project_id = None
-        project_name = ""
-        client_brand = ""
-        event_name = ""
+        selected_project_data = {}
 
         if (
-            project_mode == "Selecionar projeto existente"
+            project_mode
+            == "Selecionar projeto existente"
             and not project_options.empty
         ):
             labels = {
-                _project_label(row.to_dict()): str(row["id"])
-                for _, row in project_options.iterrows()
+                _project_label(
+                    row.to_dict()
+                ): str(row["id"])
+                for _, row
+                in project_options.iterrows()
             }
+
             project_label = st.selectbox(
                 "Projeto existente",
                 list(labels.keys()),
                 key="memory_existing_project",
             )
-            selected_project_id = labels[project_label]
-        else:
-            if (
-                project_mode == "Selecionar projeto existente"
-                and project_options.empty
-            ):
-                st.info(
-                    "Ainda não existem projetos. Crie o primeiro abaixo."
+            selected_project_id = labels[
+                project_label
+            ]
+
+            selected_rows = project_options[
+                project_options["id"]
+                .astype(str)
+                .eq(
+                    str(
+                        selected_project_id
+                    )
+                )
+            ]
+
+            if not selected_rows.empty:
+                selected_project_data = (
+                    selected_rows.iloc[
+                        0
+                    ].to_dict()
                 )
 
-            project_name = st.text_input(
-                "Nome do projeto",
-                placeholder="Ex.: Amazon Creator Lab Black Friday",
-                key="memory_new_project_name",
+        elif (
+            project_mode
+            == "Selecionar projeto existente"
+            and project_options.empty
+        ):
+            st.info(
+                "Ainda não existem projetos. "
+                "A NAVE criará um automaticamente "
+                "a partir da apresentação."
             )
-            project_col1, project_col2 = st.columns(2)
+            project_mode = (
+                "Criar novo projeto automaticamente"
+            )
 
-            with project_col1:
-                client_brand = st.text_input(
-                    "Cliente / marca",
-                    key="memory_new_client",
-                )
-
-            with project_col2:
-                event_name = st.text_input(
-                    "Evento",
-                    key="memory_new_event",
-                )
+        else:
+            st.info(
+                "Nenhum preenchimento é necessário. "
+                "A NAVE identificará os dados do projeto "
+                "a partir do PDF; você poderá revisá-los "
+                "antes e depois de salvar."
+            )
 
         uploaded = st.file_uploader(
             "Apresentação em PDF",
@@ -718,57 +923,20 @@ with upload_tab:
             accept_multiple_files=False,
             key="memory_pdf_upload",
             help=(
-                "O PDF permite preservar o slide completo "
-                "e extrair imagens para as galerias."
+                "O arquivo completo será enviado em uma única "
+                "análise, preservando a narrativa entre todos "
+                "os slides."
             ),
         )
 
-        meta1, meta2, meta3 = st.columns([2, 1, 1.3])
-
-        with meta1:
-            document_title = st.text_input(
-                "Título da apresentação",
-                value=(
-                    Path(uploaded.name).stem
-                    if uploaded
-                    else ""
-                ),
-                key="memory_document_title",
-            )
-
-        with meta2:
-            version_label = st.text_input(
-                "Versão",
-                placeholder="Ex.: V3 final",
-                key="memory_version_label",
-            )
-
-        with meta3:
-            document_status = st.selectbox(
-                "Situação do documento",
-                DOCUMENT_STATUS_OPTIONS,
-                format_func=lambda value: DOCUMENT_STATUS_LABELS[value],
-                key="memory_document_status",
-            )
-
-        with st.expander("Configuração de leitura", expanded=False):
-            pages_per_batch = st.slider(
-                "Slides por etapa",
-                min_value=2,
-                max_value=8,
-                value=6,
-                help=(
-                    "A apresentação inteira será analisada. "
-                    "O valor controla somente cada etapa interna."
-                ),
-                key="memory_pages_per_batch",
-            )
-
         analyze_clicked = st.button(
-            "Analisar apresentação",
+            "Analisar apresentação completa",
             type="primary",
             use_container_width=True,
-            disabled=(uploaded is None or not api_key),
+            disabled=(
+                uploaded is None
+                or not api_key
+            ),
             key="memory_analyze_button",
         )
 
@@ -777,7 +945,8 @@ with upload_tab:
                 (
                     uploaded.name,
                     uploaded.getvalue(),
-                    uploaded.type or "application/pdf",
+                    uploaded.type
+                    or "application/pdf",
                 )
             ]
 
@@ -786,9 +955,15 @@ with upload_tab:
                 progress = st.progress(0.0)
                 status = st.empty()
 
-                def update(done, total, message):
+                def update(
+                    done,
+                    total,
+                    message,
+                ):
                     progress.progress(
-                        done / total if total else 1
+                        done / total
+                        if total
+                        else 1
                     )
                     status.write(message)
 
@@ -796,49 +971,123 @@ with upload_tab:
                     docs,
                     api_key=api_key,
                     model=model,
-                    pages_per_batch=int(pages_per_batch),
                     progress_callback=update,
                 )
-                extraction = merge_memory_batches(batches)
-                editor = memory_editor_dataframe(extraction)
+                extraction = (
+                    merge_memory_batches(
+                        batches
+                    )
+                )
+                editor = (
+                    memory_editor_dataframe(
+                        extraction
+                    )
+                )
 
-                st.session_state["memory_source_document"] = docs[0]
-                st.session_state["memory_extraction"] = extraction
-                st.session_state["memory_editor"] = editor
-                st.session_state["memory_document_meta"] = {
-                    "document_title": (
-                        document_title
-                        or extraction.get("document_title")
-                        or uploaded.name
-                    ),
-                    "version_label": version_label,
-                    "document_status": document_status,
-                    "selected_project_id": selected_project_id,
-                    "project_name": (
-                        project_name
-                        or extraction.get("project_name")
-                        or ""
-                    ),
-                    "client_brand": (
-                        client_brand
-                        or extraction.get("client_brand")
-                        or ""
-                    ),
-                    "event_name": (
-                        event_name
-                        or extraction.get("event_name")
-                        or ""
+                file_title = Path(
+                    uploaded.name
+                ).stem
+
+                detected_project_name = (
+                    selected_project_data.get(
+                        "project_name"
+                    )
+                    or extraction.get(
+                        "project_name"
+                    )
+                    or extraction.get(
+                        "document_title"
+                    )
+                    or file_title
+                )
+                detected_client_brand = (
+                    selected_project_data.get(
+                        "client_brand"
+                    )
+                    or extraction.get(
+                        "client_brand"
+                    )
+                    or ""
+                )
+                detected_event_name = (
+                    selected_project_data.get(
+                        "event_name"
+                    )
+                    or extraction.get(
+                        "event_name"
+                    )
+                    or ""
+                )
+                detected_document_title = (
+                    extraction.get(
+                        "document_title"
+                    )
+                    or file_title
+                )
+                detected_version = (
+                    extraction.get(
+                        "version_label"
+                    )
+                    or ""
+                )
+
+                st.session_state[
+                    "memory_source_document"
+                ] = docs[0]
+                st.session_state[
+                    "memory_extraction"
+                ] = extraction
+                st.session_state[
+                    "memory_editor"
+                ] = editor
+                st.session_state[
+                    "memory_document_meta"
+                ] = {
+                    "selected_project_id": (
+                        selected_project_id
                     ),
                 }
 
-                st.success(
-                    "Apresentação analisada. Revise os itens abaixo."
+                st.session_state[
+                    "memory_review_project_name"
+                ] = str(
+                    detected_project_name
                 )
+                st.session_state[
+                    "memory_review_client_brand"
+                ] = str(
+                    detected_client_brand
+                )
+                st.session_state[
+                    "memory_review_event_name"
+                ] = str(
+                    detected_event_name
+                )
+                st.session_state[
+                    "memory_review_document_title"
+                ] = str(
+                    detected_document_title
+                )
+                st.session_state[
+                    "memory_review_version_label"
+                ] = str(
+                    detected_version
+                )
+                st.session_state[
+                    "memory_review_document_status"
+                ] = "sent_to_client"
+
+                st.success(
+                    "Apresentação completa analisada. "
+                    "Revise os dados e os conteúdos abaixo."
+                )
+
             except Exception as exc:
                 report_service_error(
-                    "leitura da apresentação estratégica",
+                    "leitura da apresentação completa",
                     user_message=(
-                        "Não foi possível analisar esta apresentação."
+                        "Não foi possível analisar "
+                        "esta apresentação."
                     ),
                     exception=exc,
                 )
@@ -860,6 +1109,63 @@ with upload_tab:
         ):
             st.divider()
             st.subheader("Revisão antes de salvar")
+
+            st.markdown("### Informações identificadas")
+            st.caption(
+                "Todos os campos abaixo foram preenchidos "
+                "automaticamente e podem ser corrigidos."
+            )
+
+            st.text_input(
+                "Nome do projeto",
+                key="memory_review_project_name",
+            )
+
+            review_meta1, review_meta2 = st.columns(2)
+
+            with review_meta1:
+                st.text_input(
+                    "Cliente / marca",
+                    key="memory_review_client_brand",
+                )
+
+            with review_meta2:
+                st.text_input(
+                    "Evento",
+                    key="memory_review_event_name",
+                )
+
+            review_doc1, review_doc2, review_doc3 = (
+                st.columns(
+                    [2, 1, 1.35]
+                )
+            )
+
+            with review_doc1:
+                st.text_input(
+                    "Título da apresentação",
+                    key="memory_review_document_title",
+                )
+
+            with review_doc2:
+                st.text_input(
+                    "Versão",
+                    key="memory_review_version_label",
+                )
+
+            with review_doc3:
+                st.selectbox(
+                    "Situação do documento",
+                    DOCUMENT_STATUS_OPTIONS,
+                    format_func=lambda value: (
+                        DOCUMENT_STATUS_LABELS[
+                            value
+                        ]
+                    ),
+                    key="memory_review_document_status",
+                )
+
+            st.divider()
 
             preview_items = selected_memory_items(
                 extraction,
@@ -1002,6 +1308,51 @@ with upload_tab:
                     )
                 else:
                     try:
+                        review_project_name = str(
+                            st.session_state.get(
+                                "memory_review_project_name"
+                            )
+                            or ""
+                        ).strip()
+                        review_client_brand = str(
+                            st.session_state.get(
+                                "memory_review_client_brand"
+                            )
+                            or ""
+                        ).strip()
+                        review_event_name = str(
+                            st.session_state.get(
+                                "memory_review_event_name"
+                            )
+                            or ""
+                        ).strip()
+                        review_document_title = str(
+                            st.session_state.get(
+                                "memory_review_document_title"
+                            )
+                            or source_document.name
+                        ).strip()
+                        review_version_label = str(
+                            st.session_state.get(
+                                "memory_review_version_label"
+                            )
+                            or ""
+                        ).strip()
+                        review_document_status = str(
+                            st.session_state.get(
+                                "memory_review_document_status"
+                            )
+                            or "sent_to_client"
+                        )
+
+                        if not review_project_name:
+                            st.warning(
+                                "A NAVE não conseguiu identificar "
+                                "o nome do projeto. Corrija esse campo "
+                                "antes de salvar."
+                            )
+                            st.stop()
+
                         project_id = saved_meta.get(
                             "selected_project_id"
                         )
@@ -1010,19 +1361,57 @@ with upload_tab:
                             project_id = ensure_memory_project(
                                 client,
                                 project_name=(
-                                    saved_meta.get("project_name")
-                                    or extraction.get("project_name")
-                                    or "Projeto sem nome"
+                                    review_project_name
                                 ),
                                 client_brand=(
-                                    saved_meta.get("client_brand")
-                                    or extraction.get("client_brand")
+                                    review_client_brand
+                                    or None
                                 ),
                                 event_name=(
-                                    saved_meta.get("event_name")
-                                    or extraction.get("event_name")
+                                    review_event_name
+                                    or None
                                 ),
                             )
+                        else:
+                            update_memory_project_metadata(
+                                client,
+                                project_id=str(
+                                    project_id
+                                ),
+                                project_name=(
+                                    review_project_name
+                                ),
+                                client_brand=(
+                                    review_client_brand
+                                    or None
+                                ),
+                                event_name=(
+                                    review_event_name
+                                    or None
+                                ),
+                            )
+
+                        extraction_for_save = {
+                            **extraction,
+                            "project_name": (
+                                review_project_name
+                            ),
+                            "client_brand": (
+                                review_client_brand
+                                or None
+                            ),
+                            "event_name": (
+                                review_event_name
+                                or None
+                            ),
+                            "document_title": (
+                                review_document_title
+                            ),
+                            "version_label": (
+                                review_version_label
+                                or None
+                            ),
+                        }
 
                         with st.spinner(
                             "Preservando documento, slides e galerias..."
@@ -1031,19 +1420,17 @@ with upload_tab:
                                 client,
                                 project_id=str(project_id),
                                 source_document=source_document,
-                                extraction=extraction,
+                                extraction=extraction_for_save,
                                 selected_items=final_items,
                                 document_title=(
-                                    saved_meta.get("document_title")
-                                    or extraction.get("document_title")
-                                    or source_document.name
+                                    review_document_title
                                 ),
-                                version_label=saved_meta.get(
-                                    "version_label"
+                                version_label=(
+                                    review_version_label
+                                    or None
                                 ),
                                 document_status=(
-                                    saved_meta.get("document_status")
-                                    or "sent_to_client"
+                                    review_document_status
                                 ),
                             )
 
@@ -1068,6 +1455,12 @@ with upload_tab:
                             "memory_extraction",
                             "memory_editor",
                             "memory_document_meta",
+                            "memory_review_project_name",
+                            "memory_review_client_brand",
+                            "memory_review_event_name",
+                            "memory_review_document_title",
+                            "memory_review_version_label",
+                            "memory_review_document_status",
                         ]:
                             st.session_state.pop(key, None)
 

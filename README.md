@@ -826,3 +826,20 @@ Antes de usar, execute:
 Antes de usar, execute:
 
 `supabase_patch_memoria_v1.sql`
+
+
+## V25.1 — análise integral e cadastro automático
+
+- remove a configuração “Slides por etapa”;
+- envia a apresentação inteira ao Gemini em uma única análise;
+- preserva a leitura da narrativa completa do início ao fim;
+- ao criar um projeto, exige somente o PDF;
+- identifica automaticamente nome do projeto, cliente, evento,
+  título da apresentação e versão;
+- todos os dados identificados ficam editáveis antes de salvar;
+- projeto, cliente e evento podem ser editados depois de salvos;
+- título, versão e situação da apresentação podem ser editados
+  depois de salvos;
+- não exige novo SQL;
+- não altera o isolamento da Memória;
+- não contém arquivos da pasta assets.
