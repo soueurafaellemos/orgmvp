@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from datetime import datetime, timezone
@@ -46,55 +47,144 @@ TYPE_COLORS = {
 }
 
 
-def _secret_value(*names: str) -> str:
-    for name in names:
-        try:
-            value = st.secrets.get(name, "")
-        except Exception:
-            value = ""
-        if value:
-            return str(value)
-        env_value = os.getenv(name, "")
-        if env_value:
-            return env_value
-
+def _mapping_to_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
     try:
-        nested = st.secrets.get("supabase", {})
+        return dict(value)
     except Exception:
-        nested = {}
+        return {}
 
-    if nested:
+
+def _flatten_mapping(
+    value: Any,
+    *,
+    prefix: str = "",
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    mapping = _mapping_to_dict(value)
+    for key, item in mapping.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        nested = _mapping_to_dict(item)
+        if nested:
+            result.update(_flatten_mapping(nested, prefix=path))
+            continue
+        if item is not None and str(item).strip():
+            result[path.casefold()] = str(item).strip()
+    return result
+
+
+def _client_from_existing_runtime() -> Client | None:
+    """Reuse the connection already established by the NAVE when available."""
+    for key in (
+        "database_client",
+        "supabase_client",
+        "db_client",
+        "client",
+    ):
+        try:
+            candidate = st.session_state.get(key)
+        except Exception:
+            candidate = None
+        if candidate is not None and hasattr(candidate, "table"):
+            return candidate
+
+    module_function_candidates = {
+        "runtime_ui": (
+            "get_database_client",
+            "get_supabase_client",
+            "database_client",
+        ),
+        "supabase_db": (
+            "get_database_client",
+            "get_supabase_client",
+            "create_database_client",
+            "create_supabase_client",
+            "database_client",
+        ),
+    }
+    for module_name, function_names in module_function_candidates.items():
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        for function_name in function_names:
+            candidate = getattr(module, function_name, None)
+            if candidate is None:
+                continue
+            if hasattr(candidate, "table"):
+                return candidate
+            if callable(candidate):
+                try:
+                    resolved = candidate()
+                except TypeError:
+                    continue
+                except Exception:
+                    continue
+                if resolved is not None and hasattr(resolved, "table"):
+                    return resolved
+    return None
+
+
+def _secret_pair() -> tuple[str, str]:
+    """Resolve the Supabase credentials without assuming one TOML layout."""
+    flat: dict[str, str] = {}
+    try:
+        flat.update(_flatten_mapping(st.secrets))
+    except Exception:
+        pass
+
+    for key, value in os.environ.items():
+        if value and str(value).strip():
+            flat.setdefault(str(key).casefold(), str(value).strip())
+
+    url_names = (
+        "supabase_url",
+        "url",
+        "project_url",
+        "api_url",
+    )
+    key_names = (
+        "supabase_service_role_key",
+        "supabase_service_key",
+        "service_role_key",
+        "supabase_key",
+        "supabase_anon_key",
+        "anon_key",
+        "api_key",
+        "key",
+    )
+
+    def find_value(names: tuple[str, ...]) -> str:
+        # Prefer an exact top-level key, then nested paths such as
+        # connections.supabase.url or database.supabase.key.
         for name in names:
-            nested_name = name.casefold().replace("supabase_", "")
-            value = nested.get(nested_name, "")
-            if value:
-                return str(value)
-    return ""
+            direct = flat.get(name.casefold())
+            if direct:
+                return direct
+        for name in names:
+            suffix = f".{name.casefold()}"
+            for path, value in flat.items():
+                if path.endswith(suffix) and value:
+                    return value
+        return ""
+
+    return find_value(url_names), find_value(key_names)
 
 
 @st.cache_resource(show_spinner=False)
 def _database_client() -> Client:
-    for key in (
-        "supabase_client",
-        "database_client",
-        "db_client",
-    ):
-        client = st.session_state.get(key)
-        if client is not None:
-            return client
+    existing = _client_from_existing_runtime()
+    if existing is not None:
+        return existing
 
-    url = _secret_value("SUPABASE_URL")
-    key = _secret_value(
-        "SUPABASE_SERVICE_ROLE_KEY",
-        "SUPABASE_KEY",
-        "SUPABASE_ANON_KEY",
-    )
+    url, key = _secret_pair()
     if not url or not key:
         raise RuntimeError(
-            "As credenciais do Supabase não estão disponíveis nos Secrets."
+            "A conexão já usada pela NAVE não foi localizada e as "
+            "credenciais do Supabase não puderam ser resolvidas nos Secrets."
         )
     return create_client(url, key)
-
 
 def _json_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -111,25 +201,26 @@ def _json_dict(value: Any) -> dict[str, Any]:
 @st.cache_data(ttl=120, show_spinner=False)
 def _load_venues() -> list[dict[str, Any]]:
     client = _database_client()
-    try:
-        response = (
-            client.table("venues")
-            .select("*")
-            .is_("archived_at", "null")
-            .order("name")
-            .limit(5000)
-            .execute()
-        )
-    except Exception:
-        response = (
-            client.table("venues")
-            .select("*")
-            .order("name")
-            .limit(5000)
-            .execute()
-        )
-    records = response.data or []
-    return [dict(record) for record in records]
+    response = (
+        client.table("venues")
+        .select("*")
+        .limit(5000)
+        .execute()
+    )
+    records = [dict(record) for record in (response.data or [])]
+
+    # Some historical schemas do not have archived_at. Filter only when the
+    # field exists, and sort in Python so the query does not depend on columns
+    # that may differ between NAVE versions.
+    records = [
+        record
+        for record in records
+        if not record.get("archived_at")
+    ]
+    return sorted(
+        records,
+        key=lambda record: str(record.get("name") or "").casefold(),
+    )
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -138,18 +229,16 @@ def _load_media() -> list[dict[str, Any]]:
     try:
         response = (
             client.table("media_assets")
-            .select(
-                "id,entity_id,asset_type,external_url,"
-                "storage_bucket,storage_path,mime_type,is_primary"
-            )
+            .select("*")
             .eq("entity_type", "venue")
             .limit(10000)
             .execute()
         )
         return [dict(record) for record in (response.data or [])]
     except Exception:
+        # The venue list must continue working even when an older database
+        # version has no generic media table yet.
         return []
-
 
 def _media_index(
     media_rows: list[dict[str, Any]],
@@ -386,11 +475,12 @@ try:
     media_rows = _load_media()
 except Exception as exc:
     st.error(
-        "A NAVE não conseguiu carregar os locais do Supabase. "
-        "Confirme os Secrets e tente novamente."
+        "A NAVE não conseguiu carregar os locais. A página agora usa a "
+        "mesma conexão do restante da plataforma; consulte os detalhes "
+        "técnicos abaixo para identificar uma eventual restrição do banco."
     )
-    with st.expander("Detalhes técnicos"):
-        st.code(str(exc))
+    with st.expander("Detalhes técnicos", expanded=True):
+        st.code(f"{type(exc).__name__}: {exc}")
     st.stop()
 
 media_by_venue = _media_index(media_rows)
