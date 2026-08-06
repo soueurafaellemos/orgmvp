@@ -731,6 +731,16 @@ def normalize_editor_venues(df):
     )
 
 
+def _classification_payload(classification):
+    if classification is None:
+        return None
+    if isinstance(classification, dict):
+        return classification
+    if hasattr(classification, "model_dump"):
+        return classification.model_dump()
+    return classification
+
+
 def venue_json_bytes(
     venues_df,
     rules_df,
@@ -739,8 +749,8 @@ def venue_json_bytes(
     classification=None,
 ):
     payload = {
-        "classification": (
-            classification.model_dump() if classification else None
+        "classification": _classification_payload(
+            classification
         ),
         "destination_base": "Base de locais e espaços",
         "contacts": _records(contacts_df),
@@ -937,8 +947,8 @@ def catalog_json_bytes(
     classification=None,
 ):
     payload = {
-        "classification": (
-            classification.model_dump() if classification else None
+        "classification": _classification_payload(
+            classification
         ),
         "destination_base": "Base de brindes",
         "suppliers": _records(suppliers_df),
@@ -963,8 +973,8 @@ def activation_json_bytes(
     classification=None,
 ):
     payload = {
-        "classification": (
-            classification.model_dump() if classification else None
+        "classification": _classification_payload(
+            classification
         ),
         "destination_base": "Base de soluções e ativações",
         "suppliers": _records(suppliers_df),
@@ -983,8 +993,8 @@ def activation_json_bytes(
 
 def briefing_json_bytes(briefing, classification=None):
     payload = {
-        "classification": (
-            classification.model_dump() if classification else None
+        "classification": _classification_payload(
+            classification
         ),
         "destination_base": "Base de projetos e briefings",
         "briefing": briefing.model_dump(),

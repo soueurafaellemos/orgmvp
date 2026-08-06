@@ -3641,6 +3641,29 @@ def fetch_base_quality_snapshot(
     except Exception:
         curation_states = pd.DataFrame()
 
+    try:
+        imports_diagnostics = _fetch_all_rows(
+            client,
+            table="imports",
+            columns=(
+                "id,destination_base,document_title,source_files,"
+                "classification,created_at"
+            ),
+        )
+    except Exception:
+        imports_diagnostics = pd.DataFrame()
+
+    try:
+        memory_diagnostics = _fetch_all_rows(
+            client,
+            table="memory_documents",
+            columns=(
+                "id,title,file_name,project_id,raw_data,created_at"
+            ),
+        )
+    except Exception:
+        memory_diagnostics = pd.DataFrame()
+
     return {
         "products": products,
         "activations": activations,
@@ -3649,6 +3672,8 @@ def fetch_base_quality_snapshot(
         "media": media,
         "supplier_overview": supplier_overview,
         "curation_states": curation_states,
+        "imports_diagnostics": imports_diagnostics,
+        "memory_diagnostics": memory_diagnostics,
         "pending_duplicates": pending_duplicates,
     }
 

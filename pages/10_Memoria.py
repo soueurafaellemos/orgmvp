@@ -13,6 +13,8 @@ from branding import (
     apply_nave_branding,
     page_header,
 )
+from coverage_diagnostic import diagnose_coverage
+from coverage_diagnostic_ui import render_coverage_diagnostic
 from document_io import prepare_documents, render_pdf_page
 from memory_db import (
     create_memory_signed_url,
@@ -511,6 +513,28 @@ with consult_tab:
                                         hide_index=True,
                                     )
 
+                                latest_raw_data = (
+                                    latest.get("raw_data")
+                                    or {}
+                                )
+                                if isinstance(
+                                    latest_raw_data,
+                                    dict,
+                                ):
+                                    render_coverage_diagnostic(
+                                        latest_raw_data.get(
+                                            "coverage_diagnostic"
+                                        ),
+                                        heading=(
+                                            "Diagnóstico do documento mais recente"
+                                        ),
+                                        expanded=False,
+                                        download_key=(
+                                            "memory_saved_"
+                                            + str(latest.get("id"))
+                                        ),
+                                    )
+
                                 with st.expander(
                                     "Editar informações do projeto",
                                     expanded=False,
@@ -899,6 +923,57 @@ with upload_tab:
                         batches
                     )
                 )
+                memory_source_inventory = [
+                    {
+                        "unit_id": (
+                            str(row.get("source_file") or docs[0].name)
+                            + "#page:"
+                            + str(row.get("page_number") or 0)
+                        ),
+                        "source_file": (
+                            row.get("source_file")
+                            or docs[0].name
+                        ),
+                        "source_locator": (
+                            "Página "
+                            + str(row.get("page_number") or 0)
+                        ),
+                        "source_page": int(
+                            row.get("page_number") or 0
+                        ),
+                        "unit_kind": "Slide de apresentação",
+                        "text": row.get("text"),
+                        "image_count": row.get("image_count"),
+                        "meaningful": bool(
+                            row.get("is_meaningful")
+                        ),
+                    }
+                    for row in extraction.get(
+                        "page_inventory",
+                        [],
+                    )
+                    if int(row.get("page_number") or 0) > 0
+                ]
+                coverage_diagnostic = (
+                    diagnose_coverage(
+                        docs,
+                        mode="memory",
+                        structured_output=(
+                            extraction.get(
+                                "items",
+                                [],
+                            )
+                        ),
+                        api_key=api_key,
+                        model=model,
+                        source_inventory=(
+                            memory_source_inventory
+                        ),
+                    )
+                )
+                extraction[
+                    "coverage_diagnostic"
+                ] = coverage_diagnostic.model_dump()
                 editor = (
                     memory_editor_dataframe(
                         extraction
@@ -910,7 +985,7 @@ with upload_tab:
                 ).stem
 
                 detected_project_name = (
-extraction.get(
+                    extraction.get(
                         "project_name"
                     )
                     or extraction.get(
@@ -919,13 +994,13 @@ extraction.get(
                     or file_title
                 )
                 detected_client_brand = (
-extraction.get(
+                    extraction.get(
                         "client_brand"
                     )
                     or ""
                 )
                 detected_event_name = (
-extraction.get(
+                    extraction.get(
                         "event_name"
                     )
                     or ""
@@ -988,8 +1063,8 @@ extraction.get(
                 ] = "sent_to_client"
 
                 st.success(
-                    "Apresentação completa analisada. "
-                    "Revise os dados e os conteúdos abaixo."
+                    "Projeto completo decupado. "
+                    "Revise os dados, o diagnóstico e os conteúdos abaixo."
                 )
 
             except Exception as exc:
@@ -1083,7 +1158,12 @@ extraction.get(
             )
             counts = memory_section_counts(preview_items)
 
-            metric1, metric2, metric3 = st.columns(3)
+            memory_coverage = extraction.get(
+                "coverage"
+            ) or {}
+            metric1, metric2, metric3, metric4 = (
+                st.columns(4)
+            )
             metric1.metric(
                 "Itens encontrados",
                 len(extraction.get("items", [])),
@@ -1093,14 +1173,30 @@ extraction.get(
                 len(preview_items),
             )
             metric3.metric(
-                "Slides com conteúdo",
-                len(
-                    {
-                        int(item.get("source_page") or 0)
-                        for item in preview_items
-                    }
+                "Slides relevantes cobertos",
+                (
+                    f"{memory_coverage.get('pages_with_items', 0)}/"
+                    f"{memory_coverage.get('meaningful_pages', 0)}"
                 ),
             )
+            metric4.metric(
+                "Cobertura",
+                (
+                    f"{float(memory_coverage.get('coverage_percent', 0)):.1f}%"
+                ),
+            )
+
+            if memory_coverage.get(
+                "automatic_repair_items",
+                0,
+            ):
+                st.info(
+                    "A cobertura automática preservou "
+                    f"{memory_coverage.get('automatic_repair_items', 0)} "
+                    "item(ns) que não vieram completos na resposta da IA. "
+                    "Eles aparecem marcados como Cobertura automática e "
+                    "podem ser revisados antes do salvamento."
+                )
 
             if not counts.empty:
                 st.dataframe(
@@ -1108,6 +1204,17 @@ extraction.get(
                     use_container_width=True,
                     hide_index=True,
                 )
+
+            render_coverage_diagnostic(
+                extraction.get(
+                    "coverage_diagnostic"
+                ),
+                heading=(
+                    "Diagnóstico de cobertura do projeto"
+                ),
+                expanded=True,
+                download_key="memory_review",
+            )
 
             if editor.empty:
                 st.warning(
@@ -1195,6 +1302,14 @@ extraction.get(
                         "Resumo",
                         width="large",
                     ),
+                    "Origem": st.column_config.TextColumn(
+                        "Origem",
+                        help=(
+                            "IA: item estruturado pelo modelo. "
+                            "Cobertura automática: item preservado "
+                            "porque o slide não poderia desaparecer."
+                        ),
+                    ),
                     "Confiança": st.column_config.ProgressColumn(
                         "Confiança",
                         min_value=0,
@@ -1205,6 +1320,7 @@ extraction.get(
                 disabled=[
                     "Página",
                     "Arquivo",
+                    "Origem",
                     "Confiança",
                 ],
             )

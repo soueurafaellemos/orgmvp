@@ -10,6 +10,11 @@ from branding import (
     apply_nave_branding,
     page_header,
 )
+from coverage_diagnostic import (
+    diagnose_coverage,
+    diagnostic_dataframe,
+)
+from coverage_diagnostic_ui import render_coverage_diagnostic
 
 from runtime_ui import report_service_error, require_app_access
 from enrichment_engine import STRATEGY_LABELS
@@ -242,6 +247,7 @@ def _clear():
         if key.startswith("result_") or key in (
             "classification",
             "source_documents",
+            "coverage_diagnostic",
         ):
             st.session_state.pop(key, None)
 
@@ -328,7 +334,37 @@ def _source_image_tab(
 
 def _classification_dict():
     item = st.session_state.get("classification")
-    return item.model_dump() if item else None
+    payload = item.model_dump() if item else {}
+
+    diagnostic = st.session_state.get(
+        "coverage_diagnostic"
+    )
+    if diagnostic:
+        payload["coverage_diagnostic"] = diagnostic
+
+    return payload or None
+
+
+def _create_coverage_diagnostic(
+    *,
+    route: str,
+    structured_output,
+    docs: list[InputDocument],
+):
+    with st.spinner(
+        "Comparando a fonte com o conteúdo estruturado..."
+    ):
+        diagnostic = diagnose_coverage(
+            docs,
+            mode=route,
+            structured_output=structured_output,
+            api_key=api_key,
+            model=model,
+        )
+
+    st.session_state[
+        "coverage_diagnostic"
+    ] = diagnostic.model_dump()
 
 
 def _database_save_controls(
@@ -645,6 +681,16 @@ if run:
             st.session_state["result_rules"] = rules
             st.session_state["result_alerts"] = alerts
             st.session_state["result_suppliers"] = suppliers
+            _create_coverage_diagnostic(
+                route="catalog",
+                structured_output={
+                    "products": products,
+                    "suppliers": suppliers,
+                    "global_rules": rules,
+                    "alerts": alerts,
+                },
+                docs=docs,
+            )
 
         elif route == "activation":
             batches = extract_activation(
@@ -668,8 +714,17 @@ if run:
             st.session_state["result_rules"] = rules
             st.session_state["result_alerts"] = alerts
             st.session_state["result_suppliers"] = suppliers
-
-
+            _create_coverage_diagnostic(
+                route="activation",
+                structured_output={
+                    "solutions": records,
+                    "costs": costs,
+                    "suppliers": suppliers,
+                    "global_rules": rules,
+                    "alerts": alerts,
+                },
+                docs=docs,
+            )
 
         elif route == "venue":
             batches = extract_venues(
@@ -692,6 +747,16 @@ if run:
             st.session_state["result_rules"] = rules
             st.session_state["result_alerts"] = alerts
             st.session_state["result_contacts"] = contacts
+            _create_coverage_diagnostic(
+                route="venue",
+                structured_output={
+                    "venues": records,
+                    "contacts": contacts,
+                    "global_rules": rules,
+                    "alerts": alerts,
+                },
+                docs=docs,
+            )
 
         elif route == "briefing":
             briefing = extract_briefing(
@@ -704,6 +769,11 @@ if run:
             )
             st.session_state["result_type"] = "briefing"
             st.session_state["result_briefing"] = briefing
+            _create_coverage_diagnostic(
+                route="briefing",
+                structured_output=briefing,
+                docs=docs,
+            )
 
     except Exception as exc:
         report_service_error(
@@ -730,6 +800,16 @@ if classification:
 
 result_type = st.session_state.get("result_type")
 docs = st.session_state.get("source_documents", [])
+diagnostic = st.session_state.get("coverage_diagnostic")
+
+if result_type and diagnostic:
+    st.divider()
+    render_coverage_diagnostic(
+        diagnostic,
+        heading="Diagnóstico de cobertura do upload",
+        expanded=True,
+        download_key=f"upload_{result_type}",
+    )
 
 if result_type == "catalog":
     st.divider()
@@ -829,6 +909,7 @@ if result_type == "catalog":
             "Regras gerais": rules,
             "Alertas": alerts,
             "Classificação": classification_df,
+            "Diagnóstico": diagnostic_dataframe(diagnostic),
         }
     )
     d1, d2 = st.columns(2)
@@ -845,7 +926,7 @@ if result_type == "catalog":
             rules,
             alerts,
             suppliers,
-            classification,
+            _classification_dict(),
         ),
         "base_brindes_estruturada.json",
         use_container_width=True,
@@ -961,6 +1042,7 @@ if result_type == "activation":
             "Regras gerais": rules,
             "Alertas": alerts,
             "Classificação": classification_df,
+            "Diagnóstico": diagnostic_dataframe(diagnostic),
         }
     )
     d1, d2 = st.columns(2)
@@ -978,7 +1060,7 @@ if result_type == "activation":
             rules,
             alerts,
             suppliers,
-            classification,
+            _classification_dict(),
         ),
         "base_solucoes_ativacoes.json",
         use_container_width=True,
@@ -1111,6 +1193,7 @@ if result_type == "venue":
             "Regras gerais": rules,
             "Alertas": alerts,
             "Classificação": classification_df,
+            "Diagnóstico": diagnostic_dataframe(diagnostic),
         }
     )
 
@@ -1130,7 +1213,7 @@ if result_type == "venue":
             rules,
             alerts,
             contacts,
-            classification,
+            _classification_dict(),
         ),
         "base_locais_espacos.json",
         use_container_width=True,
@@ -1163,7 +1246,12 @@ if result_type == "briefing":
         use_container_width=True,
         hide_index=True,
     )
-    xlsx = to_xlsx_bytes({"Briefing": edited})
+    xlsx = to_xlsx_bytes(
+        {
+            "Briefing": edited,
+            "Diagnóstico": diagnostic_dataframe(diagnostic),
+        }
+    )
     d1, d2 = st.columns(2)
     d1.download_button(
         "Baixar Excel",
@@ -1173,7 +1261,10 @@ if result_type == "briefing":
     )
     d2.download_button(
         "Baixar dados estruturados",
-        briefing_json_bytes(briefing, classification),
+        briefing_json_bytes(
+            briefing,
+            _classification_dict(),
+        ),
         "briefing_estruturado.json",
         use_container_width=True,
     )

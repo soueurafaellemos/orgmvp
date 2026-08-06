@@ -1,0 +1,27 @@
+NAVE by VOE — V25.6
+Memória decupada e diagnóstico universal
+
+ADICIONAR
+- coverage_diagnostic.py
+- coverage_diagnostic_ui.py
+
+SUBSTITUIR
+- memory_models.py
+- memory_prompts.py
+- memory_extractor.py
+- pages/10_Memoria.py
+- pages/1_Organizar_Conhecimento.py
+- base_quality.py
+- pages/8_Qualidade_da_Base.py
+- supabase_db.py
+- exporters.py
+- README.md
+
+BANCO DE DADOS
+- Nenhum SQL necessário.
+
+ASSETS
+- Nenhum arquivo da pasta assets está incluído.
+
+BASE ESPERADA
+- V25.5 instalada.

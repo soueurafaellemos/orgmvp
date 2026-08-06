@@ -8,6 +8,7 @@ import streamlit as st
 from base_quality import (
     TYPE_LABELS,
     build_quality_records,
+    ingestion_diagnostic_backlog,
     missing_field_summary,
     overall_readiness,
     type_summary,
@@ -188,11 +189,12 @@ else:
         "para recomendações."
     )
 
-overview_tab, priorities_tab, fields_tab = st.tabs(
+overview_tab, priorities_tab, fields_tab, evolution_tab = st.tabs(
     [
         "Visão geral",
         "Prioridades de alimentação",
         "Campos mais ausentes",
+        "Evoluções sugeridas",
     ]
 )
 
@@ -497,6 +499,122 @@ with fields_tab:
             chart,
             use_container_width=True,
         )
+
+with evolution_tab:
+    backlog = ingestion_diagnostic_backlog(
+        snapshot
+    )
+    suggestions = backlog["suggestions"]
+    findings = backlog["findings"]
+
+    st.subheader(
+        "Evoluções sugeridas pelos uploads"
+    )
+    st.caption(
+        "Cada novo documento compara o conteúdo da fonte com o que "
+        "a NAVE conseguiu estruturar. Lacunas recorrentes se tornam "
+        "um backlog de evolução da plataforma."
+    )
+
+    e1, e2, e3, e4 = st.columns(4)
+    e1.metric(
+        "Uploads auditados",
+        backlog["audited_uploads"],
+    )
+    e2.metric(
+        "Lacunas identificadas",
+        len(findings),
+    )
+    e3.metric(
+        "Evoluções sugeridas",
+        len(suggestions),
+    )
+    e4.metric(
+        "Lacunas críticas",
+        backlog["critical_findings"],
+    )
+
+    if backlog["audited_uploads"] == 0:
+        st.info(
+            "Os diagnósticos começarão a aparecer após novos uploads "
+            "feitos com esta versão da NAVE."
+        )
+    else:
+        st.markdown(
+            "### Backlog de evolução"
+        )
+        if suggestions.empty:
+            st.success(
+                "Nenhuma nova área ou campo foi sugerido até o momento. "
+                "As lacunas detectadas cabem na estrutura atual."
+            )
+        else:
+            st.dataframe(
+                suggestions,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Confiança média": (
+                        st.column_config.ProgressColumn(
+                            "Confiança média",
+                            min_value=0,
+                            max_value=100,
+                            format="%.1f%%",
+                        )
+                    ),
+                    "Descrição": (
+                        st.column_config.TextColumn(
+                            "Descrição",
+                            width="large",
+                        )
+                    ),
+                    "Exemplos": (
+                        st.column_config.TextColumn(
+                            "Exemplos",
+                            width="large",
+                        )
+                    ),
+                },
+            )
+
+            st.download_button(
+                "Baixar backlog de evolução",
+                suggestions.to_csv(
+                    index=False,
+                ).encode("utf-8-sig"),
+                "nave_backlog_evolucao.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        st.markdown(
+            "### Lacunas por documento"
+        )
+        if findings.empty:
+            st.success(
+                "Nenhuma lacuna relevante foi registrada."
+            )
+        else:
+            st.dataframe(
+                findings,
+                use_container_width=True,
+                hide_index=True,
+                height=560,
+                column_config={
+                    "Informação detectada": (
+                        st.column_config.TextColumn(
+                            "Informação detectada",
+                            width="large",
+                        )
+                    ),
+                    "Motivo": (
+                        st.column_config.TextColumn(
+                            "Motivo",
+                            width="large",
+                        )
+                    ),
+                },
+            )
 
 st.divider()
 st.caption(

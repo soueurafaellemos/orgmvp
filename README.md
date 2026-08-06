@@ -879,3 +879,44 @@ Antes de usar, execute:
 - preserva o menu em ordem alfabética;
 - não altera o isolamento da Memória;
 - não contém arquivos da pasta assets.
+
+## V25.6 — Memória decupada e diagnóstico universal
+
+### Memória
+
+- cria um inventário obrigatório de todos os slides antes da extração;
+- nenhuma página pode desaparecer silenciosamente;
+- capas, divisórias e encerramentos recebem justificativa de exclusão;
+- todo slide relevante precisa gerar ao menos uma ficha;
+- slides com vários itens podem gerar várias fichas;
+- itens conhecidos em listas, como diferentes brindes, ambientes e
+  ativações, são auditados individualmente;
+- quando a resposta da IA omite um slide ou item, a cobertura automática
+  preserva o conteúdo usando o slide completo como imagem;
+- a revisão identifica se o item veio da IA ou da cobertura automática;
+- mostra páginas relevantes cobertas, cobertura percentual e distribuição
+  por seção;
+- mantém Estratégia, Cenografia & Ambientes, Ativações & Experiências,
+  Brindes & Materiais, Jornada & Operação, Comunicação & Desdobramentos,
+  Conteúdo & Agenda, Parceiros & Cotas e PR, ESG & Legado;
+- continua totalmente isolada da Base de conhecimento e recomendações.
+
+### Diagnóstico universal de cobertura
+
+- todo novo upload compara o conteúdo da fonte com o que a NAVE estruturou;
+- funciona para catálogos, planilhas, brindes, fornecedores, ativações,
+  locais, briefings, projetos e Memória;
+- diferencia conteúdo não extraído de informação que realmente não possui
+  campo ou área na plataforma;
+- sugere aprimorar extração, adicionar campo, adicionar tipo, adicionar área,
+  reclassificar ou revisar manualmente;
+- o diagnóstico aparece antes do salvamento;
+- o diagnóstico entra nos arquivos Excel e JSON exportados;
+- nos uploads da Base de conhecimento, o diagnóstico fica armazenado no
+  histórico da importação;
+- na Memória, fica preservado no documento do projeto;
+- a página Prontidão da base ganha a aba Evoluções sugeridas, que reúne e
+  consolida lacunas recorrentes de todos os uploads;
+- não exige novo SQL;
+- preserva a ordem de menu da V25.5;
+- o patch não contém arquivos da pasta assets.

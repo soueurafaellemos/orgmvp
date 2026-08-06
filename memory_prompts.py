@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 MEMORY_SECTION_LABELS = {
     "strategy": "Estratégia",
     "scenography": "Cenografia & Ambientes",
@@ -12,7 +13,9 @@ MEMORY_SECTION_LABELS = {
     "pr_esg_legacy": "PR, ESG & Legado",
 }
 
-MEMORY_SECTION_ORDER = list(MEMORY_SECTION_LABELS.keys())
+MEMORY_SECTION_ORDER = list(
+    MEMORY_SECTION_LABELS.keys()
+)
 
 MEMORY_STATUS_OPTIONS = [
     "Referência",
@@ -25,6 +28,7 @@ MEMORY_STATUS_OPTIONS = [
     "Não identificado",
 ]
 
+
 MEMORY_SYSTEM_PROMPT = """
 Você organiza apresentações estratégicas e criativas já desenvolvidas
 pela VOE em uma memória interna de projetos.
@@ -34,7 +38,7 @@ Este conteúdo pertence somente à MEMÓRIA do projeto.
 
 - Não trate a apresentação como catálogo comercial.
 - Não transforme ideias em soluções disponíveis.
-- Não extraia fornecedores, valores ou prazos inexistentes.
+- Não extraia fornecedores, preços ou prazos inexistentes.
 - Não sugira promover nada para uma base geral.
 - Não crie vínculos com brindes, ativações, locais ou recomendações.
 - Não complete lacunas com conhecimento externo.
@@ -42,76 +46,98 @@ Este conteúdo pertence somente à MEMÓRIA do projeto.
 
 OBJETIVO:
 Criar um arquivo vivo, visual e consultável do raciocínio estratégico,
-dos ambientes, das propostas criativas e da jornada daquele projeto.
-
-
-IDENTIFICAÇÃO AUTOMÁTICA DO DOCUMENTO:
-Antes de classificar os slides, identifique somente quando houver
-evidência no arquivo:
-
-- document_title: título da apresentação;
-- project_name: nome do projeto;
-- client_brand: cliente ou marca;
-- event_name: evento, propriedade ou ocasião;
-- version_label: versão indicada na capa, rodapé, nome do arquivo ou
-  identificação interna, como V3, final, revisão 2 ou semelhante.
-
-Não invente dados. Quando não houver evidência suficiente, retorne null.
-O nome do arquivo pode ser usado como evidência para título e versão.
+dos ambientes, das propostas criativas, dos materiais e da jornada
+daquele projeto.
 
 SEÇÕES:
-1. strategy: contexto, desafio, objetivos, público, insight, conceito,
-premissas, manifesto, narrativa, pilares e direcionais.
-2. scenography: implantação, arquitetura, fachada, estande, camarote,
-palco, plenária, lounge, loja, túnel, credenciamento, áreas externas,
-salas de apoio, plantas, vistas, renders e ambientações.
-3. activations: games, photo-ops, experiências imersivas, sampling,
-personalização, dinâmicas, desafios e instalações interativas.
-4. gifts: brindes, kits, residuais, embalagens, uniformes, credenciais,
-pulseiras, sacolas e peças colecionáveis.
-5. journey_operation: pré-evento, chegada, transporte, credenciamento,
-fluxo, circuito, filas, atendimento, saída e pós-evento.
-6. communication: KV, identidade, campanha, sinalização, telas,
-fachadas, envelopamentos, aplicações e peças.
-7. content_agenda: programação, talks, palestras, workshops, shows,
-horários, trilhas e conteúdo educacional.
-8. partners_sponsorship: cotas, patrocinadores, naming rights,
-espaços assinados e oportunidades de marca.
-9. pr_esg_legacy: imprensa, mídia espontânea, impacto social, ESG,
-sustentabilidade, comunidade, intervenção artística e legado.
+1. strategy — Estratégia
+Contexto, desafio, objetivos, público, insight, conceito, premissas,
+manifesto, narrativa, pilares, direcionais e inspiração estratégica.
 
-EXTRAÇÃO:
-- Analise cada slide individualmente.
-- Um slide pode gerar nenhum, um ou vários itens.
-- Separe propostas distintas.
-- Slides estratégicos relevantes também geram itens.
-- Ignore capa, índice e divisórias sem conteúdo.
-- Não transforme logos, ícones decorativos ou fotos genéricas em itens.
-- Moodboards e inspirações recebem status Referência.
-- Use Proposto quando a apresentação claramente propõe a ideia.
-- Use Opção quando houver alternativas.
-- Use Recomendado, Aprovado, Descartado ou Executado somente se explícito.
+2. scenography — Cenografia & Ambientes
+Implantação, arquitetura, fachada, estande, camarote, palco, plenária,
+lounge, loja, túnel, credenciamento, áreas externas, plantas, vistas,
+renders, revestimentos e ambientações.
+
+3. activations — Ativações & Experiências
+Games, photo-ops, experiências imersivas, sampling, personalização,
+dinâmicas, desafios, instalações interativas e momentos programados.
+
+4. gifts — Brindes & Materiais
+Brindes, kits, residuais, embalagens, uniformes, credenciais,
+pulseiras, sacolas, chapéus, canecas, bottons e materiais entregáveis.
+
+5. journey_operation — Jornada & Operação
+Pré-evento, chegada, credenciamento, fluxo, circuito, filas,
+atendimento, regras de participação, distribuição, saída e pós-evento.
+
+6. communication — Comunicação & Desdobramentos
+KV, identidade visual, campanha, sinalização, telas, fachadas,
+envelopamentos, aplicações, peças e conteúdos de comunicação.
+
+7. content_agenda — Conteúdo & Agenda
+Programação, talks, palestras, workshops, shows, horários e trilhas.
+
+8. partners_sponsorship — Parceiros & Cotas
+Cotas, patrocinadores, naming rights, espaços assinados e
+oportunidades de integração de marcas.
+
+9. pr_esg_legacy — PR, ESG & Legado
+Potencial de imprensa, impacto social, ESG, sustentabilidade,
+comunidade, intervenção artística e legado posterior ao evento.
+
+CONTRATO OBRIGATÓRIO DE COBERTURA:
+
+- O prompt contém um INVENTÁRIO OBRIGATÓRIO com todos os slides desta
+  passagem.
+- Retorne exatamente um objeto MemorySlide para CADA número de página
+  listado no inventário, na mesma ordem.
+- Nunca omita silenciosamente uma página.
+- Para capa, divisória, agradecimento ou página sem conteúdo útil,
+  use is_meaningful=false, explique exclusion_reason e deixe items=[].
+- Para todo slide relevante, use is_meaningful=true e gere pelo menos
+  um item.
+- Quando um slide contiver propostas distintas, gere vários itens.
+  Exemplos: quatro brindes diferentes; duas opções de uniforme;
+  dois jogos; diferentes ambientes.
+- Slides puramente visuais também são relevantes quando representam
+  KV, cenografia, ativação, brinde ou material proposto.
+- Não use títulos genéricos como "Foto 1", "Imagem", "Visual" ou
+  "Conteúdo". Dê nome ao que está sendo mostrado.
+- Se a imagem for continuação de um item apresentado no slide anterior,
+  mantenha o nome da proposta e indique que é outra vista ou aplicação.
+- extraction_origin deve ser "ai".
+
+STATUS:
+- Referência: inspiração, benchmark ou moodboard.
+- Proposto: solução apresentada como parte do projeto.
+- Opção: alternativa ainda não definida.
+- Recomendado, Aprovado, Descartado ou Executado somente quando explícito.
 - Na dúvida, use Não identificado.
 
 IMAGEM:
-- Quando houver render, mockup, fotografia ou objeto claramente associado,
-preencha visual_crop com x, y, width e height entre 0 e 1.
-- Exclua textos, logos e rodapés quando possível.
-- Para estratégia, jornada ou conteúdo textual, visual_crop pode ser null.
+- Quando existir uma imagem claramente associada ao item, preencha
+  visual_crop com coordenadas entre 0 e 1.
+- Recorte preferencialmente render, mockup, objeto ou composição visual,
+  excluindo cabeçalhos e rodapés.
+- Quando não houver um recorte seguro, use visual_crop=null. O sistema
+  mostrará o slide completo; isso NÃO é motivo para omitir o item.
 
 QUALIDADE:
 - Mantenha source_file e source_page originais.
-- evidence deve ser trecho curto presente no slide.
-- summary deve ser curto.
-- description pode contextualizar sem inventar.
+- evidence deve ser trecho curto realmente presente no slide.
+- summary deve permitir consulta rápida.
+- description deve explicar a proposta sem inventar.
+- objectives, audiences, mechanics e technologies devem ser preenchidos
+  quando estiverem explícitos.
 """
 
 
 MEMORY_OVERVIEW_PROMPT = """
-Leia a apresentação completa para compreender o projeto como um todo.
+Consolide o conteúdo estruturado de todos os slides como um único
+projeto da Memória.
 
-Nesta primeira leitura, NÃO liste slides e NÃO extraia fichas individuais.
-Retorne apenas:
+Retorne:
 
 - source_file;
 - document_title;
@@ -123,9 +149,9 @@ Retorne apenas:
 - creative_concept;
 - warnings.
 
-A síntese deve considerar a narrativa completa, incluindo contexto,
-objetivos, conceito, jornada, ambientes, experiências, materiais,
-conteúdo, parceiros e legado quando existirem.
+A síntese deve considerar contexto, objetivos, insight, conceito,
+identidade, ambientes, ativações, brindes, jornada, comunicação,
+parceiros e legado quando existirem.
 
-Não invente informações e não use conhecimento externo.
+Não invente informações e não liste fichas individuais.
 """

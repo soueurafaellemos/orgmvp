@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+import json
+import re
+import unicodedata
 from typing import Any, Callable
 
 import pandas as pd
@@ -949,4 +952,390 @@ def overall_readiness(
         "with_media": int(
             quality["Mídia"].eq("Sim").sum()
         ),
+    }
+
+
+DIAGNOSTIC_PRIORITY_ORDER = {
+    "Crítico": 0,
+    "Importante": 1,
+    "Melhoria": 2,
+}
+
+
+def _json_object(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _diagnostic_key(value: str | None) -> str:
+    text = unicodedata.normalize(
+        "NFKD",
+        str(value or ""),
+    )
+    text = "".join(
+        char
+        for char in text
+        if not unicodedata.combining(char)
+    )
+    text = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        text.casefold(),
+    )
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _diagnostic_sources(snapshot: dict) -> list[dict]:
+    sources: list[dict] = []
+
+    imports = snapshot.get("imports_diagnostics")
+    if isinstance(imports, pd.DataFrame) and not imports.empty:
+        for _, row in imports.iterrows():
+            classification = _json_object(
+                row.get("classification")
+            )
+            diagnostic = _json_object(
+                classification.get(
+                    "coverage_diagnostic"
+                )
+            )
+            if not diagnostic:
+                continue
+            source_files = row.get("source_files")
+            if isinstance(source_files, list):
+                source_label = " | ".join(
+                    str(item)
+                    for item in source_files
+                )
+            else:
+                source_label = str(
+                    source_files or ""
+                )
+            sources.append(
+                {
+                    "origin": "Upload de Conhecimento",
+                    "mode": diagnostic.get("mode")
+                    or row.get("destination_base")
+                    or "Não informado",
+                    "document": row.get("document_title")
+                    or source_label
+                    or "Documento sem título",
+                    "source_files": source_label,
+                    "created_at": row.get("created_at"),
+                    "diagnostic": diagnostic,
+                }
+            )
+
+    memories = snapshot.get("memory_diagnostics")
+    if isinstance(memories, pd.DataFrame) and not memories.empty:
+        for _, row in memories.iterrows():
+            raw_data = _json_object(
+                row.get("raw_data")
+            )
+            diagnostic = _json_object(
+                raw_data.get(
+                    "coverage_diagnostic"
+                )
+            )
+            if not diagnostic:
+                continue
+            sources.append(
+                {
+                    "origin": "Memória",
+                    "mode": diagnostic.get("mode")
+                    or "memory",
+                    "document": row.get("title")
+                    or row.get("file_name")
+                    or "Projeto sem título",
+                    "source_files": row.get("file_name")
+                    or "",
+                    "created_at": row.get("created_at"),
+                    "diagnostic": diagnostic,
+                }
+            )
+
+    return sources
+
+
+def ingestion_diagnostic_backlog(
+    snapshot: dict,
+) -> dict:
+    sources = _diagnostic_sources(snapshot)
+    finding_rows: list[dict] = []
+    suggestion_map: dict[tuple[str, str], dict] = {}
+
+    for source in sources:
+        diagnostic = source["diagnostic"]
+
+        for finding in diagnostic.get("findings") or []:
+            if not isinstance(finding, dict):
+                continue
+            finding_rows.append(
+                {
+                    "Prioridade": finding.get("severity")
+                    or "Melhoria",
+                    "Situação": finding.get("status")
+                    or "Revisão necessária",
+                    "Origem do diagnóstico": source["origin"],
+                    "Tipo de upload": source["mode"],
+                    "Documento": source["document"],
+                    "Arquivo": finding.get("source_file")
+                    or source["source_files"],
+                    "Local": finding.get("source_locator")
+                    or "Não informado",
+                    "Informação detectada": finding.get(
+                        "detected_information"
+                    )
+                    or "Não informada",
+                    "Tratamento atual": finding.get(
+                        "current_treatment"
+                    )
+                    or "Não informado",
+                    "Ação sugerida": finding.get(
+                        "suggested_action"
+                    )
+                    or "Revisar manualmente",
+                    "Destino sugerido": finding.get(
+                        "suggested_destination"
+                    )
+                    or "Não informado",
+                    "Motivo": finding.get("rationale")
+                    or "",
+                    "Data": str(
+                        source.get("created_at")
+                        or ""
+                    )[:10],
+                }
+            )
+
+        suggestions = list(
+            diagnostic.get(
+                "suggested_schema_additions"
+            )
+            or []
+        )
+        existing_suggestion_keys = {
+            (
+                _diagnostic_key(
+                    suggestion.get(
+                        "suggestion_type"
+                    )
+                    if isinstance(
+                        suggestion,
+                        dict,
+                    )
+                    else ""
+                ),
+                _diagnostic_key(
+                    suggestion.get("title")
+                    if isinstance(
+                        suggestion,
+                        dict,
+                    )
+                    else ""
+                ),
+            )
+            for suggestion in suggestions
+        }
+
+        for finding in diagnostic.get("findings") or []:
+            if not isinstance(finding, dict):
+                continue
+            if finding.get("status") != "Sem campo na NAVE":
+                continue
+            fallback_title = finding.get(
+                "detected_information"
+            ) or "Informação sem campo"
+            fallback_key = (
+                _diagnostic_key("Novo campo"),
+                _diagnostic_key(fallback_title),
+            )
+            if fallback_key not in existing_suggestion_keys:
+                suggestions.append(
+                    {
+                        "suggestion_type": "Novo campo",
+                        "title": fallback_title,
+                        "description": finding.get("rationale")
+                        or finding.get("current_treatment")
+                        or "Criar uma forma estruturada de preservar esta informação.",
+                        "applies_to": [
+                            source.get("mode")
+                            or "upload"
+                        ],
+                        "evidence_examples": [
+                            finding.get("evidence")
+                            or finding.get(
+                                "detected_information"
+                            )
+                            or ""
+                        ],
+                        "priority": finding.get("severity")
+                        or "Importante",
+                        "confidence": finding.get("confidence")
+                        or 0.7,
+                    }
+                )
+                existing_suggestion_keys.add(
+                    fallback_key
+                )
+
+        for suggestion in suggestions:
+            if not isinstance(suggestion, dict):
+                continue
+            title = str(
+                suggestion.get("title")
+                or "Evolução sem título"
+            ).strip()
+            suggestion_type = str(
+                suggestion.get("suggestion_type")
+                or "Melhoria de interface"
+            ).strip()
+            key = (
+                _diagnostic_key(suggestion_type),
+                _diagnostic_key(title),
+            )
+            if not key[1]:
+                continue
+
+            priority = str(
+                suggestion.get("priority")
+                or "Melhoria"
+            )
+            current = suggestion_map.get(key)
+
+            if current is None:
+                current = {
+                    "Prioridade": priority,
+                    "Tipo": suggestion_type,
+                    "Evolução sugerida": title,
+                    "Descrição": suggestion.get(
+                        "description"
+                    )
+                    or "",
+                    "Ocorrências": 0,
+                    "Tipos de upload": set(),
+                    "Documentos": set(),
+                    "Exemplos": set(),
+                    "Confiança média": [],
+                }
+                suggestion_map[key] = current
+
+            if (
+                DIAGNOSTIC_PRIORITY_ORDER.get(
+                    priority,
+                    99,
+                )
+                < DIAGNOSTIC_PRIORITY_ORDER.get(
+                    current["Prioridade"],
+                    99,
+                )
+            ):
+                current["Prioridade"] = priority
+
+            current["Ocorrências"] += 1
+            current["Tipos de upload"].add(
+                str(source.get("mode") or "")
+            )
+            current["Documentos"].add(
+                str(source.get("document") or "")
+            )
+
+            for example in (
+                suggestion.get(
+                    "evidence_examples"
+                )
+                or []
+            ):
+                if str(example).strip():
+                    current["Exemplos"].add(
+                        str(example).strip()
+                    )
+
+            try:
+                current["Confiança média"].append(
+                    float(
+                        suggestion.get("confidence")
+                        or 0
+                    )
+                    * 100
+                )
+            except (TypeError, ValueError):
+                pass
+
+    findings = pd.DataFrame(finding_rows)
+    if not findings.empty:
+        findings["_priority"] = findings[
+            "Prioridade"
+        ].map(DIAGNOSTIC_PRIORITY_ORDER).fillna(99)
+        findings = (
+            findings.sort_values(
+                by=["_priority", "Data"],
+                ascending=[True, False],
+            )
+            .drop(columns=["_priority"])
+            .reset_index(drop=True)
+        )
+
+    suggestion_rows = []
+    for current in suggestion_map.values():
+        confidences = current.pop(
+            "Confiança média"
+        )
+        current["Tipos de upload"] = " | ".join(
+            sorted(
+                item
+                for item in current[
+                    "Tipos de upload"
+                ]
+                if item
+            )
+        )
+        current["Documentos"] = " | ".join(
+            sorted(
+                item
+                for item in current["Documentos"]
+                if item
+            )[:8]
+        )
+        current["Exemplos"] = " | ".join(
+            sorted(
+                item
+                for item in current["Exemplos"]
+                if item
+            )[:5]
+        )
+        current["Confiança média"] = round(
+            sum(confidences) / len(confidences),
+            1,
+        ) if confidences else 0.0
+        suggestion_rows.append(current)
+
+    suggestions = pd.DataFrame(suggestion_rows)
+    if not suggestions.empty:
+        suggestions["_priority"] = suggestions[
+            "Prioridade"
+        ].map(DIAGNOSTIC_PRIORITY_ORDER).fillna(99)
+        suggestions = (
+            suggestions.sort_values(
+                by=["_priority", "Ocorrências"],
+                ascending=[True, False],
+            )
+            .drop(columns=["_priority"])
+            .reset_index(drop=True)
+        )
+
+    return {
+        "audited_uploads": len(sources),
+        "findings": findings,
+        "suggestions": suggestions,
+        "critical_findings": int(
+            findings["Prioridade"].eq("Crítico").sum()
+        ) if not findings.empty else 0,
     }
