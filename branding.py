@@ -4,9 +4,9 @@ from html import escape
 from pathlib import Path
 
 import streamlit as st
+from PIL import Image
 
 from runtime_ui import app_logout_button
-from PIL import Image
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -66,11 +66,6 @@ footer {
     visibility: hidden !important;
 }
 
-/*
-Mantém os controles essenciais do Streamlit visíveis:
-- toolbar minimal no topo;
-- indicador de execução e botão Stop.
-*/
 [data-testid="stToolbar"],
 [data-testid="stStatusWidget"] {
     display: flex !important;
@@ -161,12 +156,6 @@ textarea,
 [data-testid="stFileUploaderDropzone"] {
     border-radius: 12px !important;
 }
-
-/* =========================
-   BOTÕES PADRONIZADOS NAVE
-   Padrão: azul escuro + texto branco
-   Hover: azul claro + texto escuro
-   ========================= */
 
 .stButton > button,
 .stDownloadButton > button,
@@ -476,6 +465,10 @@ def render_sidebar() -> None:
             label="Base de Conhecimento",
         )
         st.page_link(
+            "pages/11_Locais_e_Espacos.py",
+            label="Locais e espaços",
+        )
+        st.page_link(
             "pages/3_Nova_Recomendacao.py",
             label="Analisar e Recomendar",
         )
@@ -486,6 +479,10 @@ def render_sidebar() -> None:
         st.page_link(
             "pages/4_Historico_de_Projetos.py",
             label="Projetos",
+        )
+        st.page_link(
+            "pages/10_Memoria.py",
+            label="Memória",
         )
 
         st.markdown(
