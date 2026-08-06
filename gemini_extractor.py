@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import base64
+import io
+import math
 import os
 import re
+import unicodedata
+from pathlib import Path
 from typing import Type, TypeVar
+
+import pandas as pd
 
 from google import genai
 from pydantic import BaseModel
@@ -16,7 +22,9 @@ from models import (
     DocumentClassification,
     ProjectBriefing,
     RecommendationBrief,
+    SupplierContact,
     VenueBatch,
+    VenueSpace,
 )
 from prompts import (
     ACTIVATION_FALLBACK_PROMPT,
@@ -165,7 +173,8 @@ def _classification_sample(
             if parts:
                 sampled.append(parts[0][0])
         else:
-            sampled.append(doc)
+            chunks = _spreadsheet_text_chunks(doc, rows_per_batch=30)
+            sampled.append(chunks[0])
     return sampled
 
 
@@ -207,7 +216,8 @@ def _jobs(
             ):
                 result.append((part, first, last, doc.name))
         else:
-            result.append((doc, None, None, doc.name))
+            for chunk in _spreadsheet_text_chunks(doc):
+                result.append((chunk, None, None, doc.name))
     return result
 
 
@@ -433,6 +443,683 @@ def extract_activation(
 
 
 
+
+_SPREADSHEET_EXTENSIONS = {".xlsx", ".xls", ".csv", ".tsv"}
+_STRUCTURED_VENUE_BATCH_SIZE = 25
+
+
+def _normalize_header(value: object) -> str:
+    text = str(value or "").strip().upper()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(
+        character
+        for character in text
+        if not unicodedata.combining(character)
+    )
+    return re.sub(r"[^A-Z0-9]+", "_", text).strip("_")
+
+
+def _clean_cell(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return None
+    return text
+
+
+def _number_or_none(value: object) -> float | None:
+    text = _clean_cell(value)
+    if text is None:
+        return None
+    compact = re.sub(r"[^0-9,.-]", "", text)
+    if not compact:
+        return None
+    if "," in compact and "." in compact:
+        if compact.rfind(",") > compact.rfind("."):
+            compact = compact.replace(".", "").replace(",", ".")
+        else:
+            compact = compact.replace(",", "")
+    elif "," in compact:
+        compact = compact.replace(".", "").replace(",", ".")
+    try:
+        number = float(compact)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _integer_or_none(value: object) -> int | None:
+    number = _number_or_none(value)
+    if number is None or not float(number).is_integer():
+        return None
+    return int(number)
+
+
+def _split_list_cell(value: object) -> list[str]:
+    text = _clean_cell(value)
+    if not text:
+        return []
+    parts = re.split(r"[;|\n]+", text)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _row_value(
+    row: pd.Series,
+    columns: dict[str, str],
+    *aliases: str,
+) -> object:
+    for alias in aliases:
+        source = columns.get(_normalize_header(alias))
+        if source is not None:
+            return row.get(source)
+    return None
+
+
+def _spreadsheet_bytes(doc: InputDocument) -> bytes | None:
+    suffix = Path(doc.name).suffix.lower()
+    original_mime = (doc.original_mime_type or "").lower()
+    if suffix not in _SPREADSHEET_EXTENSIONS and not any(
+        token in original_mime
+        for token in ("spreadsheet", "excel", "csv", "tab-separated")
+    ):
+        return None
+    return doc.original_data or (
+        doc.data if doc.mime_type != "text/plain" else None
+    )
+
+
+def _read_spreadsheet(doc: InputDocument) -> dict[str, pd.DataFrame] | None:
+    data = _spreadsheet_bytes(doc)
+    if data is None:
+        return None
+    suffix = Path(doc.name).suffix.lower()
+    buffer = io.BytesIO(data)
+    try:
+        if suffix in {".csv", ".tsv"}:
+            separator = "\t" if suffix == ".tsv" else None
+            frame = pd.read_csv(
+                buffer,
+                sep=separator,
+                engine="python",
+                dtype=object,
+                keep_default_na=False,
+            )
+            return {"Planilha": frame}
+        return pd.read_excel(
+            buffer,
+            sheet_name=None,
+            dtype=object,
+            keep_default_na=False,
+        )
+    except Exception:
+        return None
+
+
+def _venue_type_from_value(value: object) -> str:
+    normalized = _normalize_header(value)
+    if not normalized:
+        return "Não informado"
+    if "GALPAO" in normalized or "FABRICA" in normalized:
+        return "Galpão"
+    if "CENTRO_DE_CONVEN" in normalized:
+        return "Centro de convenções"
+    if "PAVILHAO" in normalized:
+        return "Pavilhão"
+    if "HOTEL" in normalized:
+        return "Hotel"
+    if "RESTAURANTE" in normalized or "BAR" in normalized:
+        return "Restaurante / bar"
+    if any(
+        token in normalized
+        for token in ("TEATRO", "AUDITORIO", "CASA_DE_SHOW")
+    ):
+        return "Auditório / teatro"
+    if any(
+        token in normalized
+        for token in ("GALERIA", "MUSEU", "CULTURAL")
+    ):
+        return "Espaço cultural"
+    if "ESTADIO" in normalized or "ARENA" in normalized:
+        return "Estádio / arena"
+    if "SHOPPING" in normalized:
+        return "Shopping"
+    if any(
+        token in normalized
+        for token in ("AREA_EXTERNA", "PARQUE", "PRACA")
+    ):
+        return "Área externa"
+    if any(
+        token in normalized
+        for token in ("ESPACO_DE_EVENTOS", "CASA_DE_EVENTOS")
+    ):
+        return "Casa de eventos"
+    return "Não informado"
+
+
+def _confidence_from_value(value: object) -> float:
+    text = _normalize_header(value)
+    if text in {"ALTA", "HIGH"}:
+        return 0.95
+    if text in {"MEDIA", "MEDIUM"}:
+        return 0.8
+    if text in {"BAIXA", "LOW"}:
+        return 0.6
+    number = _number_or_none(value)
+    if number is not None:
+        if number > 1:
+            number /= 100
+        return min(1.0, max(0.0, number))
+    return 0.75
+
+
+def _contact_from_row(
+    row: pd.Series,
+    columns: dict[str, str],
+    *,
+    venue_name: str,
+) -> SupplierContact | None:
+    contact_text = _clean_cell(
+        _row_value(row, columns, "CONTATO", "CONTACT", "CONTATOS")
+    )
+    website = _clean_cell(
+        _row_value(
+            row,
+            columns,
+            "SITE",
+            "WEBSITE",
+            "WEBSITE_URL",
+            "SITE_ORIGINAL",
+        )
+    )
+    instagram = _clean_cell(
+        _row_value(row, columns, "INSTAGRAM", "INSTAGRAM_URL")
+    )
+    address = _clean_cell(
+        _row_value(row, columns, "ENDERECO", "ADDRESS")
+    )
+    city = _clean_cell(_row_value(row, columns, "CIDADE", "CITY"))
+    state = _clean_cell(_row_value(row, columns, "ESTADO", "STATE"))
+
+    email = None
+    phone = None
+    contact_name = None
+    if contact_text:
+        email_match = re.search(
+            r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+            contact_text,
+            flags=re.IGNORECASE,
+        )
+        if email_match:
+            email = email_match.group(0)
+        phone_match = re.search(
+            r"(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?"
+            r"\d{4,5}[-\s]?\d{4}",
+            contact_text,
+        )
+        if phone_match:
+            phone = phone_match.group(0).strip()
+        prefix = contact_text
+        if email:
+            prefix = prefix.split(email, 1)[0]
+        if phone:
+            prefix = prefix.split(phone, 1)[0]
+        prefix = re.sub(r"[|;/,]+$", "", prefix).strip(" -–—")
+        if prefix and len(prefix) <= 120:
+            contact_name = prefix
+
+    if not any((contact_text, website, instagram, address, city, state)):
+        return None
+    return SupplierContact(
+        supplier_name=venue_name,
+        website_url=website,
+        contact_name=contact_name,
+        email=email,
+        phone=phone,
+        whatsapp=phone,
+        instagram_url=instagram,
+        address=address,
+        base_city=city,
+        base_state=state,
+        base_country="Brasil" if state else None,
+        notes=contact_text,
+        confidence=0.8 if contact_text else 0.65,
+    )
+
+
+def _structured_venue_batches(
+    doc: InputDocument,
+) -> list[VenueBatch] | None:
+    sheets = _read_spreadsheet(doc)
+    if not sheets:
+        return None
+
+    batches: list[VenueBatch] = []
+    recognized_rows = 0
+    for sheet_name, frame in sheets.items():
+        if frame is None or frame.empty:
+            continue
+        columns = {
+            _normalize_header(column): str(column)
+            for column in frame.columns
+        }
+        name_column = next(
+            (
+                columns.get(alias)
+                for alias in (
+                    "LOCAL",
+                    "NOME_DO_LOCAL",
+                    "NOME_LOCAL",
+                    "VENUE_NAME",
+                    "NAME",
+                )
+                if columns.get(alias)
+            ),
+            None,
+        )
+        venue_signals = sum(
+            alias in columns
+            for alias in (
+                "CATEGORIA",
+                "TIPO_DE_LOCAL",
+                "CAPACIDADE",
+                "CAPACIDADE_EM_PE",
+                "ENDERECO",
+                "SITE",
+                "DESCRICAO_NAVE",
+                "CIDADE",
+                "ESTADO",
+            )
+        )
+        if name_column is None or venue_signals < 2:
+            continue
+
+        for position, (_, row) in enumerate(frame.iterrows(), start=2):
+            name = _clean_cell(row.get(name_column))
+            if not name:
+                continue
+            recognized_rows += 1
+            category = _row_value(
+                row,
+                columns,
+                "CATEGORIA",
+                "TIPO_LOCAL_PADRONIZADO",
+                "TIPO_DE_LOCAL",
+                "TIPO",
+                "VENUE_TYPE",
+            )
+            website = _clean_cell(
+                _row_value(
+                    row,
+                    columns,
+                    "SITE",
+                    "WEBSITE",
+                    "WEBSITE_URL",
+                    "SITE_ORIGINAL",
+                )
+            )
+            description = _clean_cell(
+                _row_value(
+                    row,
+                    columns,
+                    "DESCRICAO_NAVE",
+                    "DESCRICAO",
+                    "DESCRIPTION",
+                    "OBS",
+                )
+            )
+            address = _clean_cell(
+                _row_value(
+                    row,
+                    columns,
+                    "ENDERECO",
+                    "ADDRESS",
+                    "ENDERECO_ORIGINAL",
+                )
+            )
+            city = _clean_cell(
+                _row_value(row, columns, "CIDADE", "CITY")
+            )
+            state = _clean_cell(
+                _row_value(row, columns, "ESTADO", "STATE")
+            )
+            source_row = _integer_or_none(
+                _row_value(
+                    row,
+                    columns,
+                    "LINHA_ORIGINAL",
+                    "LINHA_PLANILHA",
+                    "__LINHA_PLANILHA__",
+                )
+            ) or position
+
+            missing_fields = []
+            for field_name, field_value in (
+                ("address", address),
+                ("city", city),
+                ("state", state),
+                ("website_url", website),
+            ):
+                if not field_value:
+                    missing_fields.append(field_name)
+
+            standing = _integer_or_none(
+                _row_value(
+                    row,
+                    columns,
+                    "CAPACIDADE_EM_PE",
+                    "STANDING_CAPACITY",
+                )
+            )
+            seated = _integer_or_none(
+                _row_value(
+                    row,
+                    columns,
+                    "CAPACIDADE_SENTADA",
+                    "SEATED_CAPACITY",
+                )
+            )
+            auditorium = _integer_or_none(
+                _row_value(
+                    row,
+                    columns,
+                    "CAPACIDADE_AUDITORIO",
+                    "AUDITORIUM_CAPACITY",
+                )
+            )
+            if standing is None and seated is None and auditorium is None:
+                missing_fields.append("capacity")
+
+            category_text = _clean_cell(category)
+            tags = []
+            if category_text:
+                tags.append(category_text)
+            tags.extend(
+                _split_list_cell(
+                    _row_value(
+                        row,
+                        columns,
+                        "TIPOS_MIDIA_PUBLICA",
+                        "TAGS",
+                    )
+                )
+            )
+            confidence = _confidence_from_value(
+                _row_value(
+                    row,
+                    columns,
+                    "NIVEL_CONFIANCA",
+                    "CONFIDENCE",
+                )
+            )
+            evidence_parts = [
+                f"Importação tabular direta da aba {sheet_name}",
+                f"linha {source_row}",
+            ]
+            obs = _clean_cell(
+                _row_value(
+                    row,
+                    columns,
+                    "OBS_PESQUISA",
+                    "OBS",
+                    "NOTES",
+                )
+            )
+            if obs:
+                evidence_parts.append(obs[:300])
+
+            venue = VenueSpace(
+                source_file=doc.name,
+                source_page=source_row,
+                operator_name=_clean_cell(
+                    _row_value(
+                        row,
+                        columns,
+                        "OPERADOR",
+                        "OPERATOR_NAME",
+                    )
+                ),
+                name=name,
+                venue_type=_venue_type_from_value(category),
+                description=description,
+                address=address,
+                neighborhood=_clean_cell(
+                    _row_value(row, columns, "BAIRRO", "NEIGHBORHOOD")
+                ),
+                city=city,
+                state=state,
+                country=_clean_cell(
+                    _row_value(row, columns, "PAIS", "COUNTRY")
+                ) or ("Brasil" if state else None),
+                postal_code=_clean_cell(
+                    _row_value(row, columns, "CEP", "POSTAL_CODE")
+                ),
+                map_url=_clean_cell(
+                    _row_value(row, columns, "MAPA_URL", "MAP_URL")
+                ),
+                website_url=website,
+                total_area_sqm=_number_or_none(
+                    _row_value(
+                        row,
+                        columns,
+                        "AREA_TOTAL_M2",
+                        "TOTAL_AREA_SQM",
+                    )
+                ),
+                indoor_area_sqm=_number_or_none(
+                    _row_value(
+                        row,
+                        columns,
+                        "AREA_PRINCIPAL_M2",
+                        "INDOOR_AREA_SQM",
+                    )
+                ),
+                ceiling_height_m=_number_or_none(
+                    _row_value(
+                        row,
+                        columns,
+                        "PE_DIREITO_M",
+                        "CEILING_HEIGHT_M",
+                    )
+                ),
+                standing_capacity=standing,
+                seated_capacity=seated,
+                auditorium_capacity=auditorium,
+                parking=_clean_cell(
+                    _row_value(row, columns, "ESTACIONAMENTO", "PARKING")
+                ),
+                accessibility=_clean_cell(
+                    _row_value(
+                        row,
+                        columns,
+                        "ACESSIBILIDADE",
+                        "ACCESSIBILITY",
+                    )
+                ),
+                loading_access=_clean_cell(
+                    _row_value(
+                        row,
+                        columns,
+                        "CARGA_DESCARGA",
+                        "LOADING_ACCESS",
+                    )
+                ),
+                kitchen_or_catering=_clean_cell(
+                    _row_value(
+                        row,
+                        columns,
+                        "COZINHA_CATERING",
+                        "KITCHEN_OR_CATERING",
+                    )
+                ),
+                audiovisual=_clean_cell(
+                    _row_value(
+                        row,
+                        columns,
+                        "AUDIOVISUAL_INTERNET",
+                        "AUDIOVISUAL",
+                    )
+                ),
+                internet=_clean_cell(
+                    _row_value(row, columns, "INTERNET")
+                ),
+                event_availability=_clean_cell(
+                    _row_value(
+                        row,
+                        columns,
+                        "STATUS_EM_CASO_DE_EVENTOS",
+                        "STATUS",
+                    )
+                ),
+                operating_hours=_clean_cell(
+                    _row_value(
+                        row,
+                        columns,
+                        "DATA_DISPONIVEL_EM_CASO_DE_EVENTOS",
+                        "DISPONIBILIDADE",
+                    )
+                ),
+                base_price=_number_or_none(
+                    _row_value(
+                        row,
+                        columns,
+                        "VALOR_DA_DIARIA_DECUPADO",
+                        "BASE_PRICE",
+                    )
+                ),
+                currency=(
+                    "BRL"
+                    if _number_or_none(
+                        _row_value(
+                            row,
+                            columns,
+                            "VALOR_DA_DIARIA_DECUPADO",
+                            "BASE_PRICE",
+                        )
+                    )
+                    is not None
+                    else "Não informado"
+                ),
+                price_status=(
+                    "Informado"
+                    if _number_or_none(
+                        _row_value(
+                            row,
+                            columns,
+                            "VALOR_DA_DIARIA_DECUPADO",
+                            "BASE_PRICE",
+                        )
+                    )
+                    is not None
+                    else "Não informado"
+                ),
+                price_notes=_clean_cell(
+                    _row_value(
+                        row,
+                        columns,
+                        "VALOR_DA_DIARIA_DECUPADO",
+                        "PRICE_NOTES",
+                    )
+                ),
+                tags=list(dict.fromkeys(tags)),
+                confidence=confidence,
+                missing_fields=missing_fields,
+                evidence="; ".join(evidence_parts),
+            )
+            contact = _contact_from_row(
+                row,
+                columns,
+                venue_name=name,
+            )
+            batches.append(
+                VenueBatch(
+                    operator_name=venue.operator_name,
+                    venue_contact=contact,
+                    document_name=doc.name,
+                    venues=[venue],
+                    warnings=[],
+                )
+            )
+
+    return batches if recognized_rows else None
+
+
+def _spreadsheet_text_chunks(
+    doc: InputDocument,
+    *,
+    rows_per_batch: int = _STRUCTURED_VENUE_BATCH_SIZE,
+) -> list[InputDocument]:
+    try:
+        text = doc.data.decode("utf-8", errors="replace")
+    except Exception:
+        return [doc]
+    if "TIPO: PLANILHA" not in text:
+        return [doc]
+
+    chunks: list[InputDocument] = []
+    sections = re.split(r"(?=^=== ABA: )", text, flags=re.MULTILINE)
+    preamble = sections[0].strip()
+    for section in sections[1:]:
+        lines = [line for line in section.splitlines() if line.strip()]
+        if len(lines) < 3:
+            continue
+        sheet_marker = lines[0]
+        header = lines[1]
+        data_lines = lines[2:]
+        for start in range(0, len(data_lines), rows_per_batch):
+            selected = data_lines[start:start + rows_per_batch]
+            chunk_number = start // rows_per_batch + 1
+            content = "\n".join(
+                [
+                    preamble,
+                    sheet_marker,
+                    header,
+                    *selected,
+                ]
+            )
+            chunks.append(
+                InputDocument(
+                    name=(
+                        f"{Path(doc.name).stem}_"
+                        f"lote_{chunk_number:03d}.txt"
+                    ),
+                    data=content.encode("utf-8"),
+                    mime_type="text/plain",
+                    original_data=doc.original_data,
+                    original_mime_type=doc.original_mime_type,
+                )
+            )
+    return chunks or [doc]
+
+
+def _venue_jobs(
+    docs: list[InputDocument],
+    *,
+    pages_per_batch: int,
+    start_page: int,
+    end_page: int | None,
+) -> list[tuple[InputDocument, int | None, int | None, str]]:
+    result = []
+    for doc in docs:
+        if doc.mime_type == "application/pdf":
+            for part, first, last in split_pdf(
+                doc,
+                pages_per_batch=pages_per_batch,
+                start_page=start_page,
+                end_page=end_page,
+            ):
+                result.append((part, first, last, doc.name))
+            continue
+        for chunk in _spreadsheet_text_chunks(doc):
+            result.append((chunk, None, None, doc.name))
+    return result
+
+
 def extract_venues(
     docs: list[InputDocument],
     *,
@@ -443,27 +1130,58 @@ def extract_venues(
     end_page: int | None,
     progress_callback=None,
 ) -> list[VenueBatch]:
-    client = get_client(api_key)
-    jobs = _jobs(
-        docs,
+    batches: list[VenueBatch] = []
+    remaining_docs: list[InputDocument] = []
+
+    direct_results: list[tuple[InputDocument, list[VenueBatch]]] = []
+    direct_total = 0
+    for doc in docs:
+        parsed = _structured_venue_batches(doc)
+        if parsed is None:
+            remaining_docs.append(doc)
+            continue
+        direct_results.append((doc, parsed))
+        direct_total += len(parsed)
+
+    jobs = _venue_jobs(
+        remaining_docs,
         pages_per_batch=pages_per_batch,
         start_page=start_page,
         end_page=end_page,
     )
-    batches = []
-    total = len(jobs)
+    total = direct_total + len(jobs)
+    completed = 0
 
-    for index, (doc, first, last, original_name) in enumerate(jobs, 1):
+    for doc, parsed_batches in direct_results:
+        for parsed in parsed_batches:
+            if progress_callback:
+                progress_callback(
+                    completed,
+                    total,
+                    (
+                        "Lendo planilha estruturada: "
+                        f"{completed + 1} de {total} registros/lotes"
+                    ),
+                )
+            batches.append(parsed)
+            completed += 1
+
+    client = get_client(api_key) if jobs else None
+    for doc, first, last, original_name in jobs:
         if progress_callback:
-            progress_callback(index - 1, total, f"Analisando {doc.name}")
-
+            progress_callback(
+                completed,
+                total,
+                f"Analisando {doc.name}",
+            )
         instruction = (
             f"Arquivo original: {original_name}. "
             f"Páginas: {first or 'não aplicável'} a "
             f"{last or 'não aplicável'}. Use o nome original em source_file "
-            "e a numeração original em source_page."
+            "e a numeração original em source_page. "
+            "Este é um lote parcial: extraia somente os registros presentes "
+            "neste lote e não tente reconstruir linhas ausentes."
         )
-
         batches.append(
             _structured_call(
                 client,
@@ -474,10 +1192,10 @@ def extract_venues(
                 context=doc.name,
             )
         )
+        completed += 1
 
     if progress_callback:
         progress_callback(total, total, "Extração concluída")
-
     return batches
 
 
