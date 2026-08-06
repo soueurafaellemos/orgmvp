@@ -950,3 +950,32 @@ Antes de usar, execute:
 - não exige SQL;
 - não altera a Fase 14;
 - não contém arquivos da pasta `assets`.
+
+
+## V25.7.3 — Memória em lista horizontal
+
+- substitui a grade de três colunas por uma ficha horizontal por linha;
+- mostra imagem à esquerda e conteúdo essencial à direita;
+- remove os dois grandes expansores repetidos em cada card;
+- reúne informações completas e edição em um único “Abrir ficha”;
+- separa o conteúdo interno em “Informações” e “Editar”;
+- mantém slide original, evidências e campos avançados fora da leitura principal;
+- ordena as fichas por slide e posição;
+- reduz a densidade visual em todas as abas da Memória;
+- não exige SQL;
+- não altera dados já salvos;
+- não altera a Fase 14;
+- não contém arquivos da pasta assets.
+
+
+## V25.7.4 — Memória inicia na lista
+
+- remove a persistência do último projeto aberto;
+- ao entrar em Memória, nenhum projeto é aberto automaticamente;
+- um projeto só abre depois da seleção da respectiva linha;
+- depois de salvar um novo projeto, a página retorna à lista;
+- o comportamento acompanha o padrão já adotado em Projetos;
+- não exige SQL;
+- não altera os dados existentes;
+- não altera a Fase 14;
+- não contém arquivos da pasta assets.

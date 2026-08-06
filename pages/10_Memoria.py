@@ -273,35 +273,29 @@ with consult_tab:
                 key=f"memory_project_table_{int(current_page)}",
             )
 
-            selected_rows = _selected_rows(project_event)
-            focused_project = st.session_state.get(
-                "nave_memory_focus_project"
+            selected_rows = _selected_rows(
+                project_event
             )
 
             selected_project = None
 
             if selected_rows:
-                selected_project = project_page.iloc[
-                    selected_rows[0]
-                ].to_dict()
-            elif focused_project:
-                matches = overview[
-                    overview["project_id"]
-                    .astype(str)
-                    .eq(str(focused_project))
-                ]
-                if not matches.empty:
-                    selected_project = matches.iloc[0].to_dict()
+                selected_project = (
+                    project_page.iloc[
+                        selected_rows[0]
+                    ].to_dict()
+                )
 
             if not selected_project:
                 st.info(
                     "Selecione um projeto para abrir sua Memória."
                 )
             else:
-                project_id = str(selected_project["project_id"])
-                st.session_state[
-                    "nave_memory_focus_project"
-                ] = project_id
+                project_id = str(
+                    selected_project[
+                        "project_id"
+                    ]
+                )
 
                 st.divider()
                 st.subheader(
@@ -1556,9 +1550,10 @@ with upload_tab:
                                         "• " + str(warning)
                                     )
 
-                        st.session_state[
-                            "nave_memory_focus_project"
-                        ] = str(project_id)
+                        st.session_state.pop(
+                            "nave_memory_focus_project",
+                            None,
+                        )
 
                         for key in [
                             "memory_source_document",
