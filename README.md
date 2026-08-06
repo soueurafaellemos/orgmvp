@@ -1043,3 +1043,18 @@ o ranking do recomendador.
 Antes de usar, execute:
 
 `supabase_patch_fase_14_resultados_aprendizados_v1.sql`
+
+
+## V26.2 — Exclusão de projeto na Memória
+
+- adiciona o botão “Excluir projeto” ao projeto selecionado;
+- exige autenticação administrativa;
+- exige a confirmação textual `EXCLUIR`;
+- remove PDF, slides, imagens e recortes do Storage;
+- remove planilhas de custos do Storage;
+- remove feedbacks, resultados, custos e correlações;
+- remove o registro do projeto da lista;
+- a exclusão é integral e permanente;
+- não exige SQL;
+- não altera os demais projetos;
+- não contém arquivos da pasta assets.

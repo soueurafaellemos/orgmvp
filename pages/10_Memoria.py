@@ -32,6 +32,7 @@ from memory_db import (
 )
 from memory_learning_db import (
     build_item_learning_maps,
+    delete_memory_project,
 )
 from memory_learning_ui import (
     render_budget_adherence_tab,
@@ -299,11 +300,139 @@ with consult_tab:
                 )
 
                 st.divider()
-                st.subheader(
-                    selected_project.get("project_name")
-                    or selected_project.get("Projeto")
+
+                selected_project_name = str(
+                    selected_project.get(
+                        "project_name"
+                    )
+                    or selected_project.get(
+                        "Projeto"
+                    )
                     or "Projeto"
                 )
+
+                title_col, delete_col = st.columns(
+                    [4, 1],
+                    vertical_alignment="center",
+                )
+
+                with title_col:
+                    st.subheader(
+                        selected_project_name
+                    )
+
+                delete_state_key = (
+                    "memory_delete_project_confirm_"
+                    + project_id
+                )
+
+                with delete_col:
+                    if st.button(
+                        "Excluir projeto",
+                        key=(
+                            "memory_delete_project_button_"
+                            + project_id
+                        ),
+                        width="stretch",
+                    ):
+                        st.session_state[
+                            delete_state_key
+                        ] = True
+
+                if st.session_state.get(
+                    delete_state_key,
+                    False,
+                ):
+                    with st.container(
+                        border=True,
+                    ):
+                        st.error(
+                            "Esta exclusão é permanente. "
+                            "Serão removidos a apresentação, "
+                            "os slides, as imagens, os feedbacks, "
+                            "os resultados, as planilhas e os "
+                            "custos associados a este projeto."
+                        )
+
+                        st.markdown(
+                            "**Projeto selecionado:** "
+                            + selected_project_name
+                        )
+
+                        if require_admin_access():
+                            confirmation = (
+                                st.text_input(
+                                    "Digite EXCLUIR para confirmar",
+                                    key=(
+                                        "memory_delete_project_text_"
+                                        + project_id
+                                    ),
+                                )
+                            )
+
+                            cancel_col, confirm_col = (
+                                st.columns(2)
+                            )
+
+                            with cancel_col:
+                                if st.button(
+                                    "Cancelar",
+                                    key=(
+                                        "memory_delete_project_cancel_"
+                                        + project_id
+                                    ),
+                                    width="stretch",
+                                ):
+                                    st.session_state.pop(
+                                        delete_state_key,
+                                        None,
+                                    )
+                                    st.rerun()
+
+                            with confirm_col:
+                                if st.button(
+                                    "Excluir definitivamente",
+                                    type="primary",
+                                    disabled=(
+                                        confirmation
+                                        .strip()
+                                        .upper()
+                                        != "EXCLUIR"
+                                    ),
+                                    key=(
+                                        "memory_delete_project_confirm_button_"
+                                        + project_id
+                                    ),
+                                    width="stretch",
+                                ):
+                                    try:
+                                        with st.spinner(
+                                            "Excluindo projeto e arquivos..."
+                                        ):
+                                            delete_memory_project(
+                                                client,
+                                                project_id=project_id,
+                                            )
+
+                                        st.session_state.pop(
+                                            delete_state_key,
+                                            None,
+                                        )
+                                        st.cache_data.clear()
+                                        st.success(
+                                            "Projeto excluído da Memória."
+                                        )
+                                        st.rerun()
+
+                                    except Exception as exc:
+                                        report_service_error(
+                                            "exclusão do projeto da Memória",
+                                            user_message=(
+                                                "Não foi possível excluir "
+                                                "este projeto."
+                                            ),
+                                            exception=exc,
+                                        )
 
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric(

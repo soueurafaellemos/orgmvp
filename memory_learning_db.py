@@ -1512,3 +1512,204 @@ def build_item_learning_maps(
         outcome_map,
         linked_costs,
     )
+
+
+
+def _remove_storage_paths(
+    client: Client,
+    *,
+    bucket_name: str,
+    paths: list[str],
+    chunk_size: int = 100,
+) -> None:
+    unique_paths = list(
+        dict.fromkeys(
+            str(path).strip()
+            for path in paths
+            if str(path or "").strip()
+        )
+    )
+
+    for start in range(
+        0,
+        len(unique_paths),
+        chunk_size,
+    ):
+        chunk = unique_paths[
+            start : start + chunk_size
+        ]
+
+        if chunk:
+            (
+                client.storage
+                .from_(bucket_name)
+                .remove(chunk)
+            )
+
+
+def delete_memory_project(
+    client: Client,
+    *,
+    project_id: str,
+) -> dict:
+    """
+    Exclui integralmente um projeto criado pela Memória.
+
+    Os arquivos privados são removidos antes do registro principal.
+    As relações de banco são apagadas por ON DELETE CASCADE.
+    """
+    from memory_db import MEMORY_BUCKET
+
+    document_response = (
+        client.table(
+            "memory_documents"
+        )
+        .select(
+            "storage_path"
+        )
+        .eq(
+            "project_id",
+            project_id,
+        )
+        .execute()
+    )
+
+    page_response = (
+        client.table(
+            "memory_pages"
+        )
+        .select(
+            "storage_path"
+        )
+        .eq(
+            "project_id",
+            project_id,
+        )
+        .execute()
+    )
+
+    item_response = (
+        client.table(
+            "memory_items"
+        )
+        .select(
+            "visual_storage_path"
+        )
+        .eq(
+            "project_id",
+            project_id,
+        )
+        .execute()
+    )
+
+    cost_response = (
+        client.table(
+            "memory_cost_documents"
+        )
+        .select(
+            "storage_path"
+        )
+        .eq(
+            "project_id",
+            project_id,
+        )
+        .execute()
+    )
+
+    memory_paths = []
+
+    for row in (
+        document_response.data
+        or []
+    ):
+        if row.get(
+            "storage_path"
+        ):
+            memory_paths.append(
+                row["storage_path"]
+            )
+
+    for row in (
+        page_response.data
+        or []
+    ):
+        if row.get(
+            "storage_path"
+        ):
+            memory_paths.append(
+                row["storage_path"]
+            )
+
+    for row in (
+        item_response.data
+        or []
+    ):
+        if row.get(
+            "visual_storage_path"
+        ):
+            memory_paths.append(
+                row[
+                    "visual_storage_path"
+                ]
+            )
+
+    cost_paths = [
+        row["storage_path"]
+        for row in (
+            cost_response.data
+            or []
+        )
+        if row.get(
+            "storage_path"
+        )
+    ]
+
+    try:
+        _remove_storage_paths(
+            client,
+            bucket_name=(
+                MEMORY_BUCKET
+            ),
+            paths=memory_paths,
+        )
+
+        _remove_storage_paths(
+            client,
+            bucket_name=(
+                COST_BUCKET
+            ),
+            paths=cost_paths,
+        )
+    except Exception as exc:
+        raise LearningDataError(
+            "Não foi possível remover todos os "
+            "arquivos privados do projeto. "
+            "O registro não foi excluído."
+        ) from exc
+
+    deleted = (
+        client.table(
+            "projects"
+        )
+        .delete()
+        .eq(
+            "id",
+            project_id,
+        )
+        .execute()
+    )
+
+    return {
+        "project_id": project_id,
+        "memory_files_removed": len(
+            set(memory_paths)
+        ),
+        "cost_files_removed": len(
+            set(cost_paths)
+        ),
+        "project_deleted": True,
+        "database_response": (
+            deleted.data
+            or []
+        ),
+    }
