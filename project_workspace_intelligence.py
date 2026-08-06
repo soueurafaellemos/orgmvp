@@ -74,6 +74,193 @@ GENERIC_TOKENS = {
     "fornecimento", "locacao", "producao", "geral", "diversos",
 }
 
+RELEVANCE_CLASSIFIER_VERSION = "v27.5"
+
+_HIDDEN_VISIBILITY_VALUES = {
+    "hidden",
+    "ignored",
+    "excluded",
+    "do_not_use",
+    "nao_usar",
+}
+
+_VISIBLE_VISIBILITY_VALUES = {
+    "visible",
+    "included",
+    "force_visible",
+}
+
+_STRONG_NON_CONTENT_TITLE_PATTERNS = (
+    r"\bconfidential\b",
+    r"\bnot\s+for\s+(?:public\s+)?(?:consumption|distribution)\b",
+    r"\bdo\s+not\s+distribute\b",
+    r"^\s*obrigad[oa]?\b",
+    r"^\s*thank(?:s|\s+you)?\b",
+    r"^\s*gracias\b",
+    r"^\s*merci\b",
+    r"^\s*(?:fim|the\s+end)\b",
+    r"^\s*(?:contato|contact|fale\s+conosco)\b",
+    r"^\s*(?:copyright|direitos\s+reservados)\b",
+    r"^\s*(?:aviso\s+legal|legal\s+notice|disclaimer)\b",
+)
+
+_GENERIC_NON_CONTENT_TITLES = {
+    "agenda",
+    "indice",
+    "sumario",
+    "contents",
+    "table of contents",
+    "capa",
+    "cover",
+    "apresentacao",
+    "proposta",
+    "proposta comercial",
+    "introducao",
+    "obrigado",
+    "obrigada",
+    "thank you",
+    "contato",
+    "contact",
+    "quem somos",
+    "sobre nos",
+    "sobre a voe",
+    "portfolio",
+    "cases",
+    "credenciais",
+    "nossos clientes",
+}
+
+_SECTION_DIVIDER_TITLES = {
+    "estrategia",
+    "conceito",
+    "estrategia e conceito",
+    "cenografia",
+    "cenografia e ambientes",
+    "ativacoes",
+    "ativacoes e experiencias",
+    "experiencias",
+    "brindes",
+    "brindes e press kits",
+    "press kits",
+    "jornada",
+    "jornada e operacao",
+    "operacao",
+    "orcamento",
+    "fornecedores",
+}
+
+
+def _workspace_visibility(record: dict[str, Any]) -> str:
+    raw = record.get("raw_data")
+    if not isinstance(raw, dict):
+        return ""
+
+    for key in (
+        "workspace_visibility",
+        "nave_visibility",
+        "content_visibility",
+    ):
+        value = normalise_text(raw.get(key))
+        if value:
+            return value
+
+    relevance = raw.get("relevance")
+    if isinstance(relevance, dict):
+        return normalise_text(
+            relevance.get("visibility")
+            or relevance.get("status")
+        )
+
+    return ""
+
+
+def classify_project_record_relevance(
+    record: dict[str, Any],
+) -> tuple[bool, str | None]:
+    """
+    Decide se um slide/ficha representa conteúdo útil do projeto.
+
+    O material original continua preservado. Esta função apenas impede
+    que capas, encerramentos, avisos legais e divisórias virem entregas,
+    recebam custos ou contaminem o diagnóstico.
+    """
+    visibility = _workspace_visibility(record)
+    if visibility in _HIDDEN_VISIBILITY_VALUES:
+        return False, "Marcado para não ser usado na NAVE."
+    if visibility in _VISIBLE_VISIBILITY_VALUES:
+        return True, None
+
+    raw = record.get("raw_data")
+    if not isinstance(raw, dict):
+        raw = {}
+
+    title = normalise_text(
+        record.get("title")
+        or record.get("slide_title")
+        or raw.get("suggested_title")
+        or raw.get("slide_title")
+    )
+    summary = normalise_text(
+        record.get("summary")
+        or record.get("slide_summary")
+        or record.get("description")
+        or raw.get("slide_summary")
+    )
+    combined = " ".join(
+        value for value in (title, summary) if value
+    ).strip()
+
+    for pattern in _STRONG_NON_CONTENT_TITLE_PATTERNS:
+        if re.search(pattern, title):
+            return False, "Slide de fechamento, contato ou confidencialidade."
+
+    # Alguns extratores repetem o aviso no título e no resumo.
+    if (
+        len(combined.split()) <= 40
+        and any(
+            token in combined
+            for token in (
+                "not for public consumption",
+                "not for public distribution",
+                "do not distribute",
+                "direitos reservados",
+                "all rights reserved",
+            )
+        )
+    ):
+        return False, "Aviso legal ou de confidencialidade."
+
+    if title in _GENERIC_NON_CONTENT_TITLES:
+        return False, "Capa, índice, institucional ou encerramento."
+
+    # Divisórias organizam o PPT, mas não são uma entrega do projeto.
+    if (
+        title in _SECTION_DIVIDER_TITLES
+        and len(_tokens(summary)) <= 12
+    ):
+        return False, "Slide divisório de seção."
+
+    # Página sem conteúdo reconhecível.
+    if not combined:
+        return False, "Página sem conteúdo identificável."
+
+    positive_score = max(_section_scores(record).values(), default=0.0)
+    combined_tokens = _tokens(combined)
+
+    # Evita transformar títulos residuais, rodapés ou capas curtas em fichas.
+    if (
+        positive_score <= 0
+        and len(combined_tokens) <= 3
+        and len(combined) <= 70
+    ):
+        return False, "Conteúdo curto sem entrega identificável."
+
+    return True, None
+
+
+def is_project_relevant_record(record: dict[str, Any]) -> bool:
+    return classify_project_record_relevance(record)[0]
+
 EXECUTED_STATUSES = {"executed"}
 NO_EXECUTION_STATUSES = {"not_executed"}
 POSITIVE_ADHERENCE = {"fulfilled", "partially_fulfilled", "exceeded", "changed_justified"}
@@ -282,7 +469,10 @@ def ensure_automatic_cost_links(
     project_id: str,
     snapshot: dict[str, Any],
 ) -> int:
-    items = [row for row in snapshot.get("memory_items", []) if row.get("id")]
+    items = [
+        row for row in snapshot.get("memory_items", [])
+        if row.get("id") and is_project_relevant_record(row)
+    ]
     costs = [row for row in snapshot.get("cost_items", []) if row.get("id")]
     if not items or not costs:
         return 0
@@ -339,7 +529,10 @@ def ensure_automatic_briefing_links(
     snapshot: dict[str, Any],
 ) -> int:
     requirements = [row for row in snapshot.get("briefing_requirements", []) if row.get("id")]
-    items = [row for row in snapshot.get("memory_items", []) if row.get("id")]
+    items = [
+        row for row in snapshot.get("memory_items", [])
+        if row.get("id") and is_project_relevant_record(row)
+    ]
     if not requirements or not items:
         return 0
 
@@ -392,7 +585,17 @@ def ensure_automatic_briefing_links(
 
 
 def section_cost_context(snapshot: dict[str, Any], section: str) -> dict[str, Any]:
-    active_links = [row for row in snapshot.get("cost_links", []) if row.get("link_status") != "rejected"]
+    relevant_item_ids = {
+        str(row.get("id"))
+        for row in snapshot.get("memory_items", [])
+        if row.get("id") and is_project_relevant_record(row)
+    }
+    active_links = [
+        row
+        for row in snapshot.get("cost_links", [])
+        if row.get("link_status") != "rejected"
+        and str(row.get("memory_item_id") or "") in relevant_item_ids
+    ]
     linked_cost_ids = {str(row.get("cost_item_id")) for row in active_links if row.get("cost_item_id")}
     section_costs = [row for row in snapshot.get("cost_items", []) if infer_cost_section(row) == section]
     unallocated = [row for row in section_costs if str(row.get("id")) not in linked_cost_ids]
@@ -460,6 +663,7 @@ def _source_signature(snapshot: dict[str, Any]) -> str:
             })
         compact[key] = rows
     compact["outcome"] = snapshot.get("outcome") or {}
+    compact["relevance_classifier_version"] = RELEVANCE_CLASSIFIER_VERSION
     payload = json.dumps(compact, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -480,7 +684,12 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     items = []
     for row in snapshot.get("memory_items", []):
-        section = infer_section_from_record(row, explicit_section=row.get("section_key"))
+        if not is_project_relevant_record(row):
+            continue
+        section = infer_section_from_record(
+            row,
+            explicit_section=row.get("section_key"),
+        )
         enriched = dict(row)
         enriched["inferred_section"] = section
         if section in DELIVERY_SECTIONS:
@@ -490,15 +699,29 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
     req_by_id = {str(row.get("id")): row for row in snapshot.get("briefing_requirements", []) if row.get("id")}
     outcomes = {str(row.get("item_id")): row for row in snapshot.get("item_outcomes", []) if row.get("item_id")}
 
+    relevant_item_ids = {
+        str(row.get("id"))
+        for row in items
+        if row.get("id")
+    }
+
     costs_by_item: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    active_cost_links = _active_links(snapshot.get("cost_links", []))
+    active_cost_links = [
+        row
+        for row in _active_links(snapshot.get("cost_links", []))
+        if str(row.get("memory_item_id") or "") in relevant_item_ids
+    ]
     for link in active_cost_links:
         cost = cost_by_id.get(str(link.get("cost_item_id")))
         if cost:
             costs_by_item[str(link.get("memory_item_id"))].append({"link": link, "cost": cost})
 
     requirements_by_item: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    active_brief_links = _active_links(snapshot.get("briefing_links", []))
+    active_brief_links = [
+        row
+        for row in _active_links(snapshot.get("briefing_links", []))
+        if str(row.get("memory_item_id") or "") in relevant_item_ids
+    ]
     for link in active_brief_links:
         requirement = req_by_id.get(str(link.get("requirement_id")))
         if requirement:

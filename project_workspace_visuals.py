@@ -16,6 +16,7 @@ from project_workspace_intelligence import (
     VISUAL_SECTIONS,
     ensure_automatic_cost_links,
     infer_section_from_record,
+    is_project_relevant_record,
     section_cost_context,
 )
 
@@ -181,10 +182,22 @@ def _candidate_visual_pages(snapshot: dict[str, Any], accepted: set[str]) -> lis
                 "primary_section": row.get("suggested_section"),
                 "raw_data": row,
             }
-            section = infer_section_from_record(combined, explicit_section=row.get("suggested_section"))
+            section = infer_section_from_record(
+                combined,
+                explicit_section=row.get("suggested_section"),
+            )
             page_number = int(row.get("page_number") or 0)
-            if section in accepted and page_number > 0 and row.get("is_meaningful") is not False:
-                candidates.append({**row, "document": document, "inferred_section": section})
+            if (
+                section in accepted
+                and page_number > 0
+                and row.get("is_meaningful") is not False
+                and is_project_relevant_record(combined)
+            ):
+                candidates.append({
+                    **row,
+                    "document": document,
+                    "inferred_section": section,
+                })
     return candidates
 
 
@@ -271,7 +284,7 @@ def recover_missing_visual_pages(
                     "storage_path": storage_path,
                     "content_sha256": digest,
                     "raw_data": {
-                        "recovered_by": "workspace_v27_2",
+                        "recovered_by": "workspace_v27_5",
                         "source": "page_inventory",
                         "suggested_section": row.get("suggested_section"),
                     },
@@ -308,7 +321,12 @@ def ensure_visual_page_items(
         page_number = int(page.get("page_number") or 0)
         if not document_id or page_number <= 0 or (document_id, page_number) in existing_pages:
             continue
-        section = infer_section_from_record(page, explicit_section=page.get("primary_section"))
+        if not is_project_relevant_record(page):
+            continue
+        section = infer_section_from_record(
+            page,
+            explicit_section=page.get("primary_section"),
+        )
         if section not in accepted:
             continue
         payload = {
@@ -334,7 +352,7 @@ def ensure_visual_page_items(
             "evidence": None,
             "sort_order": 100000 + page_number,
             "raw_data": {
-                "generated_by": "workspace_v27_2",
+                "generated_by": "workspace_v27_5",
                 "source": "recovered_visual_page",
             },
         }
@@ -357,7 +375,12 @@ def _visual_records(snapshot: dict[str, Any], section_keys: Iterable[str]) -> li
     records: list[dict[str, Any]] = []
 
     for item in snapshot.get("memory_items", []):
-        section = infer_section_from_record(item, explicit_section=item.get("section_key"))
+        if not is_project_relevant_record(item):
+            continue
+        section = infer_section_from_record(
+            item,
+            explicit_section=item.get("section_key"),
+        )
         if section not in accepted:
             continue
         item_id = str(item.get("id") or "")
@@ -391,7 +414,12 @@ def _visual_records(snapshot: dict[str, Any], section_keys: Iterable[str]) -> li
         })
 
     for page in snapshot.get("memory_pages", []):
-        section = infer_section_from_record(page, explicit_section=page.get("primary_section"))
+        if not is_project_relevant_record(page):
+            continue
+        section = infer_section_from_record(
+            page,
+            explicit_section=page.get("primary_section"),
+        )
         if section not in accepted:
             continue
         page_key = (str(page.get("document_id") or ""), int(page.get("page_number") or 0))
