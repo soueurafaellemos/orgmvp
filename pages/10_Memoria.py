@@ -19,7 +19,9 @@ from document_io import prepare_documents, render_pdf_page
 from memory_db import (
     create_memory_signed_url,
     delete_memory_document,
+    delete_memory_project,
     create_memory_project,
+    MemorySaveError,
     fetch_memory_documents,
     fetch_memory_items,
     fetch_memory_pages,
@@ -1406,6 +1408,7 @@ with upload_tab:
                         "Mantenha pelo menos um item selecionado."
                     )
                 else:
+                    project_id = None
                     try:
                         review_project_name = str(
                             st.session_state.get(
@@ -1491,26 +1494,41 @@ with upload_tab:
                             ),
                         }
 
-                        with st.spinner(
-                            "Preservando documento, slides e galerias..."
+                        save_progress = st.progress(0.0)
+                        save_status = st.empty()
+
+                        def update_save_progress(
+                            done,
+                            total,
+                            message,
                         ):
-                            result = save_memory_presentation(
-                                client,
-                                project_id=str(project_id),
-                                source_document=source_document,
-                                extraction=extraction_for_save,
-                                selected_items=final_items,
-                                document_title=(
-                                    review_document_title
-                                ),
-                                version_label=(
-                                    review_version_label
-                                    or None
-                                ),
-                                document_status=(
-                                    review_document_status
-                                ),
+                            save_progress.progress(
+                                done / total
+                                if total
+                                else 1.0
                             )
+                            save_status.write(message)
+
+                        result = save_memory_presentation(
+                            client,
+                            project_id=str(project_id),
+                            source_document=source_document,
+                            extraction=extraction_for_save,
+                            selected_items=final_items,
+                            document_title=(
+                                review_document_title
+                            ),
+                            version_label=(
+                                review_version_label
+                                or None
+                            ),
+                            document_status=(
+                                review_document_status
+                            ),
+                            progress_callback=(
+                                update_save_progress
+                            ),
+                        )
 
                         if result.get("status") == "duplicate":
                             st.warning(
@@ -1523,6 +1541,18 @@ with upload_tab:
                                 f"e {result.get('pages_saved', 0)} slide(s) "
                                 "preservados."
                             )
+
+                        if result.get("warnings"):
+                            with st.expander(
+                                "Avisos do salvamento",
+                                expanded=False,
+                            ):
+                                for warning in result[
+                                    "warnings"
+                                ]:
+                                    st.write(
+                                        "• " + str(warning)
+                                    )
 
                         st.session_state[
                             "nave_memory_focus_project"
@@ -1545,7 +1575,41 @@ with upload_tab:
                         st.cache_data.clear()
                         st.rerun()
 
+                    except MemorySaveError as exc:
+                        if project_id:
+                            delete_memory_project(
+                                client,
+                                project_id=str(project_id),
+                            )
+
+                        st.error(exc.safe_message)
+                        st.caption(
+                            "Etapa interrompida: "
+                            + str(exc.stage)
+                            + ". A análise permanece na tela "
+                            "para uma nova tentativa."
+                        )
+
+                        report_service_error(
+                            "salvamento da Memória — "
+                            + str(exc.stage),
+                            user_message=(
+                                "O salvamento não foi concluído, "
+                                "mas o diagnóstico técnico foi registrado."
+                            ),
+                            exception=(
+                                exc.original
+                                or exc
+                            ),
+                        )
+
                     except Exception as exc:
+                        if project_id:
+                            delete_memory_project(
+                                client,
+                                project_id=str(project_id),
+                            )
+
                         report_service_error(
                             "salvamento da Memória",
                             user_message=(

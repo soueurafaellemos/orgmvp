@@ -920,3 +920,20 @@ Antes de usar, execute:
 - não exige novo SQL;
 - preserva a ordem de menu da V25.5;
 - o patch não contém arquivos da pasta assets.
+
+
+## V25.7 — salvamento resiliente da Memória
+
+- adiciona verificação automática das tabelas e do bucket antes de salvar;
+- informa em qual etapa o salvamento foi interrompido;
+- remove projetos órfãos quando o primeiro salvamento falha;
+- usa o status seguro `rascunho` para projetos criados pela Memória;
+- reduz o JSON duplicado armazenado no documento;
+- comprime slides e recortes como JPEG;
+- salva conteúdos em lotes e tenta novamente item a item quando necessário;
+- falha em um slide ou recorte deixa de cancelar o projeto inteiro;
+- preserva o PDF original como fonte principal;
+- mantém a análise na tela em caso de falha;
+- não exige novo SQL;
+- não altera a Base de conhecimento nem o motor de recomendações;
+- não contém arquivos da pasta assets.
