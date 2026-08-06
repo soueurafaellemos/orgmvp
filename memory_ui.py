@@ -9,6 +9,15 @@ from memory_db import (
     create_memory_signed_url,
     update_memory_item,
 )
+from memory_learning_db import (
+    upsert_item_outcome,
+)
+from memory_learning_models import (
+    CONFIDENCE_LEVELS,
+    INFORMATION_SOURCES,
+    ITEM_OUTCOME_STATUS,
+    COST_ITEM_STATUS,
+)
 from memory_prompts import (
     MEMORY_SECTION_LABELS,
     MEMORY_SECTION_ORDER,
@@ -72,6 +81,26 @@ def _meaningful_text(
     ).strip()
 
 
+def _money(
+    value: Any,
+) -> str:
+    try:
+        number = float(value)
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return "Não informado"
+
+    formatted = (
+        f"{number:,.2f}"
+        .replace(",", "X")
+        .replace(".", ",")
+        .replace("X", ".")
+    )
+    return "R$ " + formatted
+
+
 def section_labels_present(
     items: pd.DataFrame,
 ) -> list[str]:
@@ -90,6 +119,183 @@ def section_labels_present(
         for section in MEMORY_SECTION_ORDER
         if section in present
     ]
+
+
+def _render_learning_summary(
+    *,
+    item_outcome: dict | None,
+    linked_costs: list[dict],
+) -> None:
+    if not item_outcome and not linked_costs:
+        st.caption(
+            "Ainda não há resultado ou custo "
+            "associado a esta ficha."
+        )
+        return
+
+    if item_outcome:
+        st.markdown(
+            "### Resultado da proposta"
+        )
+        st.markdown(
+            "**Decisão:** "
+            + ITEM_OUTCOME_STATUS.get(
+                str(
+                    item_outcome.get(
+                        "outcome_status"
+                    )
+                    or ""
+                ),
+                "Resultado desconhecido",
+            )
+        )
+
+        if item_outcome.get(
+            "decision_reason"
+        ):
+            st.markdown(
+                "**Motivo:** "
+                + str(
+                    item_outcome[
+                        "decision_reason"
+                    ]
+                )
+            )
+
+        if item_outcome.get(
+            "feedback_summary"
+        ):
+            st.markdown(
+                "**Feedback relacionado:**"
+            )
+            st.write(
+                item_outcome[
+                    "feedback_summary"
+                ]
+            )
+
+        if item_outcome.get(
+            "execution_notes"
+        ):
+            st.markdown(
+                "**Execução:**"
+            )
+            st.write(
+                item_outcome[
+                    "execution_notes"
+                ]
+            )
+
+        st.caption(
+            CONFIDENCE_LEVELS.get(
+                str(
+                    item_outcome.get(
+                        "confidence_level"
+                    )
+                    or ""
+                ),
+                "Informação incompleta",
+            )
+            + " · "
+            + INFORMATION_SOURCES.get(
+                str(
+                    item_outcome.get(
+                        "information_source"
+                    )
+                    or ""
+                ),
+                "Fonte não informada",
+            )
+        )
+
+    if linked_costs:
+        st.markdown(
+            "### Custos associados"
+        )
+
+        total = sum(
+            float(
+                cost.get(
+                    "client_total"
+                )
+                or 0
+            )
+            for cost in linked_costs
+        )
+
+        if total > 0:
+            st.metric(
+                "Valor associado",
+                _money(total),
+            )
+
+        for cost in linked_costs:
+            status = COST_ITEM_STATUS.get(
+                str(
+                    cost.get(
+                        "item_status"
+                    )
+                    or ""
+                ),
+                str(
+                    cost.get(
+                        "item_status"
+                    )
+                    or "Não informado"
+                ),
+            )
+
+            with st.container(
+                border=True,
+            ):
+                st.markdown(
+                    "**"
+                    + str(
+                        cost.get(
+                            "item_name"
+                        )
+                        or "Item de custo"
+                    )
+                    + "**"
+                )
+                st.caption(
+                    status
+                    + " · "
+                    + _money(
+                        cost.get(
+                            "client_total"
+                        )
+                    )
+                    + " · linha "
+                    + str(
+                        cost.get(
+                            "source_row"
+                        )
+                        or ""
+                    )
+                )
+
+                if cost.get(
+                    "description"
+                ):
+                    st.write(
+                        cost[
+                            "description"
+                        ]
+                    )
+
+                link_status = str(
+                    cost.get(
+                        "link_status"
+                    )
+                    or ""
+                )
+
+                if link_status == "suggested":
+                    st.warning(
+                        "Correlação sugerida; "
+                        "ainda não confirmada."
+                    )
 
 
 def _render_item_details(
@@ -168,6 +374,191 @@ def _render_item_details(
             slide_url,
             width="stretch",
         )
+
+
+def _render_item_outcome_editor(
+    client,
+    *,
+    project_id: str,
+    item: dict,
+    item_outcome: dict | None,
+    card_key: str,
+) -> None:
+    current = item_outcome or {}
+    outcome_options = list(
+        ITEM_OUTCOME_STATUS.keys()
+    )
+    confidence_options = list(
+        CONFIDENCE_LEVELS.keys()
+    )
+    source_options = list(
+        INFORMATION_SOURCES.keys()
+    )
+
+    def index_of(
+        options: list[str],
+        value: str,
+    ) -> int:
+        try:
+            return options.index(
+                value
+            )
+        except ValueError:
+            return 0
+
+    with st.form(
+        "memory_item_outcome_"
+        + card_key
+    ):
+        outcome_status = st.selectbox(
+            "Resultado desta ficha",
+            outcome_options,
+            index=index_of(
+                outcome_options,
+                str(
+                    current.get(
+                        "outcome_status"
+                    )
+                    or "unassessed"
+                ),
+            ),
+            format_func=lambda value: (
+                ITEM_OUTCOME_STATUS[
+                    value
+                ]
+            ),
+        )
+
+        decision_reason = st.text_area(
+            "Motivo da decisão",
+            value=str(
+                current.get(
+                    "decision_reason"
+                )
+                or ""
+            ),
+            height=90,
+        )
+        feedback_summary = st.text_area(
+            "Feedback relacionado",
+            value=str(
+                current.get(
+                    "feedback_summary"
+                )
+                or ""
+            ),
+            height=100,
+        )
+        execution_notes = st.text_area(
+            "Observações de execução",
+            value=str(
+                current.get(
+                    "execution_notes"
+                )
+                or ""
+            ),
+            height=90,
+        )
+
+        outcome_cols = st.columns(2)
+
+        with outcome_cols[0]:
+            confidence_level = (
+                st.selectbox(
+                    "Confiança",
+                    confidence_options,
+                    index=index_of(
+                        confidence_options,
+                        str(
+                            current.get(
+                                "confidence_level"
+                            )
+                            or "incomplete"
+                        ),
+                    ),
+                    format_func=lambda value: (
+                        CONFIDENCE_LEVELS[
+                            value
+                        ]
+                    ),
+                )
+            )
+
+        with outcome_cols[1]:
+            information_source = (
+                st.selectbox(
+                    "Fonte",
+                    source_options,
+                    index=index_of(
+                        source_options,
+                        str(
+                            current.get(
+                                "information_source"
+                            )
+                            or "not_informed"
+                        ),
+                    ),
+                    format_func=lambda value: (
+                        INFORMATION_SOURCES[
+                            value
+                        ]
+                    ),
+                )
+            )
+
+        submitted = (
+            st.form_submit_button(
+                "Salvar resultado da ficha",
+                type="primary",
+                width="stretch",
+            )
+        )
+
+    if submitted:
+        try:
+            upsert_item_outcome(
+                client,
+                project_id=project_id,
+                item_id=str(
+                    item["id"]
+                ),
+                values={
+                    "outcome_status": (
+                        outcome_status
+                    ),
+                    "decision_reason": (
+                        decision_reason.strip()
+                        or None
+                    ),
+                    "feedback_summary": (
+                        feedback_summary.strip()
+                        or None
+                    ),
+                    "execution_notes": (
+                        execution_notes.strip()
+                        or None
+                    ),
+                    "confidence_level": (
+                        confidence_level
+                    ),
+                    "information_source": (
+                        information_source
+                    ),
+                },
+            )
+            st.success(
+                "Resultado da ficha atualizado."
+            )
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as exc:
+            st.error(
+                "Não foi possível salvar "
+                "o resultado desta ficha."
+            )
+            st.code(
+                str(exc)
+            )
 
 
 def _render_item_editor(
@@ -312,9 +703,12 @@ def _render_item_editor(
 def render_memory_item_row(
     client,
     *,
+    project_id: str,
     item: dict,
     page: dict | None,
     document: dict | None,
+    item_outcome: dict | None,
+    linked_costs: list[dict],
     card_key: str,
 ) -> None:
     visual_url = (
@@ -406,6 +800,34 @@ def render_memory_item_row(
                 ),
             ]
 
+            if item_outcome:
+                metadata.append(
+                    ITEM_OUTCOME_STATUS.get(
+                        str(
+                            item_outcome.get(
+                                "outcome_status"
+                            )
+                        ),
+                        "Resultado registrado",
+                    )
+                )
+
+            if linked_costs:
+                linked_total = sum(
+                    float(
+                        cost.get(
+                            "client_total"
+                        )
+                        or 0
+                    )
+                    for cost in linked_costs
+                )
+                metadata.append(
+                    _money(
+                        linked_total
+                    )
+                )
+
             st.caption(
                 " · ".join(metadata)
             )
@@ -414,13 +836,16 @@ def render_memory_item_row(
                 "Abrir ficha",
                 expanded=False,
             ):
-                details_tab, edit_tab = (
-                    st.tabs(
-                        [
-                            "Informações",
-                            "Editar",
-                        ]
-                    )
+                (
+                    details_tab,
+                    learning_tab,
+                    edit_tab,
+                ) = st.tabs(
+                    [
+                        "Informações",
+                        "Resultado & custo",
+                        "Editar",
+                    ]
                 )
 
                 with details_tab:
@@ -429,6 +854,30 @@ def render_memory_item_row(
                         document=document,
                         slide_url=(
                             slide_url
+                        ),
+                    )
+
+                with learning_tab:
+                    _render_learning_summary(
+                        item_outcome=(
+                            item_outcome
+                        ),
+                        linked_costs=(
+                            linked_costs
+                        ),
+                    )
+                    st.divider()
+                    _render_item_outcome_editor(
+                        client,
+                        project_id=(
+                            project_id
+                        ),
+                        item=item,
+                        item_outcome=(
+                            item_outcome
+                        ),
+                        card_key=(
+                            card_key
                         ),
                     )
 
@@ -445,6 +894,7 @@ def render_memory_item_row(
 def render_memory_section(
     client,
     *,
+    project_id: str,
     items: pd.DataFrame,
     pages_by_id: dict[
         str,
@@ -456,7 +906,24 @@ def render_memory_section(
     ],
     section_key: str,
     search: str = "",
+    item_outcomes_by_id: dict[
+        str,
+        dict,
+    ] | None = None,
+    cost_links_by_item_id: dict[
+        str,
+        list[dict],
+    ] | None = None,
 ) -> None:
+    item_outcomes_by_id = (
+        item_outcomes_by_id
+        or {}
+    )
+    cost_links_by_item_id = (
+        cost_links_by_item_id
+        or {}
+    )
+
     section_items = items[
         items["section_key"].eq(
             section_key
@@ -534,6 +1001,10 @@ def render_memory_section(
     for item in section_items.to_dict(
         orient="records"
     ):
+        item_id = str(
+            item.get("id")
+            or ""
+        )
         page = pages_by_id.get(
             str(
                 item.get("page_id")
@@ -554,11 +1025,23 @@ def render_memory_section(
 
         render_memory_item_row(
             client,
+            project_id=project_id,
             item=item,
             page=page,
             document=document,
+            item_outcome=(
+                item_outcomes_by_id.get(
+                    item_id
+                )
+            ),
+            linked_costs=(
+                cost_links_by_item_id.get(
+                    item_id,
+                    [],
+                )
+            ),
             card_key=(
                 f"{section_key}_"
-                f"{item.get('id')}"
+                f"{item_id}"
             ),
         )

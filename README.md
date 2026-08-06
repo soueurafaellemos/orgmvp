@@ -994,3 +994,52 @@ Antes de usar, execute:
 - não altera dados existentes;
 - não altera a Fase 14;
 - não contém arquivos da pasta assets.
+
+
+## V26 — Fase 14: Resultados & Aprendizados
+
+A Fase 14 transforma a Memória em uma fonte estruturada de
+aprendizado histórico, sem misturá-la à Base de conhecimento.
+
+### Resultados & Aprendizados
+
+- tipo de processo;
+- resultado comercial;
+- aprovação geral da proposta;
+- resultado da execução;
+- datas de resultado e execução;
+- cliente contratante;
+- agências ou parceiros envolvidos;
+- motivos estruturados;
+- contexto do resultado;
+- aprendizados da execução;
+- nível de confiança;
+- fonte da informação;
+- múltiplos feedbacks com origem, etapa, tema e sentimento;
+- decisão individual por ficha da Memória.
+
+### Orçamento & Aderência
+
+- budget do briefing;
+- upload de XLSX, XLSM, XLS ou CSV;
+- leitura determinística da estrutura da planilha;
+- nenhuma macro é executada;
+- preservação do arquivo original;
+- itens, categorias, quantidades e valores;
+- honorários, encargos e total da proposta;
+- itens incluídos, opcionais, pendentes e responsabilidade do cliente;
+- comparação entre budget e proposta;
+- itens e categorias de maior impacto;
+- correlação sugerida entre linhas de custo e fichas da Memória;
+- revisão manual das correlações;
+- custos e resultados visíveis dentro de “Abrir ficha”.
+
+### Uso futuro
+
+Os dados ficam prontos para análises e calibração futura das
+recomendações. Nesta versão, eles não alteram automaticamente
+o ranking do recomendador.
+
+Antes de usar, execute:
+
+`supabase_patch_fase_14_resultados_aprendizados_v1.sql`

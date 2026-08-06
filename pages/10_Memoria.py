@@ -30,6 +30,13 @@ from memory_db import (
     update_memory_document_metadata,
     update_memory_project_metadata,
 )
+from memory_learning_db import (
+    build_item_learning_maps,
+)
+from memory_learning_ui import (
+    render_budget_adherence_tab,
+    render_results_learning_tab,
+)
 from memory_extractor import (
     extract_memory,
     memory_editor_dataframe,
@@ -73,9 +80,10 @@ page_header(
 )
 
 st.info(
-    "A Memória é um módulo isolado. Nada armazenado aqui "
-    "entra na Base de conhecimento, nas recomendações ou "
-    "em cadastros comerciais."
+    "A Memória continua separada da Base de conhecimento. "
+    "A Fase 14 registra resultados, feedbacks e custos como "
+    "aprendizado histórico do projeto. Esses dados ainda não "
+    "alteram automaticamente o ranking das recomendações."
 )
 
 
@@ -425,10 +433,24 @@ with consult_tab:
                         for _, row in pages.iterrows()
                     }
 
+                    try:
+                        (
+                            item_outcomes_by_id,
+                            cost_links_by_item_id,
+                        ) = build_item_learning_maps(
+                            client,
+                            project_id=project_id,
+                        )
+                    except Exception:
+                        item_outcomes_by_id = {}
+                        cost_links_by_item_id = {}
+
                     sections = section_labels_present(items)
                     tab_keys = [
                         "overview",
                         *sections,
+                        "results_learning",
+                        "budget_adherence",
                         "documents",
                     ]
                     tab_labels = [
@@ -437,6 +459,8 @@ with consult_tab:
                             MEMORY_SECTION_LABELS[section]
                             for section in sections
                         ],
+                        "Resultados & Aprendizados",
+                        "Orçamento & Aderência",
                         "Documentos & Versões",
                     ]
                     tabs = st.tabs(tab_labels)
@@ -616,6 +640,20 @@ with consult_tab:
                                                 ),
                                                 exception=exc,
                                             )
+
+                            elif tab_key == "results_learning":
+                                render_results_learning_tab(
+                                    client,
+                                    project_id=project_id,
+                                    memory_items=items,
+                                )
+
+                            elif tab_key == "budget_adherence":
+                                render_budget_adherence_tab(
+                                    client,
+                                    project_id=project_id,
+                                    memory_items=items,
+                                )
 
                             elif tab_key == "documents":
                                 for _, document_row in documents.iterrows():
@@ -830,11 +868,18 @@ with consult_tab:
                             else:
                                 render_memory_section(
                                     client,
+                                    project_id=project_id,
                                     items=items,
                                     pages_by_id=pages_by_id,
                                     documents_by_id=documents_by_id,
                                     section_key=tab_key,
                                     search=item_search,
+                                    item_outcomes_by_id=(
+                                        item_outcomes_by_id
+                                    ),
+                                    cost_links_by_item_id=(
+                                        cost_links_by_item_id
+                                    ),
                                 )
 
 
