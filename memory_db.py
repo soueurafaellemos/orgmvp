@@ -156,52 +156,69 @@ def fetch_memory_project_options(client: Client) -> pd.DataFrame:
     return pd.DataFrame(response.data or [])
 
 
-def ensure_memory_project(
+def create_memory_project(
     client: Client,
     *,
     project_name: str,
     client_brand: str | None = None,
     event_name: str | None = None,
 ) -> str:
-    clean_name = str(project_name or "").strip()
-    if not clean_name:
-        raise ValueError("Informe o nome do projeto.")
+    """
+    Cria sempre um novo projeto da Memória.
 
-    normalized = normalize_project_name(clean_name)
-    response = (
-        client.table("projects")
-        .select("id")
-        .eq("normalized_name", normalized)
-        .order("created_at")
-        .limit(1)
-        .execute()
-    )
+    Este fluxo representa uma apresentação final enviada ao cliente.
+    Ele nunca procura, atualiza ou reaproveita um projeto existente.
+    """
+    clean_name = str(
+        project_name or ""
+    ).strip()
+
+    if not clean_name:
+        raise ValueError(
+            "Informe o nome do projeto."
+        )
 
     payload = {
         "project_name": clean_name,
-        "normalized_name": normalized,
-        "client_brand": str(client_brand).strip() if client_brand else None,
-        "event_name": str(event_name).strip() if event_name else None,
+        "normalized_name": (
+            normalize_project_name(
+                clean_name
+            )
+        ),
+        "client_brand": (
+            str(client_brand).strip()
+            if client_brand
+            else None
+        ),
+        "event_name": (
+            str(event_name).strip()
+            if event_name
+            else None
+        ),
         "status": "memória",
-        "raw_data": {"source": "memory"},
+        "raw_data": {
+            "source": (
+                "memory_final_presentation"
+            ),
+            "creates_new_project": True,
+        },
     }
 
-    if response.data:
-        project_id = str(response.data[0]["id"])
-        client.table("projects").update(
-            {
-                key: value
-                for key, value in payload.items()
-                if value not in (None, "")
-            }
-        ).eq("id", project_id).execute()
-        return project_id
+    inserted = (
+        client.table("projects")
+        .insert(payload)
+        .execute()
+    )
 
-    inserted = client.table("projects").insert(payload).execute()
     if not inserted.data:
-        raise RuntimeError("Não foi possível criar o projeto.")
-    return str(inserted.data[0]["id"])
+        raise RuntimeError(
+            "Não foi possível criar "
+            "o projeto da Memória."
+        )
 
+    return str(
+        inserted.data[0]["id"]
+    )
 
 
 def update_memory_project_metadata(

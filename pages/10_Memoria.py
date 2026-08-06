@@ -17,11 +17,10 @@ from document_io import prepare_documents, render_pdf_page
 from memory_db import (
     create_memory_signed_url,
     delete_memory_document,
-    ensure_memory_project,
+    create_memory_project,
     fetch_memory_documents,
     fetch_memory_items,
     fetch_memory_pages,
-    fetch_memory_project_options,
     fetch_memory_projects_overview,
     save_memory_presentation,
     update_memory_document_metadata,
@@ -111,7 +110,7 @@ client = get_supabase_client(supabase_url, supabase_key)
 consult_tab, upload_tab = st.tabs(
     [
         "Consultar Memória",
-        "Adicionar apresentação",
+        "Adicionar novo projeto",
     ]
 )
 
@@ -127,11 +126,6 @@ def _selected_rows(event) -> list[int]:
         except Exception:
             return []
 
-
-def _project_label(row: dict) -> str:
-    name = str(row.get("project_name") or "Projeto sem nome")
-    client_name = str(row.get("client_brand") or "").strip()
-    return f"{name} · {client_name}" if client_name else name
 
 
 with consult_tab:
@@ -824,11 +818,13 @@ with consult_tab:
 
 
 with upload_tab:
-    st.subheader("Adicionar apresentação estratégica")
+    st.subheader(
+        "Adicionar novo projeto"
+    )
     st.caption(
-        "Selecione um projeto existente ou crie um novo e envie o PDF. "
-        "A NAVE identifica automaticamente projeto, cliente, evento, "
-        "título e versão ao analisar a apresentação completa."
+        "Envie a apresentação final já enviada ao cliente. "
+        "Cada envio cria um novo projeto na Memória; "
+        "nenhum projeto existente será alterado."
     )
 
     if not api_key:
@@ -836,101 +832,26 @@ with upload_tab:
             "O serviço de leitura não está configurado."
         )
     else:
-        try:
-            project_options = fetch_memory_project_options(
-                client
-            )
-        except Exception:
-            project_options = pd.DataFrame()
-
-        project_mode = st.radio(
-            "Destino",
-            [
-                "Selecionar projeto existente",
-                "Criar novo projeto automaticamente",
-            ],
-            horizontal=True,
-            key="memory_project_mode",
+        st.info(
+            "Nenhum preenchimento inicial é necessário. "
+            "A NAVE identificará projeto, cliente, evento, "
+            "título e versão a partir do PDF. Tudo poderá "
+            "ser revisado antes e depois de salvar."
         )
 
-        selected_project_id = None
-        selected_project_data = {}
-
-        if (
-            project_mode
-            == "Selecionar projeto existente"
-            and not project_options.empty
-        ):
-            labels = {
-                _project_label(
-                    row.to_dict()
-                ): str(row["id"])
-                for _, row
-                in project_options.iterrows()
-            }
-
-            project_label = st.selectbox(
-                "Projeto existente",
-                list(labels.keys()),
-                key="memory_existing_project",
-            )
-            selected_project_id = labels[
-                project_label
-            ]
-
-            selected_rows = project_options[
-                project_options["id"]
-                .astype(str)
-                .eq(
-                    str(
-                        selected_project_id
-                    )
-                )
-            ]
-
-            if not selected_rows.empty:
-                selected_project_data = (
-                    selected_rows.iloc[
-                        0
-                    ].to_dict()
-                )
-
-        elif (
-            project_mode
-            == "Selecionar projeto existente"
-            and project_options.empty
-        ):
-            st.info(
-                "Ainda não existem projetos. "
-                "A NAVE criará um automaticamente "
-                "a partir da apresentação."
-            )
-            project_mode = (
-                "Criar novo projeto automaticamente"
-            )
-
-        else:
-            st.info(
-                "Nenhum preenchimento é necessário. "
-                "A NAVE identificará os dados do projeto "
-                "a partir do PDF; você poderá revisá-los "
-                "antes e depois de salvar."
-            )
-
         uploaded = st.file_uploader(
-            "Apresentação em PDF",
+            "Apresentação final em PDF",
             type=["pdf"],
             accept_multiple_files=False,
             key="memory_pdf_upload",
             help=(
-                "O arquivo completo será enviado em uma única "
-                "análise, preservando a narrativa entre todos "
-                "os slides."
+                "Todos os slides serão analisados automaticamente "
+                "e consolidados como um único projeto."
             ),
         )
 
         analyze_clicked = st.button(
-            "Analisar apresentação completa",
+            "Analisar projeto completo",
             type="primary",
             use_container_width=True,
             disabled=(
@@ -989,10 +910,7 @@ with upload_tab:
                 ).stem
 
                 detected_project_name = (
-                    selected_project_data.get(
-                        "project_name"
-                    )
-                    or extraction.get(
+extraction.get(
                         "project_name"
                     )
                     or extraction.get(
@@ -1001,19 +919,13 @@ with upload_tab:
                     or file_title
                 )
                 detected_client_brand = (
-                    selected_project_data.get(
-                        "client_brand"
-                    )
-                    or extraction.get(
+extraction.get(
                         "client_brand"
                     )
                     or ""
                 )
                 detected_event_name = (
-                    selected_project_data.get(
-                        "event_name"
-                    )
-                    or extraction.get(
+extraction.get(
                         "event_name"
                     )
                     or ""
@@ -1043,9 +955,7 @@ with upload_tab:
                 st.session_state[
                     "memory_document_meta"
                 ] = {
-                    "selected_project_id": (
-                        selected_project_id
-                    ),
+                    "creates_new_project": True,
                 }
 
                 st.session_state[
@@ -1084,7 +994,7 @@ with upload_tab:
 
             except Exception as exc:
                 report_service_error(
-                    "leitura da apresentação completa",
+                    "leitura do projeto completo",
                     user_message=(
                         "Não foi possível analisar "
                         "esta apresentação."
@@ -1426,43 +1336,22 @@ with upload_tab:
                             )
                             st.stop()
 
-                        project_id = saved_meta.get(
-                            "selected_project_id"
+                        project_id = (
+                            create_memory_project(
+                                client,
+                                project_name=(
+                                    review_project_name
+                                ),
+                                client_brand=(
+                                    review_client_brand
+                                    or None
+                                ),
+                                event_name=(
+                                    review_event_name
+                                    or None
+                                ),
+                            )
                         )
-
-                        if not project_id:
-                            project_id = ensure_memory_project(
-                                client,
-                                project_name=(
-                                    review_project_name
-                                ),
-                                client_brand=(
-                                    review_client_brand
-                                    or None
-                                ),
-                                event_name=(
-                                    review_event_name
-                                    or None
-                                ),
-                            )
-                        else:
-                            update_memory_project_metadata(
-                                client,
-                                project_id=str(
-                                    project_id
-                                ),
-                                project_name=(
-                                    review_project_name
-                                ),
-                                client_brand=(
-                                    review_client_brand
-                                    or None
-                                ),
-                                event_name=(
-                                    review_event_name
-                                    or None
-                                ),
-                            )
 
                         extraction_for_save = {
                             **extraction,

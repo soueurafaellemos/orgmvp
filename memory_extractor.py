@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from collections import Counter
-
-import pandas as pd
+from pathlib import Path
+from typing import Any
 
 import fitz
+import pandas as pd
 
-from document_io import InputDocument, split_pdf
-from gemini_extractor import _structured_call, get_client
-from memory_models import MemoryBatch, MemoryOverview
+from document_io import (
+    InputDocument,
+    split_pdf,
+)
+from gemini_extractor import (
+    _structured_call,
+    get_client,
+)
+from memory_models import (
+    MemoryBatch,
+    MemoryOverview,
+)
 from memory_prompts import (
     MEMORY_OVERVIEW_PROMPT,
     MEMORY_SECTION_LABELS,
@@ -18,22 +29,8 @@ from memory_prompts import (
 )
 
 
-
-def _pdf_page_count(
-    doc: InputDocument,
-) -> int:
-    pdf = fitz.open(
-        stream=doc.data,
-        filetype="pdf",
-    )
-    try:
-        return int(pdf.page_count)
-    finally:
-        pdf.close()
-
-
-
 DETAIL_PAGES_PER_PASS = 6
+SYNTHESIS_CONTEXT_MAX_CHARS = 120_000
 
 MEMORY_EDITOR_COLUMNS = [
     "_row_id",
@@ -49,6 +46,20 @@ MEMORY_EDITOR_COLUMNS = [
 ]
 
 
+def _pdf_page_count(
+    doc: InputDocument,
+) -> int:
+    pdf = fitz.open(
+        stream=doc.data,
+        filetype="pdf",
+    )
+
+    try:
+        return int(pdf.page_count)
+    finally:
+        pdf.close()
+
+
 def _overview_as_batch(
     overview: MemoryOverview,
 ) -> MemoryBatch:
@@ -59,8 +70,12 @@ def _overview_as_batch(
         project_name=overview.project_name,
         event_name=overview.event_name,
         version_label=overview.version_label,
-        strategic_summary=overview.strategic_summary,
-        creative_concept=overview.creative_concept,
+        strategic_summary=(
+            overview.strategic_summary
+        ),
+        creative_concept=(
+            overview.creative_concept
+        ),
         slides=[],
         warnings=overview.warnings,
     )
@@ -108,6 +123,306 @@ def _normalize_detailed_batch(
     return batch
 
 
+def _clip(
+    value: Any,
+    limit: int,
+) -> str | None:
+    text = str(
+        value or ""
+    ).strip()
+
+    if not text:
+        return None
+
+    if len(text) <= limit:
+        return text
+
+    return text[:limit].rstrip() + "…"
+
+
+def _compact_batch(
+    batch: MemoryBatch,
+) -> dict:
+    data = batch.model_dump()
+    compact_slides = []
+
+    for slide in data.get(
+        "slides",
+        [],
+    ):
+        compact_items = []
+
+        for item in slide.get(
+            "items",
+            [],
+        ):
+            compact_items.append(
+                {
+                    "section": item.get(
+                        "section_key"
+                    ),
+                    "type": _clip(
+                        item.get("item_type"),
+                        100,
+                    ),
+                    "title": _clip(
+                        item.get("title"),
+                        180,
+                    ),
+                    "summary": _clip(
+                        item.get("summary"),
+                        450,
+                    ),
+                    "status": item.get(
+                        "status"
+                    ),
+                    "evidence": _clip(
+                        item.get("evidence"),
+                        240,
+                    ),
+                }
+            )
+
+        compact_slides.append(
+            {
+                "page": slide.get(
+                    "source_page"
+                ),
+                "title": _clip(
+                    slide.get("slide_title"),
+                    180,
+                ),
+                "summary": _clip(
+                    slide.get("slide_summary"),
+                    500,
+                ),
+                "primary_section": slide.get(
+                    "primary_section"
+                ),
+                "items": compact_items,
+            }
+        )
+
+    return {
+        "source_file": data.get(
+            "source_file"
+        ),
+        "document_title": _clip(
+            data.get("document_title"),
+            250,
+        ),
+        "client_brand": _clip(
+            data.get("client_brand"),
+            180,
+        ),
+        "project_name": _clip(
+            data.get("project_name"),
+            250,
+        ),
+        "event_name": _clip(
+            data.get("event_name"),
+            220,
+        ),
+        "version_label": _clip(
+            data.get("version_label"),
+            100,
+        ),
+        "strategic_summary": _clip(
+            data.get("strategic_summary"),
+            900,
+        ),
+        "creative_concept": _clip(
+            data.get("creative_concept"),
+            500,
+        ),
+        "slides": compact_slides,
+        "warnings": [
+            _clip(warning, 260)
+            for warning in (
+                data.get("warnings")
+                or []
+            )
+            if _clip(warning, 260)
+        ],
+    }
+
+
+def _synthesis_context(
+    batches: list[MemoryBatch],
+) -> str:
+    payload = [
+        _compact_batch(batch)
+        for batch in batches
+    ]
+
+    context = json.dumps(
+        payload,
+        ensure_ascii=False,
+        default=str,
+    )
+
+    if (
+        len(context)
+        > SYNTHESIS_CONTEXT_MAX_CHARS
+    ):
+        context = (
+            context[
+                :SYNTHESIS_CONTEXT_MAX_CHARS
+            ]
+            + "\n[conteúdo abreviado "
+            "automaticamente]"
+        )
+
+    return context
+
+
+def _first_value(
+    batches: list[MemoryBatch],
+    field: str,
+) -> str | None:
+    for batch in batches:
+        value = getattr(
+            batch,
+            field,
+            None,
+        )
+
+        if value:
+            return str(value)
+
+    return None
+
+
+def _fallback_overview(
+    *,
+    doc: InputDocument,
+    detail_batches: list[MemoryBatch],
+    warnings: list[str],
+) -> MemoryOverview:
+    file_title = Path(
+        doc.name
+    ).stem
+
+    return MemoryOverview(
+        source_file=doc.name,
+        document_title=(
+            _first_value(
+                detail_batches,
+                "document_title",
+            )
+            or file_title
+        ),
+        client_brand=_first_value(
+            detail_batches,
+            "client_brand",
+        ),
+        project_name=(
+            _first_value(
+                detail_batches,
+                "project_name",
+            )
+            or _first_value(
+                detail_batches,
+                "document_title",
+            )
+            or file_title
+        ),
+        event_name=_first_value(
+            detail_batches,
+            "event_name",
+        ),
+        version_label=_first_value(
+            detail_batches,
+            "version_label",
+        ),
+        strategic_summary=_first_value(
+            detail_batches,
+            "strategic_summary",
+        ),
+        creative_concept=_first_value(
+            detail_batches,
+            "creative_concept",
+        ),
+        warnings=warnings,
+    )
+
+
+def _synthesize_overview(
+    client,
+    *,
+    doc: InputDocument,
+    page_count: int,
+    model: str,
+    detail_batches: list[MemoryBatch],
+    warnings: list[str],
+) -> MemoryOverview:
+    context = _synthesis_context(
+        detail_batches
+    )
+
+    prompt = (
+        MEMORY_OVERVIEW_PROMPT
+        + "\n\nVocê recebeu abaixo o resultado estruturado "
+        "da leitura de TODOS os slides da apresentação. "
+        "Consolide esses resultados como um único projeto. "
+        "Não invente informações e não liste fichas individuais."
+        + "\n\nARQUIVO ORIGINAL: "
+        + doc.name
+        + "\nTOTAL DE SLIDES: "
+        + str(page_count)
+        + "\n\nCONTEÚDO ESTRUTURADO DE TODOS OS SLIDES:\n"
+        + context
+    )
+
+    try:
+        overview = _structured_call(
+            client,
+            model=model,
+            prompt=prompt,
+            docs=[],
+            schema=MemoryOverview,
+            context=(
+                "consolidação global da Memória de "
+                + doc.name
+            ),
+        )
+        overview.source_file = doc.name
+        overview.warnings = list(
+            dict.fromkeys(
+                [
+                    *(
+                        overview.warnings
+                        or []
+                    ),
+                    *warnings,
+                ]
+            )
+        )
+        return overview
+
+    except Exception as exc:
+        return _fallback_overview(
+            doc=doc,
+            detail_batches=(
+                detail_batches
+            ),
+            warnings=list(
+                dict.fromkeys(
+                    [
+                        *warnings,
+                        (
+                            "A consolidação automática do "
+                            "projeto foi concluída com os "
+                            "metadados disponíveis nas "
+                            "leituras dos slides. "
+                            f"Detalhe técnico: {exc}"
+                        ),
+                    ]
+                )
+            ),
+        )
+
+
 def extract_memory(
     docs: list[InputDocument],
     *,
@@ -116,26 +431,29 @@ def extract_memory(
     progress_callback=None,
 ) -> list[MemoryBatch]:
     """
-    Analisa cada apresentação inteira em um único fluxo.
+    Analisa a apresentação inteira em um único fluxo para a pessoa.
 
-    Primeiro, o PDF completo é lido para compreender narrativa,
-    estratégia e metadados. Depois, passagens internas automáticas
-    organizam os detalhes de todos os slides usando o contexto global.
+    O PDF é lido internamente em passagens automáticas para respeitar
+    os limites do modelo. Depois, todos os resultados são consolidados
+    em uma visão global única do projeto.
 
-    Não existe configuração de lotes para a pessoa usuária.
+    Nenhuma configuração de lotes aparece na interface.
     """
     client = get_client(api_key)
+    all_batches = []
 
     plans = []
 
     for doc in docs:
         if doc.mime_type != "application/pdf":
             raise ValueError(
-                "A Memória visual precisa de uma apresentação "
-                "exportada em PDF."
+                "A Memória visual precisa de "
+                "uma apresentação em PDF."
             )
 
-        page_count = _pdf_page_count(doc)
+        page_count = _pdf_page_count(
+            doc
+        )
         parts = split_pdf(
             doc,
             pages_per_batch=(
@@ -153,70 +471,14 @@ def extract_memory(
         )
 
     total_steps = sum(
-        1 + len(parts)
+        len(parts) + 1
         for _, _, parts in plans
     )
     completed_steps = 0
-    batches = []
 
     for doc, page_count, parts in plans:
-        if progress_callback:
-            progress_callback(
-                completed_steps,
-                total_steps,
-                (
-                    "Compreendendo a apresentação completa "
-                    f"{doc.name} — {page_count} slides"
-                ),
-            )
-
-        try:
-            overview = _structured_call(
-                client,
-                model=model,
-                prompt=(
-                    MEMORY_OVERVIEW_PROMPT
-                    + "\n\nARQUIVO ORIGINAL: "
-                    + doc.name
-                    + "\nTOTAL DE SLIDES: "
-                    + str(page_count)
-                ),
-                docs=[doc],
-                schema=MemoryOverview,
-                context=(
-                    "leitura global da Memória de "
-                    + doc.name
-                ),
-            )
-        except RuntimeError as exc:
-            overview = MemoryOverview(
-                source_file=doc.name,
-                document_title=(
-                    Path(doc.name).stem
-                ),
-                warnings=[
-                    (
-                        "A leitura global não retornou uma "
-                        "estrutura completa. A NAVE prosseguiu "
-                        "com a organização detalhada dos slides. "
-                        f"Detalhe técnico: {exc}"
-                    )
-                ],
-            )
-
-        overview.source_file = doc.name
-        batches.append(
-            _overview_as_batch(
-                overview
-            )
-        )
-        completed_steps += 1
-
-        global_context = json.dumps(
-            overview.model_dump(),
-            ensure_ascii=False,
-            default=str,
-        )
+        detail_batches = []
+        document_warnings = []
 
         for part, first, last in parts:
             if progress_callback:
@@ -224,58 +486,111 @@ def extract_memory(
                     completed_steps,
                     total_steps,
                     (
-                        "Organizando o conteúdo da apresentação "
+                        "Lendo a apresentação completa "
                         f"— slides {first} a {last} "
                         f"de {page_count}"
                     ),
                 )
 
-            detailed_prompt = (
+            detail_prompt = (
                 MEMORY_SYSTEM_PROMPT
-                + "\n\nCONTEXTO GLOBAL DA APRESENTAÇÃO:\n"
-                + global_context
                 + "\n\nARQUIVO ORIGINAL: "
                 + doc.name
-                + "\nSLIDES DESTA PASSAGEM: "
+                + "\nTOTAL DE SLIDES DO ARQUIVO: "
+                + str(page_count)
+                + "\nSLIDES DESTA LEITURA: "
                 + str(first)
                 + " a "
                 + str(last)
-                + "\nAnalise todos os slides desta passagem. "
+                + "\nAnalise todos os slides desta leitura. "
                 "Use a numeração ORIGINAL do PDF em source_page. "
-                "O contexto global acima deve orientar a leitura, "
-                "mas toda ficha precisa estar sustentada pelo slide."
+                "Esta é uma parte de uma apresentação maior; "
+                "preserve títulos, evidências e relações explícitas "
+                "sem inventar o restante do projeto."
             )
 
-            detail_batch = _structured_call(
-                client,
-                model=model,
-                prompt=detailed_prompt,
-                docs=[part],
-                schema=MemoryBatch,
-                context=(
-                    f"Memória de {doc.name}, "
-                    f"slides {first}-{last}"
+            try:
+                detail_batch = (
+                    _structured_call(
+                        client,
+                        model=model,
+                        prompt=detail_prompt,
+                        docs=[part],
+                        schema=MemoryBatch,
+                        context=(
+                            f"Memória de {doc.name}, "
+                            f"slides {first}-{last}"
+                        ),
+                    )
+                )
+
+                detail_batches.append(
+                    _normalize_detailed_batch(
+                        detail_batch,
+                        source_file=(
+                            doc.name
+                        ),
+                        first_page=first,
+                        last_page=last,
+                    )
+                )
+
+            except Exception as exc:
+                document_warnings.append(
+                    (
+                        f"Os slides {first} a {last} "
+                        "não puderam ser estruturados "
+                        "nesta tentativa. "
+                        f"Detalhe técnico: {exc}"
+                    )
+                )
+
+            completed_steps += 1
+
+        if not detail_batches:
+            raise RuntimeError(
+                "Nenhum conjunto de slides pôde ser "
+                "analisado. Tente novamente após alguns "
+                "minutos ou confirme o modelo configurado."
+            )
+
+        if progress_callback:
+            progress_callback(
+                completed_steps,
+                total_steps,
+                (
+                    "Consolidando o projeto completo "
+                    f"— {page_count} slides"
                 ),
             )
 
-            batches.append(
-                _normalize_detailed_batch(
-                    detail_batch,
-                    source_file=doc.name,
-                    first_page=first,
-                    last_page=last,
-                )
-            )
-            completed_steps += 1
+        overview = _synthesize_overview(
+            client,
+            doc=doc,
+            page_count=page_count,
+            model=model,
+            detail_batches=detail_batches,
+            warnings=document_warnings,
+        )
+
+        all_batches.extend(
+            [
+                _overview_as_batch(
+                    overview
+                ),
+                *detail_batches,
+            ]
+        )
+        completed_steps += 1
 
     if progress_callback:
         progress_callback(
             total_steps,
             total_steps,
-            "Apresentação completa organizada.",
+            "Projeto completo organizado.",
         )
 
-    return batches
+    return all_batches
 
 
 def merge_memory_batches(batches: list[MemoryBatch]) -> dict:

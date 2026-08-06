@@ -859,3 +859,23 @@ Antes de usar, execute:
 - não altera o isolamento da Memória;
 - preserva o menu em ordem alfabética;
 - não contém arquivos da pasta assets.
+
+
+## V25.4 — Novo projeto e análise de apresentações grandes
+
+- remove totalmente a seleção de projeto existente da Memória;
+- a aba passa a se chamar “Adicionar novo projeto”;
+- cada PDF cria sempre um novo projeto;
+- nenhum projeto existente é pesquisado, atualizado ou reaproveitado;
+- o envio representa a apresentação final já enviada ao cliente;
+- remove a chamada inicial com o PDF completo, que podia falhar
+  em apresentações grandes;
+- todos os slides continuam sendo analisados automaticamente;
+- os resultados de todos os slides são consolidados ao final em uma
+  visão global única do projeto;
+- falha em uma passagem não interrompe automaticamente as demais;
+- corrige importações ausentes de json e Path na V25.3;
+- não exige novo SQL;
+- preserva o menu em ordem alfabética;
+- não altera o isolamento da Memória;
+- não contém arquivos da pasta assets.
