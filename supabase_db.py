@@ -26,6 +26,7 @@ from taxonomy import (
     normalize_taxonomy_text,
     taxonomy_catalog_rows,
     taxonomy_options,
+    taxonomy_terms_for_dimension,
 )
 
 
@@ -3020,9 +3021,15 @@ def upsert_custom_taxonomy_alias(
     client: Client,
     *,
     entity_type: str,
+    dimension: str,
     canonical_term: str,
     alias: str,
     notes: str | None = None,
+    source_url: str | None = None,
+    source_title: str | None = None,
+    language: str | None = None,
+    market: str | None = None,
+    confidence: str | None = None,
 ) -> dict:
     if entity_type not in {
         "product",
@@ -3033,82 +3040,86 @@ def upsert_custom_taxonomy_alias(
             "Tipo de taxonomia inválido."
         )
 
-    if canonical_term not in taxonomy_options(
-        entity_type
-    ):
+    valid_terms = taxonomy_terms_for_dimension(
+        entity_type,
+        dimension,
+    )
+
+    if canonical_term not in valid_terms:
         raise ValueError(
-            "A categoria canônica não existe "
-            "na taxonomia padrão."
+            "O conceito canônico não existe nessa dimensão."
         )
 
     clean_alias = str(alias or "").strip()
 
     if len(clean_alias) < 2:
         raise ValueError(
-            "Informe uma variação com pelo menos "
-            "dois caracteres."
+            "Informe uma variação com pelo menos dois caracteres."
         )
 
     normalized_alias = normalize_taxonomy_text(
         clean_alias
     )
-
     default_rows = taxonomy_catalog_rows()
-
     default_match = next(
         (
             row
             for row in default_rows
             if row["entity_type"] == entity_type
-            and row["normalized_alias"]
-            == normalized_alias
+            and row["dimension"] == dimension
+            and row["normalized_alias"] == normalized_alias
         ),
         None,
     )
 
     if default_match:
-        if (
-            default_match["canonical_term"]
-            == canonical_term
-        ):
+        if default_match["canonical_term"] == canonical_term:
             raise ValueError(
-                "Essa variação já faz parte "
-                "da taxonomia padrão."
+                "Essa variação já faz parte da taxonomia pesquisada."
             )
-
         raise ValueError(
             "Essa variação já aponta para "
-            f'"{default_match["canonical_term"]}".'
+            f'"{default_match["canonical_term"]}" nessa dimensão.'
         )
+
+    canonical_row = next(
+        (
+            row
+            for row in default_rows
+            if row["entity_type"] == entity_type
+            and row["dimension"] == dimension
+            and row["canonical_term"] == canonical_term
+        ),
+        {},
+    )
 
     payload = {
         "entity_type": entity_type,
+        "dimension": dimension,
+        "canonical_key": canonical_row.get("canonical_key"),
         "canonical_term": canonical_term,
         "alias": clean_alias,
         "normalized_alias": normalized_alias,
         "is_active": True,
         "created_by": "Administração da NAVE",
         "notes": _json_safe(notes),
+        "source_url": _json_safe(source_url),
+        "source_title": _json_safe(source_title),
+        "language": _json_safe(language),
+        "market": _json_safe(market),
+        "confidence": _json_safe(confidence or "Curadoria VOE"),
     }
 
     response = (
-        client.table(
-            "knowledge_taxonomy_aliases"
-        )
+        client.table("knowledge_taxonomy_aliases")
         .upsert(
             payload,
-            on_conflict=(
-                "entity_type,normalized_alias"
-            ),
+            on_conflict="entity_type,normalized_alias",
         )
         .execute()
     )
 
-    return (
-        response.data[0]
-        if response.data
-        else payload
-    )
+    return response.data[0] if response.data else payload
 
 
 def set_custom_taxonomy_alias_active(

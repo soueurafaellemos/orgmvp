@@ -779,3 +779,23 @@ Antes de usar, execute:
 Antes de usar, execute:
 
 `supabase_patch_taxonomia_nave_v1.sql`
+
+
+## V24.1 — Taxonomia pesquisada e hierárquica
+
+- evolui diretamente a V24 instalada;
+- preserva aliases personalizados já cadastrados;
+- separa formato de evento, formato de experiência, mecânica,
+  tecnologia, objetivo e serviço de produção;
+- amplia categorias de brindes;
+- amplia tipos e atributos de espaços;
+- registra fonte, mercado, tipo e peso das referências;
+- diferencia fontes setoriais de sinais visuais e sociais;
+- mostra a fundamentação dos conceitos dentro da NAVE;
+- acrescenta fonte opcional aos aliases criados pela VOE;
+- preserva nomes, descrições, documentos, imagens e evidências;
+- o patch não contém arquivos da pasta assets.
+
+Antes de usar, execute:
+
+`supabase_patch_taxonomia_pesquisada_v24_1.sql`

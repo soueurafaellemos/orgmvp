@@ -1,0 +1,427 @@
+{
+  "research_date": "2026-08-05",
+  "method": {
+    "summary": "Pesquisa pública multi-fonte, normalização linguística e organização hierárquica.",
+    "source_families": [
+      "associações e glossários",
+      "premiações",
+      "imprensa de eventos, marketing e PR",
+      "plataformas de eventos",
+      "marketplaces de brindes e venues",
+      "agências e fornecedores",
+      "repertório visual público"
+    ],
+    "important_note": "Pinterest, Instagram e Behance são sinais de linguagem e repertório; não são autoridade isolada para criar categorias."
+  },
+  "sources": {
+    "cannes_bea": {
+      "title": "Cannes Lions — Brand Experience & Activation",
+      "url": "https://www.canneslions.com/awards/lions/brand-experience-activation",
+      "source_type": "Premiação internacional",
+      "market": "Global",
+      "authority": "Alta",
+      "usage": "Experience design, activation, retail, tecnologia, gaming, instalações, stunts, patrocínios e lançamentos."
+    },
+    "eventex_categories": {
+      "title": "Eventex Awards — Tracks and Categories",
+      "url": "https://eventex.co/categories",
+      "source_type": "Premiação internacional",
+      "market": "Global",
+      "authority": "Alta",
+      "usage": "Formatos de eventos, brand experiences, venues, tecnologia, produção, equipes e estratégia."
+    },
+    "eventex_home": {
+      "title": "Eventex Awards — Events and Experience Marketing",
+      "url": "https://eventex.co/",
+      "source_type": "Premiação internacional",
+      "market": "Global",
+      "authority": "Alta",
+      "usage": "Ampla estrutura de categorias de eventos e marketing de experiência."
+    },
+    "ex_awards": {
+      "title": "Event Marketer — Ex Awards 2026",
+      "url": "https://www.eventmarketer.com/event/ex-awards-2026/",
+      "source_type": "Premiação especializada",
+      "market": "Estados Unidos / Global",
+      "authority": "Alta",
+      "usage": "Pop-ups, sampling, mobile tours, entretenimento, trade shows, festivais, esportes, gaming e tecnologia."
+    },
+    "event_marketer_awards": {
+      "title": "Event Marketer — Award Programs",
+      "url": "https://www.eventmarketer.com/awards/",
+      "source_type": "Imprensa e premiação especializada",
+      "market": "Estados Unidos / Global",
+      "authority": "Alta",
+      "usage": "Experience design, event technology, trade shows e programas B2B e B2C."
+    },
+    "ana_reggie": {
+      "title": "ANA — REGGIE Brand Catalyst Awards",
+      "url": "https://www.ana.net/content/show/id/reggie-brand-catalyst-awards",
+      "source_type": "Associação e premiação",
+      "market": "Estados Unidos / Global",
+      "authority": "Alta",
+      "usage": "Brand activation, experiential, sponsorship, influencer, shopper, propósito e mensuração."
+    },
+    "ana_reggie_categories": {
+      "title": "ANA — 2025 REGGIE Awards categories and winners",
+      "url": "https://www.ana.net/content/show/id/pr-2025-05-reggie",
+      "source_type": "Associação e premiação",
+      "market": "Estados Unidos / Global",
+      "authority": "Alta",
+      "usage": "Experiential, digital/social, influencer, sponsorship, content, shopper marketing, AI e parcerias."
+    },
+    "ampro_awards": {
+      "title": "AMPRO Awards 2025",
+      "url": "https://ampro.com.br/2025/07/02/ampro-awards-abre-inscricoes-para-edicao-historica-de-25-anos/",
+      "source_type": "Associação e premiação",
+      "market": "Brasil",
+      "authority": "Alta",
+      "usage": "Live marketing brasileiro, experiências, ativações, promoção e efetividade criativa."
+    },
+    "mpi_mice": {
+      "title": "MPI — Glossary and Thesaurus of MICE Terminology",
+      "url": "https://www.mpi.org/docs/librariesprovider72/default-document-library/mice20terminology.pdf",
+      "source_type": "Associação / glossário técnico",
+      "market": "Global",
+      "authority": "Alta",
+      "usage": "Meetings, incentives, conferences, conventions, exhibitions e terminologia operacional."
+    },
+    "mpi_meeting_types": {
+      "title": "MPI — Meetings Activity Profile",
+      "url": "https://www.mpi.org/docs/default-source/research-and-reports/meetings-activity-profile-report_ceis-3-0.pdf",
+      "source_type": "Associação / pesquisa",
+      "market": "Global",
+      "authority": "Alta",
+      "usage": "Conferências, congressos, feiras, exposições, incentivos e reuniões corporativas."
+    },
+    "cvent_event_types": {
+      "title": "Cvent — Event Types",
+      "url": "https://www.cvent.com/en/blog/events/event-types",
+      "source_type": "Plataforma de eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Conferências, seminários, webinars, workshops, user groups, VIP e networking."
+    },
+    "cvent_virtual": {
+      "title": "Cvent — Virtual Event Ideas and Formats",
+      "url": "https://www.cvent.com/en/blog/events/virtual-event-ideas",
+      "source_type": "Plataforma de eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Eventos virtuais e híbridos, webinars, treinamentos, trade shows, lançamentos e tours."
+    },
+    "cvent_onsite": {
+      "title": "Cvent — OnArrival Check-in and Badging",
+      "url": "https://www.cvent.com/en/event-marketing-management/onarrival-event-check-in-software",
+      "source_type": "Tecnologia para eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Credenciamento, QR code, badge printing, RFID/NFC, controle de acesso e presença."
+    },
+    "cvent_venues": {
+      "title": "Cvent — Venue Marketplace and Venue Types",
+      "url": "https://www.cvent.com/en/venue-sourcing",
+      "source_type": "Marketplace de venues",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Hotéis, resorts, centros de conferência, arenas, museus, restaurantes e espaços especiais."
+    },
+    "bizzabo_platform": {
+      "title": "Bizzabo — Event Experience OS",
+      "url": "https://www.bizzabo.com/",
+      "source_type": "Tecnologia para eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Registro, app, networking, smart badge, lead retrieval, streaming, patrocinadores e analytics."
+    },
+    "bizzabo_activation": {
+      "title": "Bizzabo — Brand Activation Ideas",
+      "url": "https://www.bizzabo.com/blog/brand-activation-ideas",
+      "source_type": "Conteúdo especializado",
+      "market": "Global",
+      "authority": "Média",
+      "usage": "VR, webinars interativos, demonstrações e experiências presenciais, virtuais e híbridas."
+    },
+    "swapcard_features": {
+      "title": "Swapcard — Event Management and Engagement",
+      "url": "https://www.swapcard.com/features",
+      "source_type": "Tecnologia para eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Registro, networking, matchmaking, monetização, patrocinadores, leads e analytics."
+    },
+    "swapcard_gamification": {
+      "title": "Swapcard + Captello — Event Gamification",
+      "url": "https://www.swapcard.com/platform/integrations/captello",
+      "source_type": "Tecnologia para eventos",
+      "market": "Global",
+      "authority": "Média",
+      "usage": "Scavenger hunts, leaderboards, trivia, rewards e engajamento de patrocinadores."
+    },
+    "bizbash_awards": {
+      "title": "BizBash — Event Experience Awards 2025",
+      "url": "https://www.bizbash.com/event-production-planning/winners-of-bizbash-s-13th-annual-event-experience-awards",
+      "source_type": "Imprensa e premiação especializada",
+      "market": "Estados Unidos / Global",
+      "authority": "Média-alta",
+      "usage": "Experiências imersivas, tecnologia, decoração, entretenimento, guerrilha, IA e eventos virtuais."
+    },
+    "bizbash_sxsw": {
+      "title": "BizBash — SXSW 2026 Brand Activations",
+      "url": "https://www.bizbash.com/experiential-marketing/sxsw-2026-top-brand-events-and-activations",
+      "source_type": "Imprensa especializada",
+      "market": "Estados Unidos / Global",
+      "authority": "Média-alta",
+      "usage": "Photo opps, badges personalizados, IA, simuladores, workshops, pop-ups e clubhouses."
+    },
+    "bizbash_campus": {
+      "title": "BizBash — Experiential Event Trends for 2025",
+      "url": "https://www.bizbash.com/experiential-marketing/5-experiential-event-trends-for-2025",
+      "source_type": "Imprensa especializada",
+      "market": "Estados Unidos",
+      "authority": "Média",
+      "usage": "IA, ativações multissensoriais, competitive socializing, jogos, prize crane e hiperinteratividade."
+    },
+    "promoview_live": {
+      "title": "Promoview — O que é ativação de marca?",
+      "url": "https://www.promoview.com.br/o-que-e-ativacao-de-marca/",
+      "source_type": "Imprensa especializada",
+      "market": "Brasil",
+      "authority": "Média-alta",
+      "usage": "Ativação física, sensorial ou interativa; estandes, sampling, festivais e instalações imersivas."
+    },
+    "promoview_apas": {
+      "title": "Promoview — Ações nos estandes da APAS Show 2025",
+      "url": "https://www.promoview.com.br/acoes-estandes-apas-show-2025/",
+      "source_type": "Imprensa especializada",
+      "market": "Brasil",
+      "authority": "Média-alta",
+      "usage": "Estandes, espaços instagramáveis, apresentação de produto, relacionamento e experiências em feira."
+    },
+    "promoview_brand_experience": {
+      "title": "Promoview — Intenção estratégica por trás da ativação",
+      "url": "https://www.promoview.com.br/o-problema-nao-e-a-ativacao-e-a-falta-de-intencao-por-tras-dela/",
+      "source_type": "Imprensa especializada",
+      "market": "Brasil",
+      "authority": "Média-alta",
+      "usage": "Eventos, experiências imersivas, ações itinerantes, intervenções urbanas, cenografia, brindes e conteúdo instagramável."
+    },
+    "meio_mensagem_live": {
+      "title": "Meio & Mensagem — Tendências do Live Marketing",
+      "url": "https://www.meioemensagem.com.br/comunicacao/as-tendencias-que-estao-redesenhando-o-live-marketing",
+      "source_type": "Imprensa de marketing",
+      "market": "Brasil",
+      "authority": "Média-alta",
+      "usage": "Experiência, dados, narrativa, relacionamento e plataformas de marca."
+    },
+    "meio_mensagem_memory": {
+      "title": "Meio & Mensagem — O futuro do live marketing",
+      "url": "https://www.meioemensagem.com.br/sxsw/o-futuro-do-live-marketing-e-as-tendencias-que-vao-transformar-marcas",
+      "source_type": "Imprensa de marketing",
+      "market": "Brasil",
+      "authority": "Média",
+      "usage": "IA, tecnologia, experiências imersivas, networking, cultura e transformação das relações entre marcas e públicos."
+    },
+    "marketing_directo": {
+      "title": "MarketingDirecto — Tendências do Marketing Experiencial",
+      "url": "https://www.marketingdirecto.com/guias-especiales/tendencias-marcan-futuro-del-marketing-experiencial",
+      "source_type": "Imprensa de marketing",
+      "market": "Espanha / América Latina",
+      "authority": "Média",
+      "usage": "Emoção, propósito, sustentabilidade, tecnologia e mensuração."
+    },
+    "marketing_directo_popup": {
+      "title": "MarketingDirecto — Formas do marketing experiencial",
+      "url": "https://www.marketingdirecto.com/marketing-general/marketing-experiencial-la-manera-mas-novedosa-de-hacer-publicidad",
+      "source_type": "Imprensa de marketing",
+      "market": "Espanha / América Latina",
+      "authority": "Média",
+      "usage": "Demonstrações no ponto de venda, street marketing, roadshows, nightlife, promoções e retail training."
+    },
+    "ppai_sales": {
+      "title": "PPAI — Promotional Products Sales Report",
+      "url": "https://www.ppai.org/wp-content/uploads/2025/02/2024-PPAI-Sales-Volume-Report.pdf",
+      "source_type": "Associação / pesquisa setorial",
+      "market": "Estados Unidos / Global",
+      "authority": "Alta",
+      "usage": "Apparel, drinkware, headwear, bags e mercado de promotional products."
+    },
+    "ppai_categories": {
+      "title": "PPAI — Promotional Product Supplier Categories",
+      "url": "https://www.ppai.org/media-hub/distributors-name-the-supplier-all-stars/",
+      "source_type": "Associação / imprensa setorial",
+      "market": "Estados Unidos / Global",
+      "authority": "Alta",
+      "usage": "Health care, household, drinkware, bags, writing, tech, travel, auto, outdoor, pet, school e office."
+    },
+    "asi_impressions": {
+      "title": "ASI — Ad Impressions Study",
+      "url": "https://members.asicentral.com/news/strategy/march-2026/asi-s-2026-ad-impressions-study-5-compelling-takeaways/",
+      "source_type": "Associação / pesquisa setorial",
+      "market": "Estados Unidos / Global",
+      "authority": "Alta",
+      "usage": "T-shirts, drinkware, polos, headwear, bags, food gifts e blankets."
+    },
+    "asi_design": {
+      "title": "ASI — Top promotional product search categories",
+      "url": "https://members.asicentral.com/news/web-exclusive/september-2021/the-top-100-esp-searches/",
+      "source_type": "Associação / premiação setorial",
+      "market": "Estados Unidos / Global",
+      "authority": "Média-alta",
+      "usage": "Apparel, bags, desk and paper, drinkware, headwear, health, home, PPE, signs, sports, tech e writing instruments."
+    },
+    "fourimprint_products": {
+      "title": "4imprint — Product Range",
+      "url": "https://investors.4imprint.com/our-business/market-position/our-products/",
+      "source_type": "Marketplace de brindes",
+      "market": "Global",
+      "authority": "Média",
+      "usage": "Pens, bags, drinkware, apparel, technology e trade show displays."
+    },
+    "tagvenue": {
+      "title": "Tagvenue — Venue Marketplace",
+      "url": "https://www.tagvenue.com/",
+      "source_type": "Marketplace de venues",
+      "market": "Global",
+      "authority": "Média",
+      "usage": "Restaurantes, halls, estúdios, barcos, castelos e numerosos tipos de espaços."
+    },
+    "peerspace": {
+      "title": "Peerspace — Unique Venue Marketplace",
+      "url": "https://www.peerspace.com/plan/event",
+      "source_type": "Marketplace de venues",
+      "market": "Global",
+      "authority": "Média",
+      "usage": "Galerias, rooftops, lofts, warehouses, studios e espaços criativos."
+    },
+    "venuescanner": {
+      "title": "VenueScanner — Unique Venue Types",
+      "url": "https://www.venuescanner.com/blog/venuescanner-launches-in-the-us",
+      "source_type": "Marketplace de venues",
+      "market": "Reino Unido / Estados Unidos",
+      "authority": "Média",
+      "usage": "Rooftop bars, warehouses, historic lofts, conference centres e meeting rooms."
+    },
+    "freeman": {
+      "title": "Freeman — Event and Trade Show Services",
+      "url": "https://www.freeman.com/",
+      "source_type": "Fornecedor global de eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Conferences, trade shows, exhibitor services, AV, strategy e insights."
+    },
+    "gpj_services": {
+      "title": "George P. Johnson — Services",
+      "url": "https://www.gpj.com/gpj-services-summary/",
+      "source_type": "Agência global de experiências",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Strategy, creative, production, technology, content, fabrication, measurement e sponsorship."
+    },
+    "jack_morton": {
+      "title": "Jack Morton — Global Experiential Agency",
+      "url": "https://jackmorton.com/",
+      "source_type": "Agência global de experiências",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Strategy, creative, production, innovation, fabrication e measurement."
+    },
+    "opus_services": {
+      "title": "Opus Agency — Events and Experiences",
+      "url": "https://www.opusagency.com/region/apac",
+      "source_type": "Agência global de eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "In-person, virtual, hybrid, activations, exhibitions, immersive environments, logistics e show management."
+    },
+    "pinterest_signal": {
+      "title": "Pinterest — Brand Activation Ideas",
+      "url": "https://www.pinterest.com/ideas/brand-activation-ideas-pinterest/895568840763/",
+      "source_type": "Repertório visual público",
+      "market": "Global",
+      "authority": "Sinal",
+      "usage": "Vocabulário visual de photo opportunities, installations, booths, pop-ups e event activations."
+    },
+    "behance_signal": {
+      "title": "Behance — Experiential Activation Projects",
+      "url": "https://www.behance.net/search/projects/experiential%20activation",
+      "source_type": "Portfólio visual público",
+      "market": "Global",
+      "authority": "Sinal",
+      "usage": "Vocabulário de portfólio: immersive installation, pop-up, photo opp, photobooth e exhibition booth."
+    },
+    "instagram_signal": {
+      "title": "Instagram — Public Experiential Activation Posts",
+      "url": "https://www.instagram.com/",
+      "source_type": "Rede social / sinal linguístico",
+      "market": "Global",
+      "authority": "Sinal",
+      "usage": "Linguagem corrente de creators, fornecedores e agências; não usada isoladamente para criar categorias."
+    },
+    "icca_mice": {
+      "title": "ICCA — MICE definitions",
+      "url": "https://www.iccaworld.org/faq/",
+      "source_type": "Associação internacional",
+      "market": "Global",
+      "authority": "Alta",
+      "usage": "Definições de meetings, incentives, conferences e exhibitions."
+    },
+    "cvent_event_learning": {
+      "title": "Cvent — Event Types Learning Center",
+      "url": "https://community.cvent.com/education/learning-centers/event-formats-event-types/event-types",
+      "source_type": "Plataforma de eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Conference, networking, trade show, internal event, sales kickoff, workshop, launch e VIP."
+    },
+    "ppai_about": {
+      "title": "PPAI — What are promotional products?",
+      "url": "https://www.ppai.org/about/",
+      "source_type": "Associação setorial",
+      "market": "Estados Unidos / Global",
+      "authority": "Alta",
+      "usage": "Merch, swag e categorias como apparel, drinkware, pens, bags e tech."
+    },
+    "asi_research": {
+      "title": "ASI — Promotional Products Research",
+      "url": "https://members.asicentral.com/research",
+      "source_type": "Associação / pesquisa setorial",
+      "market": "Estados Unidos / Global",
+      "authority": "Alta",
+      "usage": "Global Ad Impressions Study e pesquisa sobre impacto e categorias de branded merchandise."
+    },
+    "cvent_checkin": {
+      "title": "Cvent — OnArrival Check-in and Badging",
+      "url": "https://www.cvent.com/en/event-marketing-management/onarrival-event-check-in-software",
+      "source_type": "Tecnologia para eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "QR code, barcode, check-in, badge printing e dados de presença."
+    },
+    "bizzabo_smartbadge": {
+      "title": "Bizzabo — Klik SmartBadges",
+      "url": "https://welcome.bizzabo.com/klik-experiential",
+      "source_type": "Tecnologia para eventos",
+      "market": "Global",
+      "authority": "Média-alta",
+      "usage": "Smart badges, networking, lead capture, touchpoints e heatmaps."
+    },
+    "prweek_experiential": {
+      "title": "PRWeek — Experiential PR and storytelling",
+      "url": "https://www.prweek.com/article/1399945/deep-dive-experiential-pr-next-wave-storytelling",
+      "source_type": "Imprensa de PR",
+      "market": "Global",
+      "authority": "Média",
+      "usage": "Experiential PR, storytelling, brand events, stunts e mídia espontânea."
+    },
+    "campaign_experiential": {
+      "title": "Campaign — Experiential Marketing coverage",
+      "url": "https://www.campaignlive.co.uk/tag/discipline/marketing/experiential-marketing/5884",
+      "source_type": "Imprensa de publicidade",
+      "market": "Global",
+      "authority": "Média",
+      "usage": "Experiências imersivas, pop-ups, gaming, brand experience e ativações."
+    }
+  },
+  "term_count": 359
+}
