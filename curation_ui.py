@@ -840,6 +840,8 @@ def render_curation_editor(
     entity_id: str,
     record: dict,
     supplier_options: dict[str, str] | None = None,
+    title: str = "Editar cadastro",
+    expanded: bool = False,
 ) -> None:
     supplier_options = supplier_options or {}
 
@@ -855,8 +857,8 @@ def render_curation_editor(
     render_curation_status(state)
 
     with st.expander(
-        "Editar cadastro",
-        expanded=False,
+        title,
+        expanded=expanded,
     ):
         st.caption(
             "Toda alteração fica registrada no histórico "

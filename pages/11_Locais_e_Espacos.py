@@ -12,7 +12,15 @@ from supabase import Client, create_client
 
 from branding import NAVE_APP_ICON, apply_nave_branding, page_header
 from knowledge_details import render_complete_record
-from media_library import create_signed_media_url
+from curation_ui import render_curation_editor
+from media_library import (
+    ASSET_TYPE_LABELS as MEDIA_ASSET_TYPE_LABELS,
+    IMAGE_ASSET_TYPES,
+    add_external_media_link,
+    create_signed_media_url,
+    upload_media_asset,
+)
+from supabase_db import fetch_supplier_options
 from venue_types import (
     ALL_VENUE_TYPES,
     UNDEFINED_VENUE_TYPE,
@@ -183,12 +191,12 @@ def _render_visual_gallery(title: str, items: list[dict[str, Any]], *, empty_mes
         st.caption(empty_message)
         return
     lead = items[0]
-    st.image(lead["url"], caption=lead.get("label") or title, use_container_width=True)
+    st.image(lead["url"], caption=lead.get("label") or title, width="stretch")
     if len(items) > 1:
         cols = st.columns(2)
         for index, item in enumerate(items[1:]):
             with cols[index % 2]:
-                st.image(item["url"], caption=item.get("label") or title, use_container_width=True)
+                st.image(item["url"], caption=item.get("label") or title, width="stretch")
 
 
 def _render_document_links(title: str, items: list[dict[str, Any]], *, empty_message: str) -> None:
@@ -617,6 +625,224 @@ def _safe_classification_batch(
     return updated, unchanged
 
 
+UPLOAD_ASSET_TYPES = [
+    "main_image",
+    "gallery_image",
+    "floor_plan",
+    "elevation",
+    "access_map",
+    "technical_sheet",
+    "commercial_book",
+    "presentation",
+    "other",
+]
+LINK_ASSET_TYPES = [
+    "video",
+    "external_link",
+    "commercial_book",
+    "presentation",
+    "other",
+]
+
+
+def _render_add_material(
+    record: dict[str, Any],
+    *,
+    key_prefix: str,
+) -> None:
+    entity_id = str(record.get("id") or "")
+    item_name = str(record.get("name") or "Local")
+    client = _database_client()
+
+    with st.expander(
+        "Adicionar imagens, plantas ou documentos",
+        expanded=False,
+    ):
+        upload_tab, link_tab = st.tabs(
+            ["Enviar arquivos", "Adicionar link"]
+        )
+
+        with upload_tab:
+            asset_type = st.selectbox(
+                "Tipo de material",
+                options=UPLOAD_ASSET_TYPES,
+                format_func=lambda value: MEDIA_ASSET_TYPE_LABELS.get(
+                    value,
+                    value,
+                ),
+                key=f"{key_prefix}_asset_type_{entity_id}",
+            )
+            title = st.text_input(
+                "Título",
+                placeholder=(
+                    "Ex.: Foto do salão principal, planta do térreo "
+                    "ou ficha técnica"
+                ),
+                key=f"{key_prefix}_asset_title_{entity_id}",
+            )
+            description = st.text_area(
+                "Descrição ou observação",
+                key=f"{key_prefix}_asset_description_{entity_id}",
+            )
+            uploaded_assets = st.file_uploader(
+                "Arquivos",
+                type=[
+                    "jpg",
+                    "jpeg",
+                    "png",
+                    "webp",
+                    "gif",
+                    "pdf",
+                    "docx",
+                    "pptx",
+                    "xlsx",
+                ],
+                accept_multiple_files=True,
+                key=f"{key_prefix}_asset_files_{entity_id}",
+            )
+            st.caption(
+                "Formatos aceitos: JPG, PNG, WEBP, GIF, PDF, DOCX, "
+                "PPTX e XLSX. Limite de 50 MB por arquivo."
+            )
+
+            if asset_type in IMAGE_ASSET_TYPES:
+                primary_choice = st.radio(
+                    "Definir a primeira imagem como capa do local?",
+                    options=["Não", "Sim"],
+                    index=1 if asset_type == "main_image" else 0,
+                    horizontal=True,
+                    key=f"{key_prefix}_asset_primary_{entity_id}_{asset_type}",
+                )
+                is_primary = primary_choice == "Sim"
+            else:
+                is_primary = False
+
+            if st.button(
+                "Adicionar ao acervo do local",
+                type="primary",
+                width="stretch",
+                key=f"{key_prefix}_asset_upload_{entity_id}",
+            ):
+                if not uploaded_assets:
+                    st.warning("Selecione ao menos um arquivo.")
+                else:
+                    try:
+                        for index, uploaded in enumerate(uploaded_assets):
+                            item_title = title.strip() or uploaded.name
+                            if len(uploaded_assets) > 1:
+                                item_title = f"{item_title} {index + 1}"
+                            upload_media_asset(
+                                client,
+                                entity_type="venue",
+                                entity_id=entity_id,
+                                asset_type=asset_type,
+                                title=item_title,
+                                description=description,
+                                file_name=uploaded.name,
+                                file_bytes=uploaded.getvalue(),
+                                mime_type=uploaded.type,
+                                is_primary=bool(is_primary) and index == 0,
+                            )
+                        _load_media.clear()
+                        st.success(
+                            f"Material adicionado ao acervo de {item_name}."
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível adicionar o material.")
+                        with st.expander("Detalhes técnicos"):
+                            st.code(f"{type(exc).__name__}: {exc}")
+
+        with link_tab:
+            link_type = st.selectbox(
+                "Tipo de link",
+                options=LINK_ASSET_TYPES,
+                format_func=lambda value: MEDIA_ASSET_TYPE_LABELS.get(
+                    value,
+                    value,
+                ),
+                key=f"{key_prefix}_link_type_{entity_id}",
+            )
+            link_title = st.text_input(
+                "Título do link",
+                placeholder="Ex.: Tour virtual, vídeo ou book comercial",
+                key=f"{key_prefix}_link_title_{entity_id}",
+            )
+            external_url = st.text_input(
+                "Endereço",
+                placeholder="https://...",
+                key=f"{key_prefix}_link_url_{entity_id}",
+            )
+            link_description = st.text_area(
+                "Descrição",
+                key=f"{key_prefix}_link_description_{entity_id}",
+            )
+            if st.button(
+                "Adicionar link ao acervo",
+                type="primary",
+                width="stretch",
+                key=f"{key_prefix}_link_add_{entity_id}",
+            ):
+                if not external_url.strip().startswith(("http://", "https://")):
+                    st.warning(
+                        "Informe um endereço válido começando com http:// "
+                        "ou https://."
+                    )
+                else:
+                    try:
+                        add_external_media_link(
+                            client,
+                            entity_type="venue",
+                            entity_id=entity_id,
+                            asset_type=link_type,
+                            title=link_title.strip() or "Link externo",
+                            external_url=external_url,
+                            description=link_description,
+                        )
+                        _load_media.clear()
+                        st.success("Link adicionado ao acervo do local.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível adicionar o link.")
+                        with st.expander("Detalhes técnicos"):
+                            st.code(f"{type(exc).__name__}: {exc}")
+
+
+def _render_full_edit_action(record: dict[str, Any]) -> None:
+    entity_id = str(record.get("id") or "")
+    state_key = f"venue_full_edit_open_{entity_id}"
+    button_label = (
+        "Fechar edição"
+        if st.session_state.get(state_key)
+        else "Editar ficha completa"
+    )
+    if st.button(
+        button_label,
+        type="secondary",
+        width="content",
+        key=f"venue_full_edit_button_{entity_id}",
+    ):
+        st.session_state[state_key] = not bool(
+            st.session_state.get(state_key)
+        )
+        st.rerun()
+
+    if st.session_state.get(state_key):
+        try:
+            supplier_options = fetch_supplier_options(_database_client())
+        except Exception:
+            supplier_options = {}
+        render_curation_editor(
+            _database_client(),
+            entity_type="venue",
+            entity_id=entity_id,
+            record=record,
+            supplier_options=supplier_options,
+            title="Editar ficha completa",
+            expanded=True,
+        )
+
+
 page_header(
     "Locais e espaços",
     (
@@ -871,8 +1097,10 @@ if selected_record:
         ]
     )
     with details_tab:
+        _render_full_edit_action(selected_record)
         render_complete_record("venue", selected_record)
     with gallery_tab:
+        _render_add_material(selected_record, key_prefix="gallery")
         _render_visual_gallery(
             "Galeria de imagens",
             gallery["images"],
@@ -889,6 +1117,7 @@ if selected_record:
             ),
         )
     with docs_tab:
+        _render_add_material(selected_record, key_prefix="documents")
         _render_document_links(
             "Documentos associados",
             gallery["documents"],
