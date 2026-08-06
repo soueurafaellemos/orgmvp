@@ -979,3 +979,18 @@ Antes de usar, execute:
 - não altera os dados existentes;
 - não altera a Fase 14;
 - não contém arquivos da pasta assets.
+
+
+## V25.7.5 — Home atualizada
+
+- atualiza os atalhos da Home para refletir o menu atual;
+- adiciona Fornecedores e Memória;
+- organiza seis acessos em duas linhas de três;
+- usa a ordem do fluxo principal da NAVE;
+- padroniza os nomes com o menu lateral;
+- troca o título técnico da página de Início para Home;
+- remove o uso depreciado de `use_container_width` nesta tela;
+- não exige SQL;
+- não altera dados existentes;
+- não altera a Fase 14;
+- não contém arquivos da pasta assets.

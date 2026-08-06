@@ -12,7 +12,7 @@ from runtime_ui import require_app_access
 
 
 st.set_page_config(
-    page_title="NAVE by VOE | Início",
+    page_title="NAVE by VOE | Home",
     page_icon=NAVE_APP_ICON,
     layout="wide",
     initial_sidebar_state="expanded",
@@ -28,36 +28,54 @@ journey_cards()
 st.divider()
 st.subheader("Acesse a NAVE")
 
-column1, column2, column3, column4 = st.columns(4)
+first_row = st.columns(3)
 
-with column1:
+with first_row[0]:
     st.page_link(
         "pages/1_Organizar_Conhecimento.py",
         label="Upload de Conhecimento",
         icon="📥",
-        use_container_width=True,
+        width="stretch",
     )
 
-with column2:
+with first_row[1]:
     st.page_link(
         "pages/2_Consultar_Base.py",
-        label="Base de conhecimento",
+        label="Base de Conhecimento",
         icon="🗂️",
-        use_container_width=True,
+        width="stretch",
     )
 
-with column3:
+with first_row[2]:
     st.page_link(
         "pages/3_Nova_Recomendacao.py",
-        label="Analisar e recomendar",
+        label="Analisar e Recomendar",
         icon="🧭",
-        use_container_width=True,
+        width="stretch",
     )
 
-with column4:
+second_row = st.columns(3)
+
+with second_row[0]:
+    st.page_link(
+        "pages/5_Cobertura_de_Fornecedores.py",
+        label="Fornecedores",
+        icon="🤝",
+        width="stretch",
+    )
+
+with second_row[1]:
     st.page_link(
         "pages/4_Historico_de_Projetos.py",
         label="Projetos",
         icon="📚",
-        use_container_width=True,
+        width="stretch",
+    )
+
+with second_row[2]:
+    st.page_link(
+        "pages/10_Memoria.py",
+        label="Memória",
+        icon="🗃️",
+        width="stretch",
     )
