@@ -1010,11 +1010,19 @@ def fetch_duplicate_candidates(
     *,
     status: str = "pending",
     limit: int = 100,
+    import_id: str | None = None,
 ) -> pd.DataFrame:
-    response = (
+    query = (
         client.table("knowledge_duplicate_candidates")
         .select("*")
         .eq("status", status)
+    )
+
+    if import_id:
+        query = query.eq("import_id", import_id)
+
+    response = (
+        query
         .order("similarity_score", desc=True)
         .order("created_at", desc=True)
         .limit(limit)
@@ -1393,6 +1401,129 @@ def resolve_duplicate_merge(
     )
 
     return resolution_data
+
+
+def _pending_duplicate_count_for_import(
+    client: Client,
+    *,
+    import_id: str,
+) -> int:
+    response = (
+        client.table("knowledge_duplicate_candidates")
+        .select("id")
+        .eq("import_id", import_id)
+        .eq("status", "pending")
+        .limit(10000)
+        .execute()
+    )
+    return len(response.data or [])
+
+
+def resolve_duplicate_decisions_bulk(
+    client: Client,
+    *,
+    decisions: list[dict],
+    strategy: str = "enrich_safe",
+) -> dict:
+    if strategy not in {"enrich_safe", "prefer_new"}:
+        raise ValueError(
+            f"Estratégia de consolidação inválida: {strategy}"
+        )
+
+    merged = 0
+    distinct = 0
+    skipped = 0
+    failed = 0
+    media_moved = 0
+    duplicate_media_removed = 0
+    import_ids: set[str] = set()
+    errors: list[dict] = []
+
+    unique_decisions: dict[str, str] = {}
+    for item in decisions:
+        review_id = str(item.get("review_id") or "").strip()
+        action = str(item.get("action") or "").strip()
+        if review_id and action in {"merge", "distinct"}:
+            unique_decisions[review_id] = action
+
+    for review_id, action in unique_decisions.items():
+        review_response = (
+            client.table("knowledge_duplicate_candidates")
+            .select("id,import_id,status")
+            .eq("id", review_id)
+            .limit(1)
+            .execute()
+        )
+
+        if not review_response.data:
+            skipped += 1
+            continue
+
+        review = review_response.data[0]
+        import_id = str(review.get("import_id") or "").strip()
+        if import_id:
+            import_ids.add(import_id)
+
+        if str(review.get("status") or "") != "pending":
+            skipped += 1
+            continue
+
+        try:
+            if action == "merge":
+                result = resolve_duplicate_merge(
+                    client,
+                    review_id=review_id,
+                    strategy=strategy,
+                )
+                merged += 1
+                media_moved += int(result.get("media_moved", 0) or 0)
+                duplicate_media_removed += int(
+                    result.get("duplicate_media_removed", 0) or 0
+                )
+            else:
+                resolve_duplicate_as_distinct(
+                    client,
+                    review_id=review_id,
+                )
+                distinct += 1
+        except Exception as exc:
+            failed += 1
+            errors.append(
+                {
+                    "review_id": review_id,
+                    "action": action,
+                    "error": str(exc),
+                }
+            )
+
+    pending_by_import: dict[str, int] = {}
+    for import_id in import_ids:
+        pending = _pending_duplicate_count_for_import(
+            client,
+            import_id=import_id,
+        )
+        pending_by_import[import_id] = pending
+        (
+            client.table("imports")
+            .update(
+                {
+                    "possible_duplicate_records": pending,
+                }
+            )
+            .eq("id", import_id)
+            .execute()
+        )
+
+    return {
+        "merged": merged,
+        "distinct": distinct,
+        "skipped": skipped,
+        "failed": failed,
+        "media_moved": media_moved,
+        "duplicate_media_removed": duplicate_media_removed,
+        "pending_by_import": pending_by_import,
+        "errors": errors,
+    }
 
 
 def _record_enrichment_event(

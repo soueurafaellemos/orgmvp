@@ -50,7 +50,9 @@ from gemini_extractor import (
     extract_venues,
 )
 from supabase_db import (
+    fetch_duplicate_candidates,
     get_supabase_client,
+    resolve_duplicate_decisions_bulk,
     save_activations,
     save_briefing,
     save_catalog,
@@ -367,6 +369,267 @@ def _create_coverage_diagnostic(
     ] = diagnostic.model_dump()
 
 
+DUPLICATE_DECISION_REVIEW = "Revisar depois"
+DUPLICATE_DECISION_MERGE = "Unir no cadastro existente"
+DUPLICATE_DECISION_DISTINCT = "Manter como item separado"
+
+
+def _compact_value(value) -> str:
+    if value is None:
+        return "Não informado"
+    text = str(value).strip()
+    return text or "Não informado"
+
+
+def _duplicate_resolution_panel(
+    *,
+    key: str,
+    result: dict,
+) -> int:
+    import_id = str(result.get("import_id") or "").strip()
+    if not import_id or database_client is None:
+        return int(result.get("possible_duplicate_records", 0) or 0)
+
+    feedback_key = f"duplicate_resolution_feedback_{key}_{import_id}"
+    feedback = st.session_state.pop(feedback_key, None)
+    if feedback:
+        if feedback.get("failed"):
+            st.warning(
+                f"Decisões aplicadas parcialmente: "
+                f"{feedback.get('merged', 0)} unido(s), "
+                f"{feedback.get('distinct', 0)} mantido(s) separado(s) e "
+                f"{feedback.get('failed', 0)} falha(s)."
+            )
+        else:
+            st.success(
+                f"Revisão concluída nesta sessão: "
+                f"{feedback.get('merged', 0)} cadastro(s) unido(s) e "
+                f"{feedback.get('distinct', 0)} confirmado(s) como separado(s)."
+            )
+            if feedback.get("media_moved"):
+                st.caption(
+                    f"Materiais transferidos para os cadastros preservados: "
+                    f"{feedback.get('media_moved', 0)}."
+                )
+
+    try:
+        reviews = fetch_duplicate_candidates(
+            database_client,
+            status="pending",
+            limit=250,
+            import_id=import_id,
+        )
+    except Exception as exc:
+        report_service_error(
+            "consulta das duplicidades do upload",
+            user_message=(
+                "A importação foi salva, mas a revisão de possíveis "
+                "duplicidades não pôde ser carregada nesta tela."
+            ),
+            exception=exc,
+        )
+        return int(result.get("possible_duplicate_records", 0) or 0)
+
+    if reviews.empty:
+        result["possible_duplicate_records"] = 0
+        return 0
+
+    rows = []
+    for _, review in reviews.iterrows():
+        source = dict(review.get("source_record") or {})
+        candidate = dict(review.get("candidate_record") or {})
+        score = float(review.get("similarity_score") or 0)
+
+        rows.append(
+            {
+                "review_id": str(review.get("id") or ""),
+                "Decisão": DUPLICATE_DECISION_REVIEW,
+                "Novo item": _compact_value(
+                    source.get("name") or review.get("source_name")
+                ),
+                "Cadastro existente": _compact_value(
+                    candidate.get("name") or review.get("candidate_name")
+                ),
+                "Semelhança": f"{score * 100:.0f}%",
+                "Cidade nova": _compact_value(source.get("city")),
+                "Cidade atual": _compact_value(candidate.get("city")),
+                "Tipo novo": _compact_value(
+                    source.get("venue_type")
+                    or source.get("category")
+                ),
+                "Tipo atual": _compact_value(
+                    candidate.get("venue_type")
+                    or candidate.get("category")
+                ),
+            }
+        )
+
+    pending = len(rows)
+    result["possible_duplicate_records"] = pending
+
+    st.warning(
+        f"{pending} item(ns) possuem nomes semelhantes a cadastros "
+        "existentes. Você pode resolver tudo agora, sem sair desta sessão."
+    )
+
+    def _apply_inline_decisions(decisions: list[dict]) -> None:
+        try:
+            with st.spinner(
+                "Consolidando informações, imagens e documentos..."
+            ):
+                resolution = resolve_duplicate_decisions_bulk(
+                    database_client,
+                    decisions=decisions,
+                    strategy="enrich_safe",
+                )
+
+            remaining = int(
+                resolution.get("pending_by_import", {}).get(
+                    import_id,
+                    max(pending - len(decisions), 0),
+                )
+            )
+            result["possible_duplicate_records"] = remaining
+            st.session_state[f"database_result_{key}"] = result
+            st.session_state[feedback_key] = resolution
+            st.rerun()
+
+        except Exception as exc:
+            report_service_error(
+                "consolidação das duplicidades do upload",
+                user_message=(
+                    "Não foi possível aplicar as decisões nesta sessão."
+                ),
+                exception=exc,
+            )
+
+    with st.expander(
+        "Revisar e consolidar nesta sessão",
+        expanded=True,
+    ):
+        st.caption(
+            "Para volumes visuais, normalmente a opção correta é unir no "
+            "cadastro existente. A NAVE preserva o cadastro mais antigo, "
+            "preenche lacunas e transfere imagens, plantas e documentos."
+        )
+
+        bulk_confirmation = st.checkbox(
+            "Revisei a lista e confirmo que todos os itens desta "
+            "importação representam cadastros já existentes.",
+            key=f"confirm_merge_all_{key}_{import_id}",
+        )
+        merge_all_clicked = st.button(
+            "Unir todos desta importação no cadastro existente",
+            type="primary",
+            use_container_width=True,
+            disabled=not bulk_confirmation,
+            key=f"merge_all_duplicates_{key}_{import_id}",
+        )
+
+        if merge_all_clicked:
+            _apply_inline_decisions(
+                [
+                    {
+                        "review_id": str(item["review_id"]),
+                        "action": "merge",
+                    }
+                    for item in rows
+                ]
+            )
+
+        st.markdown("#### Resolver apenas alguns itens")
+        editor_key = f"inline_duplicates_{key}_{import_id}"
+        decision_df = st.data_editor(
+            pd.DataFrame(rows),
+            hide_index=True,
+            use_container_width=True,
+            key=editor_key,
+            disabled=[
+                "Novo item",
+                "Cadastro existente",
+                "Semelhança",
+                "Cidade nova",
+                "Cidade atual",
+                "Tipo novo",
+                "Tipo atual",
+            ],
+            column_config={
+                "review_id": None,
+                "Decisão": st.column_config.SelectboxColumn(
+                    "Decisão",
+                    options=[
+                        DUPLICATE_DECISION_REVIEW,
+                        DUPLICATE_DECISION_MERGE,
+                        DUPLICATE_DECISION_DISTINCT,
+                    ],
+                    required=True,
+                    width="medium",
+                ),
+                "Novo item": st.column_config.TextColumn(
+                    "Novo item",
+                    width="large",
+                ),
+                "Cadastro existente": st.column_config.TextColumn(
+                    "Cadastro existente",
+                    width="large",
+                ),
+                "Semelhança": st.column_config.TextColumn(
+                    "Semelhança",
+                    width="small",
+                ),
+                "Cidade nova": st.column_config.TextColumn(
+                    "Cidade nova",
+                ),
+                "Cidade atual": st.column_config.TextColumn(
+                    "Cidade atual",
+                ),
+                "Tipo novo": st.column_config.TextColumn(
+                    "Tipo novo",
+                ),
+                "Tipo atual": st.column_config.TextColumn(
+                    "Tipo atual",
+                ),
+            },
+        )
+
+        st.caption(
+            "Atalho: selecione 'Unir no cadastro existente' nas linhas do "
+            "mesmo local. Use 'Manter como item separado' apenas quando o "
+            "novo registro for realmente outro espaço."
+        )
+
+        selected = decision_df[
+            decision_df["Decisão"] != DUPLICATE_DECISION_REVIEW
+        ]
+
+        apply_clicked = st.button(
+            "Aplicar decisões e concluir a consolidação",
+            type="primary",
+            use_container_width=True,
+            disabled=selected.empty,
+            key=f"apply_duplicate_decisions_{key}_{import_id}",
+        )
+
+        if apply_clicked:
+            decisions = []
+            for _, item in selected.iterrows():
+                action = (
+                    "merge"
+                    if item["Decisão"] == DUPLICATE_DECISION_MERGE
+                    else "distinct"
+                )
+                decisions.append(
+                    {
+                        "review_id": str(item["review_id"]),
+                        "action": action,
+                    }
+                )
+
+            _apply_inline_decisions(decisions)
+
+    return pending
+
+
 def _database_save_controls(
     *,
     key: str,
@@ -524,20 +787,15 @@ def _database_save_controls(
                 "Esses itens podem receber a imagem manualmente na Base de conhecimento."
             )
 
-    possible_duplicates = result.get(
-        "possible_duplicate_records",
-        0,
+    possible_duplicates = _duplicate_resolution_panel(
+        key=key,
+        result=result,
     )
 
     if possible_duplicates:
-        st.warning(
-            f"{possible_duplicates} item(ns) possuem nomes "
-            "semelhantes a cadastros existentes e precisam "
-            "de revisão antes de a base ser considerada limpa."
-        )
         st.page_link(
             "pages/7_Revisar_Duplicidades.py",
-            label="Revisar possíveis duplicidades",
+            label="Abrir a fila completa de duplicidades",
             use_container_width=True,
         )
 
@@ -553,6 +811,13 @@ def _database_save_controls(
         st.warning(
             "A NAVE encontrou informações diferentes entre "
             "o cadastro e o novo material."
+        )
+        st.caption(
+            "Este quadro é uma auditoria, não uma nova fila de duplicidades. "
+            "No modo seguro, a NAVE manteve nome, tipo, site e descrição já "
+            "validados quando o PDF trouxe rótulos de página, plantas ou URLs "
+            "de arquivos. As imagens e documentos continuam associados ao "
+            "local depois da consolidação."
         )
 
         conflict_df = pd.DataFrame(conflicts).rename(
@@ -580,8 +845,8 @@ def _database_save_controls(
         )
 
         with st.expander(
-            "Ver diferenças encontradas",
-            expanded=True,
+            "Ver diferenças preservadas (auditoria)",
+            expanded=False,
         ):
             st.dataframe(
                 conflict_df[

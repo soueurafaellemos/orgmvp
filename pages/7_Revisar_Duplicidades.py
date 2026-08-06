@@ -23,6 +23,7 @@ from supabase_db import (
     fetch_duplicate_candidates,
     get_supabase_client,
     resolve_duplicate_as_distinct,
+    resolve_duplicate_decisions_bulk,
     resolve_duplicate_merge,
 )
 
@@ -188,6 +189,124 @@ metric2.metric(
         f"{float(reviews['similarity_score'].max()) * 100:.0f}%"
     ),
 )
+
+st.divider()
+st.subheader("Resolver uma importação inteira")
+st.caption(
+    "Use este atalho quando um PDF visual criou variações do nome do mesmo "
+    "local, como pavimento, pavilhão, planta ou área interna. O cadastro "
+    "existente é preservado e recebe as imagens, plantas e documentos."
+)
+
+bulk_options = {}
+for import_id, group in reviews.groupby("import_id", dropna=False):
+    import_text = str(import_id or "Sem importação identificada")
+    created_source = (
+        group["created_at"]
+        if "created_at" in group.columns
+        else pd.Series(dtype="object")
+    )
+    created_values = pd.to_datetime(
+        created_source,
+        errors="coerce",
+        utc=True,
+    )
+    created = (
+        created_values.max()
+        if not created_values.empty
+        else pd.NaT
+    )
+    created_label = (
+        created.tz_convert("America/Sao_Paulo").strftime("%d/%m/%Y %H:%M")
+        if pd.notna(created)
+        else "data não informada"
+    )
+    label = (
+        f"{created_label} · {len(group)} item(ns) · "
+        f"{import_text[-8:]}"
+    )
+    bulk_options[label] = import_id
+
+selected_bulk_label = st.selectbox(
+    "Importação com pendências",
+    options=list(bulk_options.keys()),
+    key="duplicate_bulk_import",
+)
+selected_import_id = bulk_options[selected_bulk_label]
+selected_group = reviews[
+    reviews["import_id"].astype(str)
+    == str(selected_import_id)
+].copy()
+
+bulk_preview = pd.DataFrame(
+    [
+        {
+            "Novo item": row.get("source_name") or "Não informado",
+            "Cadastro existente": row.get("candidate_name") or "Não informado",
+            "Semelhança": (
+                f"{float(row.get('similarity_score') or 0) * 100:.0f}%"
+            ),
+        }
+        for _, row in selected_group.iterrows()
+    ]
+)
+st.dataframe(
+    bulk_preview,
+    use_container_width=True,
+    hide_index=True,
+)
+
+bulk_confirmation = st.checkbox(
+    "Revisei a lista e confirmo que todos representam cadastros já existentes.",
+    key=f"confirm_bulk_{selected_import_id}",
+)
+
+if st.button(
+    "Unir todos desta importação no cadastro existente",
+    type="primary",
+    use_container_width=True,
+    disabled=not bulk_confirmation,
+    key=f"merge_bulk_{selected_import_id}",
+):
+    try:
+        with st.spinner(
+            "Consolidando informações, imagens, plantas e documentos..."
+        ):
+            result = resolve_duplicate_decisions_bulk(
+                client,
+                decisions=[
+                    {
+                        "review_id": str(row.get("id")),
+                        "action": "merge",
+                    }
+                    for _, row in selected_group.iterrows()
+                ],
+                strategy="enrich_safe",
+            )
+
+        if result.get("failed"):
+            st.warning(
+                f"Consolidação parcial: {result.get('merged', 0)} unido(s) "
+                f"e {result.get('failed', 0)} falha(s)."
+            )
+        else:
+            st.success(
+                f"{result.get('merged', 0)} cadastro(s) unido(s). "
+                "Os materiais foram transferidos para os cadastros preservados."
+            )
+        st.rerun()
+    except Exception as exc:
+        report_service_error(
+            "consolidação em lote de duplicidades",
+            user_message=(
+                "Não foi possível consolidar esta importação em lote."
+            ),
+            exception=exc,
+        )
+
+st.divider()
+st.subheader("Revisar item por item")
+
 
 review_options = {}
 
