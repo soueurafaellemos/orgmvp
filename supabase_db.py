@@ -17,6 +17,7 @@ from supabase import Client, create_client
 
 from document_io import InputDocument
 from entity_matching import (
+    MATCH_CONFIG,
     best_candidate_match,
     name_similarity,
     normalize_match_name,
@@ -1218,6 +1219,147 @@ def _move_activation_costs(
     return {
         "costs_moved": moved,
         "duplicate_costs_removed": duplicates_removed,
+    }
+
+
+def revalidate_pending_duplicate_candidates(
+    client: Client,
+    *,
+    import_id: str | None = None,
+    limit: int = 10000,
+) -> dict:
+    """Recalculate pending matches without changing entity records.
+
+    This safely dismisses suggestions created by an older scoring bug. It
+    updates only the review queue; products, activations, venues and media
+    remain untouched.
+    """
+    query = (
+        client.table("knowledge_duplicate_candidates")
+        .select("*")
+        .eq("status", "pending")
+    )
+    if import_id:
+        query = query.eq("import_id", import_id)
+
+    response = query.limit(limit).execute()
+    dismissed = 0
+    retained = 0
+    superseded = 0
+    import_ids: set[str] = set()
+
+    for review in response.data or []:
+        review_id = str(review.get("id") or "").strip()
+        entity_type = str(review.get("entity_type") or "").strip()
+        current_import_id = str(review.get("import_id") or "").strip()
+        if current_import_id:
+            import_ids.add(current_import_id)
+
+        if not review_id or entity_type not in MATCH_CONFIG:
+            continue
+
+        source = _entity_record(
+            client,
+            entity_type=entity_type,
+            entity_id=str(review.get("source_entity_id") or ""),
+        )
+        candidate = _entity_record(
+            client,
+            entity_type=entity_type,
+            entity_id=str(review.get("candidate_entity_id") or ""),
+        )
+
+        if not source or not candidate:
+            (
+                client.table("knowledge_duplicate_candidates")
+                .update(
+                    {
+                        "status": "superseded",
+                        "resolved_at": pd.Timestamp.utcnow().isoformat(),
+                        "resolution_data": {
+                            "reason": "record_not_available_during_revalidation",
+                        },
+                    }
+                )
+                .eq("id", review_id)
+                .execute()
+            )
+            superseded += 1
+            continue
+
+        config = MATCH_CONFIG[entity_type]
+        corrected_score = float(
+            config["score_function"](source, candidate)
+        )
+        exact_name = (
+            normalize_match_name(source.get("name"))
+            == normalize_match_name(candidate.get("name"))
+            and bool(normalize_match_name(source.get("name")))
+        )
+        review_threshold = float(config["review_threshold"])
+        old_score = float(review.get("similarity_score") or 0)
+
+        if not exact_name and corrected_score < review_threshold:
+            (
+                client.table("knowledge_duplicate_candidates")
+                .update(
+                    {
+                        "status": "different",
+                        "resolution_strategy": "automatic_false_positive_cleanup",
+                        "resolved_at": pd.Timestamp.utcnow().isoformat(),
+                        "resolution_data": {
+                            "decision": "different_entities",
+                            "reason": "similarity_score_recalculated",
+                            "old_score": old_score,
+                            "corrected_score": corrected_score,
+                        },
+                    }
+                )
+                .eq("id", review_id)
+                .execute()
+            )
+            dismissed += 1
+            continue
+
+        corrected_method = (
+            "normalized_name"
+            if exact_name
+            else "revalidated_possible_duplicate"
+        )
+        (
+            client.table("knowledge_duplicate_candidates")
+            .update(
+                {
+                    "similarity_score": (
+                        1.0 if exact_name else corrected_score
+                    ),
+                    "match_method": corrected_method,
+                }
+            )
+            .eq("id", review_id)
+            .execute()
+        )
+        retained += 1
+
+    pending_by_import: dict[str, int] = {}
+    for current_import_id in import_ids:
+        pending = _pending_duplicate_count_for_import(
+            client,
+            import_id=current_import_id,
+        )
+        pending_by_import[current_import_id] = pending
+        (
+            client.table("imports")
+            .update({"possible_duplicate_records": pending})
+            .eq("id", current_import_id)
+            .execute()
+        )
+
+    return {
+        "dismissed": dismissed,
+        "retained": retained,
+        "superseded": superseded,
+        "pending_by_import": pending_by_import,
     }
 
 

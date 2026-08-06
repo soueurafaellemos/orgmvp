@@ -25,6 +25,7 @@ from supabase_db import (
     resolve_duplicate_as_distinct,
     resolve_duplicate_decisions_bulk,
     resolve_duplicate_merge,
+    revalidate_pending_duplicate_candidates,
 )
 
 
@@ -158,6 +159,12 @@ if not url or not key:
 
 try:
     client = get_supabase_client(url, key)
+    cleanup_key = "duplicate_revalidation_v27_8_8"
+    cleanup_result = None
+    if not st.session_state.get(cleanup_key):
+        cleanup_result = revalidate_pending_duplicate_candidates(client)
+        st.session_state[cleanup_key] = True
+
     reviews = fetch_duplicate_candidates(
         client,
         status="pending",
@@ -171,6 +178,13 @@ except Exception as exc:
         exception=exc,
     )
     st.stop()
+
+if cleanup_result and cleanup_result.get("dismissed"):
+    st.info(
+        f"{cleanup_result.get('dismissed', 0)} sugestão(ões) incorreta(s) "
+        "foram removidas automaticamente da fila. Nenhum cadastro ou "
+        "arquivo foi apagado."
+    )
 
 if reviews.empty:
     st.success(
@@ -191,115 +205,33 @@ metric2.metric(
 )
 
 st.divider()
-st.subheader("Resolver uma importação inteira")
-st.caption(
-    "Use este atalho quando um PDF visual criou variações do nome do mesmo "
-    "local, como pavimento, pavilhão, planta ou área interna. O cadastro "
-    "existente é preservado e recebe as imagens, plantas e documentos."
-)
-
-bulk_options = {}
-for import_id, group in reviews.groupby("import_id", dropna=False):
-    import_text = str(import_id or "Sem importação identificada")
-    created_source = (
-        group["created_at"]
-        if "created_at" in group.columns
-        else pd.Series(dtype="object")
-    )
-    created_values = pd.to_datetime(
-        created_source,
-        errors="coerce",
-        utc=True,
-    )
-    created = (
-        created_values.max()
-        if not created_values.empty
-        else pd.NaT
-    )
-    created_label = (
-        created.tz_convert("America/Sao_Paulo").strftime("%d/%m/%Y %H:%M")
-        if pd.notna(created)
-        else "data não informada"
-    )
-    label = (
-        f"{created_label} · {len(group)} item(ns) · "
-        f"{import_text[-8:]}"
-    )
-    bulk_options[label] = import_id
-
-selected_bulk_label = st.selectbox(
-    "Importação com pendências",
-    options=list(bulk_options.keys()),
-    key="duplicate_bulk_import",
-)
-selected_import_id = bulk_options[selected_bulk_label]
-selected_group = reviews[
-    reviews["import_id"].astype(str)
-    == str(selected_import_id)
-].copy()
-
-bulk_preview = pd.DataFrame(
-    [
-        {
-            "Novo item": row.get("source_name") or "Não informado",
-            "Cadastro existente": row.get("candidate_name") or "Não informado",
-            "Semelhança": (
-                f"{float(row.get('similarity_score') or 0) * 100:.0f}%"
-            ),
-        }
-        for _, row in selected_group.iterrows()
-    ]
-)
-st.dataframe(
-    bulk_preview,
-    use_container_width=True,
-    hide_index=True,
-)
-
-bulk_confirmation = st.checkbox(
-    "Revisei a lista e confirmo que todos representam cadastros já existentes.",
-    key=f"confirm_bulk_{selected_import_id}",
+st.subheader("Revisão segura")
+st.warning(
+    "A união em lote foi desativada. Nomes semelhantes não garantem que "
+    "os registros representem o mesmo item. Nenhum cadastro é unido ou "
+    "apagado sem uma decisão individual confirmada abaixo."
 )
 
 if st.button(
-    "Unir todos desta importação no cadastro existente",
-    type="primary",
+    "Revalidar sugestões pendentes",
     use_container_width=True,
-    disabled=not bulk_confirmation,
-    key=f"merge_bulk_{selected_import_id}",
+    key="revalidate_pending_duplicates",
 ):
     try:
-        with st.spinner(
-            "Consolidando informações, imagens, plantas e documentos..."
-        ):
-            result = resolve_duplicate_decisions_bulk(
-                client,
-                decisions=[
-                    {
-                        "review_id": str(row.get("id")),
-                        "action": "merge",
-                    }
-                    for _, row in selected_group.iterrows()
-                ],
-                strategy="enrich_safe",
-            )
-
-        if result.get("failed"):
-            st.warning(
-                f"Consolidação parcial: {result.get('merged', 0)} unido(s) "
-                f"e {result.get('failed', 0)} falha(s)."
-            )
-        else:
-            st.success(
-                f"{result.get('merged', 0)} cadastro(s) unido(s). "
-                "Os materiais foram transferidos para os cadastros preservados."
-            )
+        result = revalidate_pending_duplicate_candidates(client)
+        st.session_state.pop("duplicate_revalidation_v27_8_8", None)
+        st.success(
+            f"Revalidação concluída: {result.get('dismissed', 0)} "
+            "falso(s) positivo(s) removido(s) da fila e "
+            f"{result.get('retained', 0)} correspondência(s) mantida(s) "
+            "para revisão humana."
+        )
         st.rerun()
     except Exception as exc:
         report_service_error(
-            "consolidação em lote de duplicidades",
+            "revalidação das possíveis duplicidades",
             user_message=(
-                "Não foi possível consolidar esta importação em lote."
+                "Não foi possível revalidar a fila de duplicidades."
             ),
             exception=exc,
         )

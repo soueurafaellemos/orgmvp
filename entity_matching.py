@@ -108,19 +108,24 @@ def _token_containment(
     if not first_tokens or not second_tokens:
         return 0.0
 
-    smaller = min(
-        (first_tokens, second_tokens),
-        key=len,
+    smaller_size = min(
+        len(first_tokens),
+        len(second_tokens),
     )
-    larger = max(
-        (first_tokens, second_tokens),
-        key=len,
-    )
-
-    if len(smaller) < 2:
+    if smaller_size < 2:
         return 0.0
 
-    coverage = len(smaller & larger) / len(smaller)
+    intersection_size = len(
+        first_tokens & second_tokens
+    )
+    if intersection_size == 0:
+        return 0.0
+
+    # Do not choose the smaller set with min()/max() here. When both
+    # sets have the same size, Python returns the first set for both
+    # operations, which used to create a false 97% match even when the
+    # names had no token in common.
+    coverage = intersection_size / smaller_size
 
     if coverage >= 1.0:
         return 0.97
@@ -416,15 +421,19 @@ def best_candidate_match(
             "method": "normalized_name",
         }
 
+    # Only an exact normalized name is safe for automatic consolidation.
+    # A high similarity score can still represent a model, room, floor,
+    # product variation or a completely different item. Non-exact names
+    # must always remain a review suggestion.
     if (
         score >= config["auto_threshold"]
         and margin >= 0.025
     ):
         return {
-            "decision": "auto",
+            "decision": "review",
             "candidate": best["candidate"],
             "score": score,
-            "method": "high_confidence_similarity",
+            "method": "high_confidence_review",
         }
 
     if score >= config["review_threshold"]:

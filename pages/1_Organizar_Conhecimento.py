@@ -53,6 +53,7 @@ from supabase_db import (
     fetch_duplicate_candidates,
     get_supabase_client,
     resolve_duplicate_decisions_bulk,
+    revalidate_pending_duplicate_candidates,
     save_activations,
     save_briefing,
     save_catalog,
@@ -413,6 +414,17 @@ def _duplicate_resolution_panel(
                 )
 
     try:
+        cleanup_result = revalidate_pending_duplicate_candidates(
+            database_client,
+            import_id=import_id,
+        )
+        if cleanup_result.get("dismissed"):
+            st.info(
+                f"{cleanup_result.get('dismissed', 0)} sugestão(ões) "
+                "incorreta(s) foram removidas automaticamente. Nenhum "
+                "cadastro ou arquivo foi apagado."
+            )
+
         reviews = fetch_duplicate_candidates(
             database_client,
             status="pending",
@@ -468,8 +480,8 @@ def _duplicate_resolution_panel(
     result["possible_duplicate_records"] = pending
 
     st.warning(
-        f"{pending} item(ns) possuem nomes semelhantes a cadastros "
-        "existentes. Você pode resolver tudo agora, sem sair desta sessão."
+        f"{pending} item(ns) ainda precisam de revisão humana. A NAVE "
+        "não fará nenhuma união automática entre nomes diferentes."
     )
 
     def _apply_inline_decisions(decisions: list[dict]) -> None:
@@ -508,36 +520,12 @@ def _duplicate_resolution_panel(
         expanded=True,
     ):
         st.caption(
-            "Para volumes visuais, normalmente a opção correta é unir no "
-            "cadastro existente. A NAVE preserva o cadastro mais antigo, "
-            "preenche lacunas e transfere imagens, plantas e documentos."
+            "Revise cada linha antes de decidir. Itens com nomes diferentes "
+            "permanecem separados por padrão; imagens e documentos só são "
+            "transferidos quando você escolhe explicitamente unir."
         )
 
-        bulk_confirmation = st.checkbox(
-            "Revisei a lista e confirmo que todos os itens desta "
-            "importação representam cadastros já existentes.",
-            key=f"confirm_merge_all_{key}_{import_id}",
-        )
-        merge_all_clicked = st.button(
-            "Unir todos desta importação no cadastro existente",
-            type="primary",
-            use_container_width=True,
-            disabled=not bulk_confirmation,
-            key=f"merge_all_duplicates_{key}_{import_id}",
-        )
-
-        if merge_all_clicked:
-            _apply_inline_decisions(
-                [
-                    {
-                        "review_id": str(item["review_id"]),
-                        "action": "merge",
-                    }
-                    for item in rows
-                ]
-            )
-
-        st.markdown("#### Resolver apenas alguns itens")
+        st.markdown("#### Resolver itens individualmente")
         editor_key = f"inline_duplicates_{key}_{import_id}"
         decision_df = st.data_editor(
             pd.DataFrame(rows),
@@ -593,9 +581,9 @@ def _duplicate_resolution_panel(
         )
 
         st.caption(
-            "Atalho: selecione 'Unir no cadastro existente' nas linhas do "
-            "mesmo local. Use 'Manter como item separado' apenas quando o "
-            "novo registro for realmente outro espaço."
+            "Selecione 'Unir no cadastro existente' somente quando nome, "
+            "contexto, localização e imagens confirmarem que é o mesmo item. "
+            "Na dúvida, mantenha separado ou deixe para revisar depois."
         )
 
         selected = decision_df[
