@@ -1,0 +1,21 @@
+{
+  "name": "NAVE by VOE — V27.1",
+  "phase": "Fase 15.1 — Inteligência Visual e Fechamento do Projeto",
+  "sql": [
+    "supabase_patch_fase_15_1_inteligencia_visual_relatorios_v1.sql"
+  ],
+  "add": [
+    "project_report_extractor.py",
+    "project_workspace_visuals.py",
+    "project_workspace_reports.py"
+  ],
+  "replace": [
+    "project_workspace_db.py",
+    "project_workspace_ui.py"
+  ],
+  "unchanged": [
+    "project_workspace_runtime.py",
+    "project_hub.py",
+    "pages/4_Historico_de_Projetos.py"
+  ]
+}

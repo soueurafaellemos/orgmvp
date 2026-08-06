@@ -1,0 +1,24 @@
+NAVE by VOE — V27.1
+FASE 15.1 — INTELIGÊNCIA VISUAL E FECHAMENTO DO PROJETO
+
+EXECUTAR NO SUPABASE
+- supabase_patch_fase_15_1_inteligencia_visual_relatorios_v1.sql
+
+ADICIONAR NO GITHUB
+- project_report_extractor.py
+- project_workspace_visuals.py
+- project_workspace_reports.py
+
+SUBSTITUIR NO GITHUB
+- project_workspace_db.py
+- project_workspace_ui.py
+
+NÃO ALTERAR
+- project_workspace_runtime.py
+- project_hub.py
+- pages/4_Historico_de_Projetos.py
+- pasta assets
+- requirements.txt
+
+DEPOIS
+- Manage app -> Reboot app

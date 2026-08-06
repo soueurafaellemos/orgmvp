@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import difflib
 import mimetypes
 import re
 import unicodedata
@@ -596,11 +597,16 @@ def fetch_project_workspace_snapshot(
         "briefing_documents": "memory_briefing_documents",
         "briefing_requirements": "memory_briefing_requirements",
         "memory_documents": "memory_documents",
+        "memory_pages": "memory_pages",
         "memory_items": "memory_items",
         "cost_documents": "memory_cost_documents",
         "cost_items": "memory_cost_items",
+        "cost_links": "memory_cost_links",
+        "item_outcomes": "memory_item_outcomes",
+        "briefing_links": "memory_briefing_links",
         "feedback_entries": "memory_feedback_entries",
         "project_files": "project_files",
+        "report_analyses": "project_report_analyses",
         "recommendation_queries": "recommendation_queries",
     }
 
@@ -803,3 +809,224 @@ def fetch_project_linked_suppliers(
         row.pop("supplier_id", None)
 
     return pd.DataFrame(rows)
+
+
+def create_storage_signed_url(
+    client: Client,
+    *,
+    bucket_name: str | None,
+    storage_path: str | None,
+    expires_in: int = 3600,
+    download: bool = False,
+) -> str | None:
+    bucket = str(bucket_name or "").strip()
+    path = str(storage_path or "").strip()
+    if not bucket or not path:
+        return None
+    try:
+        storage = client.storage.from_(bucket)
+        if download:
+            response = storage.create_signed_url(path, expires_in, {"download": True})
+        else:
+            response = storage.create_signed_url(path, expires_in)
+    except Exception:
+        return None
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        return response.get("signedURL") or response.get("signedUrl") or response.get("signed_url")
+    return getattr(response, "signedURL", None) or getattr(response, "signedUrl", None) or getattr(response, "signed_url", None)
+
+
+def _normalise_match_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    text = re.sub(r"[^a-z0-9]+", " ", text.casefold())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _best_memory_item_match(name: str, items: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, float]:
+    target = _normalise_match_text(name)
+    if not target:
+        return None, 0.0
+    best_item = None
+    best_score = 0.0
+    target_tokens = set(target.split())
+    for item in items:
+        candidate = _normalise_match_text(item.get("title"))
+        if not candidate:
+            continue
+        sequence = difflib.SequenceMatcher(None, target, candidate).ratio()
+        candidate_tokens = set(candidate.split())
+        overlap = len(target_tokens & candidate_tokens) / max(len(target_tokens | candidate_tokens), 1)
+        contains = 1.0 if target in candidate or candidate in target else 0.0
+        score = max(sequence, overlap, contains * 0.92)
+        if score > best_score:
+            best_score = score
+            best_item = item
+    return best_item, best_score
+
+
+def save_project_report_analysis(
+    client: Client,
+    *,
+    project_id: str,
+    report_file_id: str,
+    report_type: str,
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    payload = {
+        "project_id": project_id,
+        "report_file_id": report_file_id,
+        "report_type": report_type,
+        "analysis_status": "processed",
+        "event_date": analysis.get("event_date"),
+        "participants_count": analysis.get("participants_count"),
+        "planned_cost": analysis.get("planned_cost"),
+        "actual_cost": analysis.get("actual_cost"),
+        "currency": "BRL",
+        "client_satisfaction": analysis.get("client_satisfaction"),
+        "executive_summary": analysis.get("executive_summary"),
+        "objectives_result": analysis.get("objectives_result"),
+        "commercial_result": analysis.get("commercial_result"),
+        "execution_result": analysis.get("execution_result"),
+        "competitor": analysis.get("competitor"),
+        "loss_reasons": analysis.get("loss_reasons") or [],
+        "highlights": analysis.get("highlights") or [],
+        "issues": analysis.get("issues") or [],
+        "learnings": analysis.get("learnings") or [],
+        "recommendations": analysis.get("recommendations") or [],
+        "client_feedback": analysis.get("client_feedback") or [],
+        "kpis": analysis.get("kpis") or [],
+        "activation_results": analysis.get("activation_results") or [],
+        "supplier_evaluations": analysis.get("supplier_evaluations") or [],
+        "media_results": analysis.get("media_results") or [],
+        "item_results": analysis.get("item_results") or [],
+        "confidence_level": analysis.get("confidence_level") or "incomplete",
+        "raw_extraction": analysis.get("_raw_model_response") or analysis,
+    }
+    inserted = client.table("project_report_analyses").upsert(
+        payload,
+        on_conflict="project_id,report_file_id",
+    ).execute()
+
+    existing_outcome = _safe_one(client, "memory_project_outcomes", equals={"project_id": project_id}) or {}
+    summary_parts = [analysis.get("executive_summary"), analysis.get("objectives_result")]
+    if analysis.get("highlights"):
+        summary_parts.append("Destaques: " + "; ".join(analysis.get("highlights") or []))
+    if analysis.get("learnings"):
+        summary_parts.append("Aprendizados: " + "; ".join(analysis.get("learnings") or []))
+    notes_parts = []
+    if analysis.get("issues"):
+        notes_parts.append("Ocorrências: " + "; ".join(analysis.get("issues") or []))
+    if analysis.get("recommendations"):
+        notes_parts.append("Recomendações: " + "; ".join(analysis.get("recommendations") or []))
+    outcome_payload = {
+        "project_id": project_id,
+        "process_type": existing_outcome.get("process_type") or "not_informed",
+        "commercial_result": analysis.get("commercial_result") or existing_outcome.get("commercial_result") or "not_informed",
+        "proposal_result": existing_outcome.get("proposal_result") or ("fully_approved" if report_type == "post_execution" else "not_approved"),
+        "execution_result": analysis.get("execution_result") or existing_outcome.get("execution_result") or "not_informed",
+        "result_date": analysis.get("event_date") or existing_outcome.get("result_date"),
+        "execution_date": analysis.get("event_date") if report_type == "post_execution" else existing_outcome.get("execution_date"),
+        "contracting_client": existing_outcome.get("contracting_client"),
+        "partners_involved": existing_outcome.get("partners_involved"),
+        "result_reasons": analysis.get("loss_reasons") or existing_outcome.get("result_reasons") or [],
+        "result_context": "\n\n".join(str(part).strip() for part in summary_parts if str(part or "").strip()) or existing_outcome.get("result_context"),
+        "execution_notes": "\n\n".join(notes_parts) or existing_outcome.get("execution_notes"),
+        "budget_amount": analysis.get("planned_cost") or existing_outcome.get("budget_amount"),
+        "currency": "BRL",
+        "confidence_level": analysis.get("confidence_level") or "incomplete",
+        "information_source": "document",
+    }
+    client.table("memory_project_outcomes").upsert(outcome_payload, on_conflict="project_id").execute()
+
+    existing_feedbacks = _safe_rows(client, "memory_feedback_entries", columns="original_feedback", equals={"project_id": project_id})
+    known_feedbacks = {_normalise_match_text(row.get("original_feedback")) for row in existing_feedbacks}
+    for feedback in analysis.get("client_feedback") or []:
+        if isinstance(feedback, dict):
+            text = str(feedback.get("text") or feedback.get("feedback") or "").strip()
+            sentiment = str(feedback.get("sentiment") or "neutral")
+            theme = str(feedback.get("theme") or "other")
+            evidence = str(feedback.get("evidence") or "").strip()
+        else:
+            text = str(feedback).strip()
+            sentiment = "neutral"
+            theme = "other"
+            evidence = ""
+        if not text or _normalise_match_text(text) in known_feedbacks:
+            continue
+        if sentiment not in {"positive", "negative", "neutral", "mixed"}:
+            sentiment = "neutral"
+        if theme not in {"strategy", "creative_concept", "kv", "scenography", "activation", "gift", "journey", "operation", "technology", "budget", "timeline", "presentation", "other"}:
+            theme = "other"
+        client.table("memory_feedback_entries").insert({
+            "project_id": project_id,
+            "feedback_date": analysis.get("event_date"),
+            "source_type": "client",
+            "process_stage": "post_event" if report_type == "post_execution" else "commercial_decision",
+            "theme": theme,
+            "sentiment": sentiment,
+            "original_feedback": text,
+            "internal_interpretation": evidence or None,
+            "action_taken": None,
+            "confidence_level": analysis.get("confidence_level") or "incomplete",
+        }).execute()
+        known_feedbacks.add(_normalise_match_text(text))
+
+    memory_items = _safe_rows(client, "memory_items", equals={"project_id": project_id})
+    combined_item_results = list(analysis.get("item_results") or [])
+    for activation in analysis.get("activation_results") or []:
+        if isinstance(activation, dict):
+            combined_item_results.append({
+                "item_name": activation.get("name"),
+                "outcome_status": activation.get("status") or "executed",
+                "feedback": activation.get("result"),
+                "evidence": activation.get("evidence"),
+            })
+    allowed_outcomes = {"unassessed", "approved", "approved_with_changes", "not_approved", "replaced", "removed_budget", "removed_timeline", "executed", "not_executed", "unknown"}
+    for result in combined_item_results:
+        if not isinstance(result, dict):
+            continue
+        item, score = _best_memory_item_match(str(result.get("item_name") or result.get("name") or ""), memory_items)
+        if not item or score < 0.56:
+            continue
+        outcome_status = str(result.get("outcome_status") or result.get("status") or "executed").casefold().replace(" ", "_")
+        if outcome_status not in allowed_outcomes:
+            outcome_status = "executed" if report_type == "post_execution" else "unknown"
+        client.table("memory_item_outcomes").upsert({
+            "item_id": item.get("id"),
+            "project_id": project_id,
+            "outcome_status": outcome_status,
+            "decision_reason": str(result.get("evidence") or "").strip() or None,
+            "feedback_summary": str(result.get("feedback") or result.get("result") or "").strip() or None,
+            "execution_notes": str(result.get("execution_notes") or "").strip() or None,
+            "confidence_level": analysis.get("confidence_level") or "incomplete",
+            "information_source": "document",
+        }, on_conflict="item_id").execute()
+
+    new_status = None
+    if report_type == "post_execution":
+        new_status = "executado"
+    elif analysis.get("commercial_result") == "lost":
+        new_status = "perdido"
+    elif analysis.get("commercial_result") == "cancelled":
+        new_status = "cancelado"
+    if new_status:
+        client.table("projects").update({"status": new_status}).eq("id", project_id).execute()
+
+    try:
+        file_row = _safe_one(client, "project_files", equals={"id": report_file_id}) or {}
+        metadata = file_row.get("metadata") if isinstance(file_row.get("metadata"), dict) else {}
+        metadata.update({
+            "report_analysis": "processed",
+            "participants_count": analysis.get("participants_count"),
+            "planned_cost": analysis.get("planned_cost"),
+            "actual_cost": analysis.get("actual_cost"),
+        })
+        client.table("project_files").update({"metadata": metadata}).eq("id", report_file_id).execute()
+    except Exception:
+        pass
+
+    return dict(inserted.data[0]) if inserted.data else payload
+

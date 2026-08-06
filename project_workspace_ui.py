@@ -21,8 +21,15 @@ from project_workspace_db import (
     save_project_feedback,
     save_project_file,
     save_project_outcome,
+    save_project_report_analysis,
     update_project_workspace_data,
 )
+from project_report_extractor import analyze_project_report
+from project_workspace_reports import (
+    render_pending_report_actions,
+    render_report_analyses,
+)
+from project_workspace_visuals import render_visual_section
 
 
 PROJECT_SECTIONS = [
@@ -401,20 +408,69 @@ def _upload_box(
                 return
 
             try:
-                save_project_file(
-                    client,
-                    project_id=project_id,
-                    file_role=role,
-                    title=title,
-                    file_name=uploaded.name,
-                    file_bytes=uploaded.getvalue(),
-                    mime_type=uploaded.type,
-                    notes=notes,
-                )
+                file_bytes = uploaded.getvalue()
+                if role in {"closure_report", "post_execution_report"}:
+                    report_type = (
+                        "closure"
+                        if role == "closure_report"
+                        else "post_execution"
+                    )
+                    api_key = (
+                        st.secrets.get("GEMINI_API_KEY")
+                        or st.secrets.get("GOOGLE_API_KEY")
+                    )
+                    model = st.secrets.get("GEMINI_MODEL")
+                    with st.spinner(
+                        "Analisando o relatório e preenchendo resultados, "
+                        "indicadores e aprendizados..."
+                    ):
+                        analysis = analyze_project_report(
+                            file_name=uploaded.name,
+                            mime_type=uploaded.type,
+                            file_bytes=file_bytes,
+                            report_type=report_type,
+                            api_key=str(api_key or ""),
+                            model=str(model or "") or None,
+                        )
+                        saved_file = save_project_file(
+                            client,
+                            project_id=project_id,
+                            file_role=role,
+                            title=title,
+                            file_name=uploaded.name,
+                            file_bytes=file_bytes,
+                            mime_type=uploaded.type,
+                            notes=notes,
+                            metadata={"report_analysis": "processed"},
+                        )
+                        save_project_report_analysis(
+                            client,
+                            project_id=project_id,
+                            report_file_id=str(saved_file.get("id")),
+                            report_type=report_type,
+                            analysis=analysis,
+                        )
+                else:
+                    save_project_file(
+                        client,
+                        project_id=project_id,
+                        file_role=role,
+                        title=title,
+                        file_name=uploaded.name,
+                        file_bytes=file_bytes,
+                        mime_type=uploaded.type,
+                        notes=notes,
+                    )
             except Exception as exc:
-                st.error(f"Não foi possível salvar o arquivo: {exc}")
+                st.error(f"Não foi possível processar o arquivo: {exc}")
             else:
-                st.success("Arquivo salvo no projeto.")
+                if role in {"closure_report", "post_execution_report"}:
+                    st.success(
+                        "Relatório analisado. Resultados, indicadores, "
+                        "feedbacks e aprendizados foram aplicados ao projeto."
+                    )
+                else:
+                    st.success("Arquivo salvo no projeto.")
                 st.rerun()
 
 
@@ -913,15 +969,12 @@ def _render_memory_cards(
         )
         item_type = row.get("item_type") or "Conteúdo"
         status = row.get("item_status") or "Não informado"
-        source_page = row.get("source_page")
-
         st.markdown(
             f"""
             <article class="nave-workspace-item">
                 <div class="nave-workspace-item-title">{escape(str(title))}</div>
                 <div class="nave-workspace-item-meta">
                     {escape(str(item_type))} · {escape(str(status))}
-                    {f" · slide {int(source_page)}" if pd.notna(source_page) else ""}
                 </div>
                 <div class="nave-workspace-item-copy">
                     {escape(str(summary))}
@@ -951,10 +1004,12 @@ def _render_strategy(
     )
 
 
+
 def _render_scenography(
     client: Client,
     *,
     project_id: str,
+    snapshot: dict[str, Any],
 ) -> None:
     _section_title(
         "Cenografia e ativações",
@@ -962,19 +1017,29 @@ def _render_scenography(
     )
 
     st.markdown("#### Cenografia e ambientes")
-    _render_memory_cards(
+    render_visual_section(
         client,
         project_id=project_id,
+        snapshot=snapshot,
         section_keys=["scenography"],
-        empty_message="Nenhum ambiente ou solução cenográfica foi estruturado.",
+        empty_message="Nenhum ambiente ou solução cenográfica foi identificado.",
     )
 
     st.markdown("#### Ativações e experiências")
+    render_visual_section(
+        client,
+        project_id=project_id,
+        snapshot=snapshot,
+        section_keys=["activations"],
+        empty_message="Nenhuma ativação ou experiência foi identificada.",
+    )
+
+    st.markdown("#### Jornada e operação")
     _render_memory_cards(
         client,
         project_id=project_id,
-        section_keys=["activations", "journey_operation"],
-        empty_message="Nenhuma ativação ou jornada foi estruturada.",
+        section_keys=["journey_operation"],
+        empty_message="Nenhum conteúdo de jornada ou operação foi estruturado.",
     )
 
 
@@ -989,11 +1054,12 @@ def _render_gifts(
         "Conceitos, itens, composições, mockups, custos e referências.",
     )
 
-    _render_memory_cards(
+    render_visual_section(
         client,
         project_id=project_id,
+        snapshot=snapshot,
         section_keys=["gifts"],
-        empty_message="Nenhum brinde ou material foi estruturado.",
+        empty_message="Nenhum brinde, press kit ou material visual foi identificado.",
     )
 
     st.markdown("#### Referências e arquivos")
@@ -1437,58 +1503,49 @@ def _render_results(
         else "Resultado comercial, execução, contexto e aprendizados do projeto."
     )
     _section_title(title, intro)
+    render_report_analyses(snapshot)
 
-    with st.form(f"outcome_form_{project_id}"):
-        process_type = st.selectbox(
-            "Tipo de processo",
-            [
-                "competition",
-                "direct",
-                "proactive",
-                "renewal",
-                "not_informed",
-            ],
-            index=max(
-                0,
+    with st.expander("Ajustar informações manualmente", expanded=not bool(snapshot.get("report_analyses"))):
+        with st.form(f"outcome_form_{project_id}"):
+            process_type = st.selectbox(
+                "Tipo de processo",
                 [
                     "competition",
                     "direct",
                     "proactive",
                     "renewal",
                     "not_informed",
-                ].index(outcome.get("process_type"))
-                if outcome.get("process_type")
-                in {
-                    "competition",
-                    "direct",
-                    "proactive",
-                    "renewal",
-                    "not_informed",
-                }
-                else 4,
-            ),
-            format_func=lambda value: {
-                "competition": "Concorrência",
-                "direct": "Projeto direto",
-                "proactive": "Proativo",
-                "renewal": "Renovação",
-                "not_informed": "Não informado",
-            }[value],
-        )
+                ],
+                index=max(
+                    0,
+                    [
+                        "competition",
+                        "direct",
+                        "proactive",
+                        "renewal",
+                        "not_informed",
+                    ].index(outcome.get("process_type"))
+                    if outcome.get("process_type")
+                    in {
+                        "competition",
+                        "direct",
+                        "proactive",
+                        "renewal",
+                        "not_informed",
+                    }
+                    else 4,
+                ),
+                format_func=lambda value: {
+                    "competition": "Concorrência",
+                    "direct": "Projeto direto",
+                    "proactive": "Proativo",
+                    "renewal": "Renovação",
+                    "not_informed": "Não informado",
+                }[value],
+            )
 
-        commercial_result = st.selectbox(
-            "Resultado comercial",
-            [
-                "in_evaluation",
-                "won",
-                "lost",
-                "cancelled",
-                "suspended",
-                "no_return",
-                "not_applicable",
-                "not_informed",
-            ],
-            index=(
+            commercial_result = st.selectbox(
+                "Resultado comercial",
                 [
                     "in_evaluation",
                     "won",
@@ -1498,43 +1555,45 @@ def _render_results(
                     "no_return",
                     "not_applicable",
                     "not_informed",
-                ].index(outcome.get("commercial_result"))
-                if outcome.get("commercial_result")
-                in {
-                    "in_evaluation",
-                    "won",
-                    "lost",
-                    "cancelled",
-                    "suspended",
-                    "no_return",
-                    "not_applicable",
-                    "not_informed",
-                }
-                else 0
-            ),
-            format_func=lambda value: {
-                "in_evaluation": "Em avaliação",
-                "won": "Ganho",
-                "lost": "Perdido",
-                "cancelled": "Cancelado",
-                "suspended": "Suspenso",
-                "no_return": "Sem retorno",
-                "not_applicable": "Não aplicável",
-                "not_informed": "Não informado",
-            }[value],
-        )
+                ],
+                index=(
+                    [
+                        "in_evaluation",
+                        "won",
+                        "lost",
+                        "cancelled",
+                        "suspended",
+                        "no_return",
+                        "not_applicable",
+                        "not_informed",
+                    ].index(outcome.get("commercial_result"))
+                    if outcome.get("commercial_result")
+                    in {
+                        "in_evaluation",
+                        "won",
+                        "lost",
+                        "cancelled",
+                        "suspended",
+                        "no_return",
+                        "not_applicable",
+                        "not_informed",
+                    }
+                    else 0
+                ),
+                format_func=lambda value: {
+                    "in_evaluation": "Em avaliação",
+                    "won": "Ganho",
+                    "lost": "Perdido",
+                    "cancelled": "Cancelado",
+                    "suspended": "Suspenso",
+                    "no_return": "Sem retorno",
+                    "not_applicable": "Não aplicável",
+                    "not_informed": "Não informado",
+                }[value],
+            )
 
-        proposal_result = st.selectbox(
-            "Resultado da proposta",
-            [
-                "fully_approved",
-                "partially_approved",
-                "not_approved",
-                "in_revision",
-                "no_feedback",
-                "not_informed",
-            ],
-            index=(
+            proposal_result = st.selectbox(
+                "Resultado da proposta",
                 [
                     "fully_approved",
                     "partially_approved",
@@ -1542,39 +1601,39 @@ def _render_results(
                     "in_revision",
                     "no_feedback",
                     "not_informed",
-                ].index(outcome.get("proposal_result"))
-                if outcome.get("proposal_result")
-                in {
-                    "fully_approved",
-                    "partially_approved",
-                    "not_approved",
-                    "in_revision",
-                    "no_feedback",
-                    "not_informed",
-                }
-                else 5
-            ),
-            format_func=lambda value: {
-                "fully_approved": "Integralmente aprovada",
-                "partially_approved": "Parcialmente aprovada",
-                "not_approved": "Não aprovada",
-                "in_revision": "Em revisão",
-                "no_feedback": "Sem feedback",
-                "not_informed": "Não informado",
-            }[value],
-        )
+                ],
+                index=(
+                    [
+                        "fully_approved",
+                        "partially_approved",
+                        "not_approved",
+                        "in_revision",
+                        "no_feedback",
+                        "not_informed",
+                    ].index(outcome.get("proposal_result"))
+                    if outcome.get("proposal_result")
+                    in {
+                        "fully_approved",
+                        "partially_approved",
+                        "not_approved",
+                        "in_revision",
+                        "no_feedback",
+                        "not_informed",
+                    }
+                    else 5
+                ),
+                format_func=lambda value: {
+                    "fully_approved": "Integralmente aprovada",
+                    "partially_approved": "Parcialmente aprovada",
+                    "not_approved": "Não aprovada",
+                    "in_revision": "Em revisão",
+                    "no_feedback": "Sem feedback",
+                    "not_informed": "Não informado",
+                }[value],
+            )
 
-        execution_result = st.selectbox(
-            "Execução",
-            [
-                "executed",
-                "partially_executed",
-                "not_executed",
-                "in_progress",
-                "not_applicable",
-                "not_informed",
-            ],
-            index=(
+            execution_result = st.selectbox(
+                "Execução",
                 [
                     "executed",
                     "partially_executed",
@@ -1582,113 +1641,112 @@ def _render_results(
                     "in_progress",
                     "not_applicable",
                     "not_informed",
-                ].index(outcome.get("execution_result"))
-                if outcome.get("execution_result")
-                in {
-                    "executed",
-                    "partially_executed",
-                    "not_executed",
-                    "in_progress",
-                    "not_applicable",
-                    "not_informed",
-                }
-                else 5
-            ),
-            format_func=lambda value: {
-                "executed": "Executado",
-                "partially_executed": "Parcialmente executado",
-                "not_executed": "Não executado",
-                "in_progress": "Em andamento",
-                "not_applicable": "Não aplicável",
-                "not_informed": "Não informado",
-            }[value],
-        )
-
-        date_columns = st.columns(2)
-        with date_columns[0]:
-            result_date = st.date_input(
-                "Data do resultado",
-                value=None,
-            )
-        with date_columns[1]:
-            execution_date = st.date_input(
-                "Data da execução",
-                value=None,
+                ],
+                index=(
+                    [
+                        "executed",
+                        "partially_executed",
+                        "not_executed",
+                        "in_progress",
+                        "not_applicable",
+                        "not_informed",
+                    ].index(outcome.get("execution_result"))
+                    if outcome.get("execution_result")
+                    in {
+                        "executed",
+                        "partially_executed",
+                        "not_executed",
+                        "in_progress",
+                        "not_applicable",
+                        "not_informed",
+                    }
+                    else 5
+                ),
+                format_func=lambda value: {
+                    "executed": "Executado",
+                    "partially_executed": "Parcialmente executado",
+                    "not_executed": "Não executado",
+                    "in_progress": "Em andamento",
+                    "not_applicable": "Não aplicável",
+                    "not_informed": "Não informado",
+                }[value],
             )
 
-        contracting_client = st.text_input(
-            "Cliente contratante",
-            value=str(outcome.get("contracting_client") or ""),
-        )
-        partners_involved = st.text_input(
-            "Parceiros envolvidos",
-            value=str(outcome.get("partners_involved") or ""),
-        )
-        reasons_text = st.text_area(
-            "Motivos e fatores do resultado",
-            value="\n".join(outcome.get("result_reasons") or []),
-            help="Use uma linha para cada motivo.",
-            height=100,
-        )
-        result_context = st.text_area(
-            "Contexto e aprendizados",
-            value=str(outcome.get("result_context") or ""),
-            height=130,
-        )
-        execution_notes = st.text_area(
-            "Observações de execução",
-            value=str(outcome.get("execution_notes") or ""),
-            height=110,
-        )
-        budget_amount = st.number_input(
-            "Budget registrado",
-            min_value=0.0,
-            value=float(outcome.get("budget_amount") or 0),
-            step=1000.0,
-        )
-        confidence_level = st.selectbox(
-            "Confiança da informação",
-            [
-                "client_confirmed",
-                "voe_confirmed",
-                "inferred",
-                "incomplete",
-            ],
-            index=(
+            date_columns = st.columns(2)
+            with date_columns[0]:
+                result_date = st.date_input(
+                    "Data do resultado",
+                    value=None,
+                )
+            with date_columns[1]:
+                execution_date = st.date_input(
+                    "Data da execução",
+                    value=None,
+                )
+
+            contracting_client = st.text_input(
+                "Cliente contratante",
+                value=str(outcome.get("contracting_client") or ""),
+            )
+            partners_involved = st.text_input(
+                "Parceiros envolvidos",
+                value=str(outcome.get("partners_involved") or ""),
+            )
+            reasons_text = st.text_area(
+                "Motivos e fatores do resultado",
+                value="\n".join(outcome.get("result_reasons") or []),
+                help="Use uma linha para cada motivo.",
+                height=100,
+            )
+            result_context = st.text_area(
+                "Contexto e aprendizados",
+                value=str(outcome.get("result_context") or ""),
+                height=130,
+            )
+            execution_notes = st.text_area(
+                "Observações de execução",
+                value=str(outcome.get("execution_notes") or ""),
+                height=110,
+            )
+            budget_amount = st.number_input(
+                "Budget registrado",
+                min_value=0.0,
+                value=float(outcome.get("budget_amount") or 0),
+                step=1000.0,
+            )
+            confidence_level = st.selectbox(
+                "Confiança da informação",
                 [
                     "client_confirmed",
                     "voe_confirmed",
                     "inferred",
                     "incomplete",
-                ].index(outcome.get("confidence_level"))
-                if outcome.get("confidence_level")
-                in {
-                    "client_confirmed",
-                    "voe_confirmed",
-                    "inferred",
-                    "incomplete",
-                }
-                else 3
-            ),
-            format_func=lambda value: {
-                "client_confirmed": "Confirmado pelo cliente",
-                "voe_confirmed": "Confirmado pela VOE",
-                "inferred": "Inferido",
-                "incomplete": "Incompleto",
-            }[value],
-        )
-        information_source = st.selectbox(
-            "Fonte",
-            [
-                "client_feedback",
-                "voe_team",
-                "email",
-                "meeting",
-                "document",
-                "other",
-                "not_informed",
-            ],
-            index=(
+                ],
+                index=(
+                    [
+                        "client_confirmed",
+                        "voe_confirmed",
+                        "inferred",
+                        "incomplete",
+                    ].index(outcome.get("confidence_level"))
+                    if outcome.get("confidence_level")
+                    in {
+                        "client_confirmed",
+                        "voe_confirmed",
+                        "inferred",
+                        "incomplete",
+                    }
+                    else 3
+                ),
+                format_func=lambda value: {
+                    "client_confirmed": "Confirmado pelo cliente",
+                    "voe_confirmed": "Confirmado pela VOE",
+                    "inferred": "Inferido",
+                    "incomplete": "Incompleto",
+                }[value],
+            )
+            information_source = st.selectbox(
+                "Fonte",
                 [
                     "client_feedback",
                     "voe_team",
@@ -1697,27 +1755,36 @@ def _render_results(
                     "document",
                     "other",
                     "not_informed",
-                ].index(outcome.get("information_source"))
-                if outcome.get("information_source")
-                in {
-                    "client_feedback",
-                    "voe_team",
-                    "email",
-                    "meeting",
-                    "document",
-                    "other",
-                    "not_informed",
-                }
-                else 6
-            ),
-            format_func=lambda value: value.replace("_", " ").title(),
-        )
+                ],
+                index=(
+                    [
+                        "client_feedback",
+                        "voe_team",
+                        "email",
+                        "meeting",
+                        "document",
+                        "other",
+                        "not_informed",
+                    ].index(outcome.get("information_source"))
+                    if outcome.get("information_source")
+                    in {
+                        "client_feedback",
+                        "voe_team",
+                        "email",
+                        "meeting",
+                        "document",
+                        "other",
+                        "not_informed",
+                    }
+                    else 6
+                ),
+                format_func=lambda value: value.replace("_", " ").title(),
+            )
 
-        submitted = st.form_submit_button(
-            "Salvar resultado",
-            width="stretch",
-        )
-
+            submitted = st.form_submit_button(
+                "Salvar resultado",
+                width="stretch",
+            )
     if submitted:
         try:
             save_project_outcome(
@@ -1761,6 +1828,12 @@ def _render_results(
         empty_message=f"Nenhum {report_title.lower()} foi anexado.",
         allow_archive=True,
     )
+    render_pending_report_actions(
+        client,
+        project_id=project_id,
+        snapshot=snapshot,
+        report_role=report_role,
+    )
 
     _upload_box(
         client,
@@ -1773,6 +1846,8 @@ def _render_results(
             "pptx",
             "xlsx",
             "xlsm",
+            "xls",
+            "csv",
             "txt",
             "md",
         ],
@@ -1932,6 +2007,7 @@ def render_project_workspace(
             _render_scenography(
                 client,
                 project_id=project_id,
+                snapshot=snapshot,
             )
         elif selected_section == "Brindes e press kits":
             _render_gifts(
