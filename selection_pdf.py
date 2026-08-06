@@ -106,16 +106,32 @@ def _summary_fields(
             ("Localização", record.get("location")),
         ]
 
+    location = " · ".join(
+        part
+        for part in (
+            str(record.get("city") or "").strip(),
+            str(record.get("state") or "").strip(),
+        )
+        if part
+    )
+    capacities = []
+    for field in (
+        "standing_capacity",
+        "seated_capacity",
+        "auditorium_capacity",
+    ):
+        value = record.get(field)
+        try:
+            if value is not None and str(value).strip():
+                capacities.append(int(float(value)))
+        except (TypeError, ValueError):
+            continue
+
     return [
         ("Tipo de espaço", record.get("venue_type")),
-        ("Cidade", record.get("city")),
-        ("Valor", record.get("base_price")),
-        (
-            "Capacidade",
-            record.get("standing_capacity")
-            or record.get("seated_capacity")
-            or record.get("auditorium_capacity"),
-        ),
+        ("Localização", location),
+        ("Capacidade máxima", max(capacities) if capacities else None),
+        ("Área total", record.get("total_area_sqm")),
     ]
 
 
@@ -126,6 +142,20 @@ def _format_summary_value(
 ) -> str:
     if value is None or str(value).strip() == "":
         return "Não informado"
+
+    if label == "Capacidade máxima":
+        try:
+            return f"{int(float(value)):,}".replace(",", ".") + " pessoas"
+        except (TypeError, ValueError):
+            return str(value)
+
+    if label == "Área total":
+        try:
+            number = float(value)
+            formatted = f"{number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            return f"{formatted} m²"
+        except (TypeError, ValueError):
+            return str(value)
 
     if label == "Valor":
         prefix = {
@@ -155,6 +185,7 @@ def build_selection_pdf(
     *,
     title: str = "Seleção de possibilidades",
     introduction: str = "",
+    count_label: str = "possibilidade(s) selecionada(s)",
 ) -> bytes:
     buffer = BytesIO()
 
@@ -266,7 +297,7 @@ def build_selection_pdf(
     story.append(
         Paragraph(
             (
-                f"{len(items)} possibilidade(s) selecionada(s) "
+                f"{len(items)} {count_label} "
                 f"em {datetime.now().strftime('%d/%m/%Y')}."
             ),
             styles["intro"],

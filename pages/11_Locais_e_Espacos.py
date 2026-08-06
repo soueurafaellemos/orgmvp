@@ -3,15 +3,22 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
+import requests
 import streamlit as st
 from supabase import Client, create_client
 
 from branding import NAVE_APP_ICON, apply_nave_branding, page_header
 from knowledge_details import render_complete_record
+from media_library import (
+    download_media_bytes,
+    fetch_primary_media_assets,
+)
+from selection_pdf import build_selection_pdf
 from venue_types import (
     ALL_VENUE_TYPES,
     UNDEFINED_VENUE_TYPE,
@@ -461,6 +468,81 @@ def _safe_classification_batch(
     return updated, unchanged
 
 
+def _download_external_image(url: Any) -> bytes | None:
+    resolved = str(url or "").strip()
+    if not resolved.lower().startswith(("https://", "http://")):
+        return None
+
+    try:
+        response = requests.get(
+            resolved,
+            timeout=15,
+            headers={
+                "User-Agent": "NAVE-by-VOE/1.0",
+                "Accept": "image/*",
+            },
+            stream=True,
+        )
+        response.raise_for_status()
+        content_type = str(response.headers.get("content-type") or "")
+        if content_type and not content_type.lower().startswith("image/"):
+            return None
+
+        chunks = []
+        total = 0
+        max_size = 12 * 1024 * 1024
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_size:
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks) or None
+    except Exception:
+        return None
+
+
+def _selection_filename(title: str) -> str:
+    base = re.sub(
+        r"[^A-Za-z0-9]+",
+        "_",
+        str(title or "selecao_de_locais").strip(),
+    ).strip("_").lower()
+    return f"nave_{base or 'selecao_de_locais'}.pdf"
+
+
+def _selection_image_bytes(
+    client: Client,
+    record: dict[str, Any],
+    media_record: dict[str, Any] | None,
+    media_summary: dict[str, Any],
+) -> bytes | None:
+    if media_record:
+        try:
+            stored = download_media_bytes(client, media_record)
+        except Exception:
+            stored = None
+        if stored:
+            return stored
+
+        external = _download_external_image(
+            media_record.get("external_url")
+        )
+        if external:
+            return external
+
+    for candidate in (
+        record.get("source_image_url"),
+        media_summary.get("cover_url"),
+    ):
+        downloaded = _download_external_image(candidate)
+        if downloaded:
+            return downloaded
+
+    return None
+
+
 page_header(
     "Locais e espaços",
     (
@@ -569,8 +651,9 @@ if selected_media != "Todos":
     filtered = selected_rows
 
 st.caption(
-    f"{len(filtered)} resultado(s). Locais sem classificação continuam "
-    "disponíveis em Todos e em Tipo não definido."
+    f"{len(filtered)} resultado(s). Selecione uma linha para abrir a ficha "
+    "ou várias linhas para montar um PDF estruturado. Locais sem "
+    "classificação continuam disponíveis em Todos e em Tipo não definido."
 )
 
 table_rows = []
@@ -599,9 +682,10 @@ for row in filtered:
     )
 
 table_df = pd.DataFrame(table_rows)
+selected_records: list[dict[str, Any]] = []
+selected_record = None
 if table_df.empty:
     st.info("Nenhum local corresponde aos filtros selecionados.")
-    selected_record = None
 else:
     event = st.dataframe(
         table_df.drop(columns=["_id"]),
@@ -609,7 +693,7 @@ else:
         width="stretch",
         height=min(620, 86 + len(table_df) * 36),
         on_select="rerun",
-        selection_mode="single-row",
+        selection_mode="multi-row",
         key="nave_venue_type_table",
         column_config={
             "Capa": st.column_config.ImageColumn(
@@ -632,17 +716,144 @@ else:
     )
 
     selected_rows = event.selection.rows if event else []
-    selected_record = None
-    if selected_rows:
-        selected_id = str(table_df.iloc[selected_rows[0]]["_id"])
-        selected_record = next(
-            (
-                row
-                for row in venues
-                if str(row.get("id") or "") == selected_id
-            ),
-            None,
+    selected_ids = [
+        str(table_df.iloc[index]["_id"])
+        for index in selected_rows
+        if 0 <= index < len(table_df)
+    ]
+    by_id = {
+        str(row.get("id") or ""): row
+        for row in venues
+    }
+    selected_records = [
+        by_id[venue_id]
+        for venue_id in selected_ids
+        if venue_id in by_id
+    ]
+    if len(selected_records) == 1:
+        selected_record = selected_records[0]
+
+
+selection_signature = "|".join(
+    sorted(str(record.get("id") or "") for record in selected_records)
+)
+if st.session_state.get("venue_selection_pdf_signature") != selection_signature:
+    st.session_state.pop("venue_selection_pdf_bytes", None)
+    st.session_state.pop("venue_selection_pdf_filename", None)
+    st.session_state["venue_selection_pdf_signature"] = selection_signature
+
+if selected_records:
+    st.divider()
+    st.subheader(
+        f"{len(selected_records)} local(is) selecionado(s)"
+    )
+    st.caption(
+        "A seleção pode ser exportada em um PDF estruturado, com uma ficha "
+        "por local e a imagem principal quando disponível."
+    )
+
+    preview = pd.DataFrame(
+        [
+            {
+                "Local": record.get("name") or "Sem nome",
+                "Tipo": display_venue_type(record.get("venue_type")),
+                "Cidade": record.get("city") or "Não informado",
+                "UF": record.get("state") or "",
+                "Capacidade máxima": _format_capacity(_capacity(record)),
+            }
+            for record in selected_records
+        ]
+    )
+    st.dataframe(
+        preview,
+        hide_index=True,
+        width="stretch",
+    )
+
+    with st.expander("Exportar seleção em PDF", expanded=True):
+        pdf_title = st.text_input(
+            "Título do PDF",
+            value="Seleção de locais",
+            key="venue_selection_pdf_title",
         )
+        pdf_introduction = st.text_area(
+            "Mensagem de abertura",
+            placeholder=(
+                "Ex.: Locais selecionados para avaliação de acordo com "
+                "a capacidade, localização e perfil do projeto."
+            ),
+            key="venue_selection_pdf_introduction",
+        )
+
+        if st.button(
+            "Preparar PDF",
+            type="primary",
+            width="stretch",
+            key="prepare_venue_selection_pdf",
+        ):
+            try:
+                with st.spinner("Preparando o PDF dos locais..."):
+                    client = _database_client()
+                    selected_keys = [
+                        ("venue", str(record.get("id") or ""))
+                        for record in selected_records
+                    ]
+                    try:
+                        primary_assets = fetch_primary_media_assets(
+                            client,
+                            selected_keys,
+                        )
+                    except Exception:
+                        primary_assets = {}
+
+                    pdf_items = []
+                    for record in selected_records:
+                        venue_id = str(record.get("id") or "")
+                        image_bytes = _selection_image_bytes(
+                            client,
+                            record,
+                            primary_assets.get(("venue", venue_id)),
+                            media_by_venue.get(venue_id, {}),
+                        )
+                        pdf_items.append(
+                            {
+                                "entity_type": "venue",
+                                "record": record,
+                                "image_bytes": image_bytes,
+                            }
+                        )
+
+                    resolved_title = pdf_title.strip() or "Seleção de locais"
+                    st.session_state["venue_selection_pdf_bytes"] = (
+                        build_selection_pdf(
+                            pdf_items,
+                            title=resolved_title,
+                            introduction=pdf_introduction,
+                            count_label="local(is) selecionado(s)",
+                        )
+                    )
+                    st.session_state["venue_selection_pdf_filename"] = (
+                        _selection_filename(resolved_title)
+                    )
+                st.success("PDF preparado para download.")
+            except Exception as exc:
+                st.error("Não foi possível preparar o PDF desta seleção.")
+                with st.expander("Detalhes técnicos"):
+                    st.code(f"{type(exc).__name__}: {exc}")
+
+        pdf_bytes = st.session_state.get("venue_selection_pdf_bytes")
+        if pdf_bytes:
+            st.download_button(
+                "Baixar PDF da seleção",
+                data=pdf_bytes,
+                file_name=st.session_state.get(
+                    "venue_selection_pdf_filename",
+                    "nave_selecao_de_locais.pdf",
+                ),
+                mime="application/pdf",
+                type="primary",
+                width="stretch",
+            )
 
 if selected_record:
     st.divider()
@@ -697,8 +908,13 @@ if selected_record:
                     st.code(str(exc))
 
     render_complete_record("venue", selected_record)
-else:
+elif not selected_records:
     st.info("Selecione um local na tabela para abrir a ficha completa.")
+else:
+    st.info(
+        "Vários locais estão selecionados. Use o bloco de exportação acima "
+        "ou mantenha apenas uma linha selecionada para abrir a ficha completa."
+    )
 
 with st.expander("Classificar registros existentes com correspondência segura"):
     st.write(
