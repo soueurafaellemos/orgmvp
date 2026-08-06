@@ -372,6 +372,17 @@ def _load_venues() -> list[dict[str, Any]]:
         .execute()
     )
     records = [dict(record) for record in (response.data or [])]
+    names_by_id = {
+        str(record.get("id") or ""): str(record.get("name") or "")
+        for record in records
+    }
+    for record in records:
+        parent_id = str(record.get("parent_venue_id") or "").strip()
+        record["parent_venue_name"] = names_by_id.get(parent_id) if parent_id else None
+        scope = str(record.get("venue_scope") or "venue").strip().casefold()
+        record["venue_scope_label"] = (
+            "Subespaço" if scope == "subspace" else "Local principal"
+        )
 
     # Some historical schemas do not have archived_at. Filter only when the
     # field exists, and sort in Python so the query does not depend on columns
@@ -972,6 +983,8 @@ for row in filtered:
             "Local": str(row.get("name") or "Sem nome"),
             "Tipo": label,
             "Grupo": venue_group(row.get("venue_type")),
+            "Nível": str(row.get("venue_scope_label") or "Local principal"),
+            "Local principal": str(row.get("parent_venue_name") or ""),
             "Cidade": str(row.get("city") or "Não informado"),
             "Estado": str(row.get("state") or ""),
             "Capacidade": _format_capacity(_capacity(row)),
@@ -1002,6 +1015,11 @@ else:
             "Local": st.column_config.TextColumn("Local", width="large"),
             "Tipo": st.column_config.TextColumn("Tipo", width="medium"),
             "Grupo": st.column_config.TextColumn("Grupo", width="medium"),
+            "Nível": st.column_config.TextColumn("Nível", width="small"),
+            "Local principal": st.column_config.TextColumn(
+                "Local principal",
+                width="medium",
+            ),
             "Cidade": st.column_config.TextColumn("Cidade", width="medium"),
             "Estado": st.column_config.TextColumn("UF", width="small"),
             "Capacidade": st.column_config.TextColumn(
@@ -1033,6 +1051,11 @@ if selected_record:
     with title_cols[0]:
         st.markdown(f"## {selected_record.get('name') or 'Local'}")
         st.markdown(_type_badge(current_label), unsafe_allow_html=True)
+        if str(selected_record.get("venue_scope") or "").casefold() == "subspace":
+            parent_name = str(
+                selected_record.get("parent_venue_name") or "Local principal"
+            )
+            st.caption(f"Subespaço vinculado a **{parent_name}**")
         location = " · ".join(
             part
             for part in (

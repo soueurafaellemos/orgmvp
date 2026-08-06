@@ -18,6 +18,7 @@ from supabase import Client, create_client
 from document_io import InputDocument
 from entity_matching import (
     MATCH_CONFIG,
+    analyze_candidate_pair,
     best_candidate_match,
     name_similarity,
     normalize_match_name,
@@ -122,6 +123,9 @@ ACTIVATION_COLUMNS = {
 
 VENUE_COLUMNS = {
     "operator_id",
+    "parent_venue_id",
+    "venue_scope",
+    "subspace_name",
     "import_id",
     "source_file_id",
     "source_file",
@@ -324,6 +328,18 @@ def _json_safe(value: Any) -> Any:
         return value.isoformat()
 
     return value
+
+
+def _as_json_dict(value: Any) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
 
 
 def dataframe_records(df: pd.DataFrame) -> list[dict]:
@@ -732,7 +748,16 @@ def _venue_candidate_pool(
     incoming: dict,
 ) -> list[dict]:
     result = []
+    incoming_scope = str(incoming.get("venue_scope") or "venue").strip().casefold()
+    incoming_name = normalize_match_name(incoming.get("name"))
     for candidate in candidates:
+        candidate_scope = str(candidate.get("venue_scope") or "venue").strip().casefold()
+        if (
+            candidate_scope == "subspace"
+            and incoming_scope != "subspace"
+            and normalize_match_name(candidate.get("name")) != incoming_name
+        ):
+            continue
         if (
             operator_id
             and candidate.get("operator_id")
@@ -1105,6 +1130,9 @@ def _move_media_to_target(
 
     moved = 0
     duplicates_removed = 0
+    moved_media_ids: list[str] = []
+    moved_media_original_states: list[dict] = []
+    duplicate_media_snapshots: list[dict] = []
 
     for media in source_assets:
         content_hash = str(
@@ -1129,6 +1157,7 @@ def _move_media_to_target(
                 except Exception:
                     pass
 
+            duplicate_media_snapshots.append(_json_safe(media))
             (
                 client.table("media_assets")
                 .delete()
@@ -1149,6 +1178,13 @@ def _move_media_to_target(
         elif media.get("is_primary"):
             target_has_primary = True
 
+        moved_media_original_states.append(
+            {
+                "id": str(media.get("id") or ""),
+                "is_primary": bool(media.get("is_primary")),
+                "asset_type": media.get("asset_type"),
+            }
+        )
         (
             client.table("media_assets")
             .update(changes)
@@ -1156,6 +1192,7 @@ def _move_media_to_target(
             .execute()
         )
         moved += 1
+        moved_media_ids.append(str(media.get("id") or ""))
 
         if content_hash:
             target_hashes.add(content_hash)
@@ -1163,6 +1200,9 @@ def _move_media_to_target(
     return {
         "media_moved": moved,
         "duplicate_media_removed": duplicates_removed,
+        "moved_media_ids": moved_media_ids,
+        "moved_media_original_states": moved_media_original_states,
+        "duplicate_media_snapshots": duplicate_media_snapshots,
     }
 
 
@@ -1181,6 +1221,8 @@ def _move_activation_costs(
 
     moved = 0
     duplicates_removed = 0
+    moved_cost_ids: list[str] = []
+    duplicate_cost_snapshots: list[dict] = []
 
     for cost in response.data or []:
         description = (
@@ -1195,6 +1237,7 @@ def _move_activation_costs(
             description=description,
             amount=amount,
         ):
+            duplicate_cost_snapshots.append(_json_safe(cost))
             (
                 client.table("activation_costs")
                 .delete()
@@ -1215,10 +1258,13 @@ def _move_activation_costs(
             .execute()
         )
         moved += 1
+        moved_cost_ids.append(str(cost.get("id") or ""))
 
     return {
         "costs_moved": moved,
         "duplicate_costs_removed": duplicates_removed,
+        "moved_cost_ids": moved_cost_ids,
+        "duplicate_cost_snapshots": duplicate_cost_snapshots,
     }
 
 
@@ -1288,9 +1334,12 @@ def revalidate_pending_duplicate_candidates(
             continue
 
         config = MATCH_CONFIG[entity_type]
-        corrected_score = float(
-            config["score_function"](source, candidate)
+        analysis = analyze_candidate_pair(
+            entity_type,
+            source,
+            candidate,
         )
+        corrected_score = float(analysis.get("score") or 0)
         exact_name = (
             normalize_match_name(source.get("name"))
             == normalize_match_name(candidate.get("name"))
@@ -1298,8 +1347,17 @@ def revalidate_pending_duplicate_candidates(
         )
         review_threshold = float(config["review_threshold"])
         old_score = float(review.get("similarity_score") or 0)
+        blocked = bool(analysis.get("blocked"))
+        relation = analysis.get("relation") or {}
 
-        if not exact_name and corrected_score < review_threshold:
+        if (
+            blocked
+            or (
+                not exact_name
+                and corrected_score < review_threshold
+                and relation.get("type") != "parent_subspace"
+            )
+        ):
             (
                 client.table("knowledge_duplicate_candidates")
                 .update(
@@ -1312,6 +1370,8 @@ def revalidate_pending_duplicate_candidates(
                             "reason": "similarity_score_recalculated",
                             "old_score": old_score,
                             "corrected_score": corrected_score,
+                            "blockers": analysis.get("blockers") or [],
+                            "evidence": analysis.get("evidence") or [],
                         },
                     }
                 )
@@ -1324,7 +1384,11 @@ def revalidate_pending_duplicate_candidates(
         corrected_method = (
             "normalized_name"
             if exact_name
-            else "revalidated_possible_duplicate"
+            else (
+                "parent_subspace_relation"
+                if relation.get("type") == "parent_subspace"
+                else "revalidated_distinctive_taxonomy_identifier"
+            )
         )
         (
             client.table("knowledge_duplicate_candidates")
@@ -1334,6 +1398,10 @@ def revalidate_pending_duplicate_candidates(
                         1.0 if exact_name else corrected_score
                     ),
                     "match_method": corrected_method,
+                    "match_context": {
+                        **_as_json_dict(review.get("match_context")),
+                        "revalidated_analysis": _json_safe(analysis),
+                    },
                 }
             )
             .eq("id", review_id)
@@ -1393,6 +1461,80 @@ def resolve_duplicate_as_distinct(
     )
 
 
+def resolve_duplicate_as_hierarchy(
+    client: Client,
+    *,
+    review_id: str,
+) -> dict:
+    review_response = (
+        client.table("knowledge_duplicate_candidates")
+        .select("*")
+        .eq("id", review_id)
+        .limit(1)
+        .execute()
+    )
+    if not review_response.data:
+        raise ValueError("A correspondência não foi encontrada.")
+
+    review = review_response.data[0]
+    if str(review.get("entity_type") or "") != "venue":
+        raise ValueError("A hierarquia pai/subespaço é exclusiva de locais.")
+
+    source_id = str(review.get("source_entity_id") or "")
+    parent_id = str(review.get("candidate_entity_id") or "")
+    source = _entity_record(
+        client,
+        entity_type="venue",
+        entity_id=source_id,
+    )
+    parent = _entity_record(
+        client,
+        entity_type="venue",
+        entity_id=parent_id,
+    )
+    if not source or not parent:
+        raise ValueError("Um dos locais já não está disponível.")
+
+    analysis = analyze_candidate_pair("venue", source, parent)
+    relation = analysis.get("relation") or {}
+    if relation.get("type") != "parent_subspace":
+        raise ValueError(
+            "Os registros não formam uma relação segura de local e subespaço."
+        )
+
+    changes = {
+        "parent_venue_id": parent_id,
+        "venue_scope": "subspace",
+        "subspace_name": source.get("subspace_name") or source.get("name"),
+    }
+    (
+        client.table("venues")
+        .update(changes)
+        .eq("id", source_id)
+        .execute()
+    )
+    resolution_data = {
+        "decision": "kept_separate_with_hierarchy",
+        "parent_venue_id": parent_id,
+        "subspace_entity_id": source_id,
+        "match_analysis": _json_safe(analysis),
+    }
+    (
+        client.table("knowledge_duplicate_candidates")
+        .update(
+            {
+                "status": "different",
+                "resolution_strategy": "linked_as_subspace",
+                "resolved_at": pd.Timestamp.utcnow().isoformat(),
+                "resolution_data": resolution_data,
+            }
+        )
+        .eq("id", review_id)
+        .execute()
+    )
+    return resolution_data
+
+
 def resolve_duplicate_merge(
     client: Client,
     *,
@@ -1435,6 +1577,44 @@ def resolve_duplicate_merge(
     if not source or not target:
         raise ValueError(
             "Um dos cadastros já não está disponível."
+        )
+
+    # Segurança também no banco: a interface pode confirmar a intenção do
+    # usuário, mas a função de domínio nunca executa uma união quando a nova
+    # análise encontra taxonomia incompatível, identificadores conflitantes,
+    # ausência de palavra distintiva ou relação de local/subespaço.
+    safety_analysis = analyze_candidate_pair(
+        entity_type,
+        source,
+        target,
+    )
+    relation = safety_analysis.get("relation") or {}
+    if relation.get("type") == "parent_subspace":
+        raise ValueError(
+            "Estes locais formam uma relação de local principal e subespaço; "
+            "use o vínculo hierárquico em vez de apagar um cadastro."
+        )
+    if safety_analysis.get("blocked"):
+        blockers = ", ".join(
+            str(item)
+            for item in safety_analysis.get("blockers") or []
+        )
+        raise ValueError(
+            "A união foi bloqueada pelas travas de identidade da NAVE"
+            + (f": {blockers}." if blockers else ".")
+        )
+    identity_evidence = {
+        "sku_exact",
+        "name_exact",
+        "distinctive_words_exact",
+        "website_domain_same",
+        "address_same",
+        "postal_code_same",
+    } & set(safety_analysis.get("evidence") or [])
+    if not identity_evidence:
+        raise ValueError(
+            "A união foi bloqueada porque não existe evidência positiva de "
+            "identidade entre os dois cadastros."
         )
 
     allowed_fields = DUPLICATE_ENTITY_COLUMNS[
@@ -1484,9 +1664,18 @@ def resolve_duplicate_merge(
         .execute()
     )
 
+    target_post_merge = _entity_record(
+        client,
+        entity_type=entity_type,
+        entity_id=target_entity_id,
+    )
+
     resolution_data = {
         "target_entity_id": target_entity_id,
         "source_entity_id": source_entity_id,
+        "source_snapshot": _json_safe(source),
+        "target_snapshot": _json_safe(target),
+        "target_post_merge_snapshot": _json_safe(target_post_merge),
         "fields_filled": merge_result[
             "filled_fields"
         ],
@@ -2013,6 +2202,8 @@ def save_catalog(
                             "category": raw.get(
                                 "category"
                             ),
+                            "source_page": raw.get("source_page"),
+                            "match_analysis": review_match.get("analysis"),
                         },
                         original_strategy=strategy,
                     )
@@ -2288,6 +2479,8 @@ def save_activations(
                             "category": raw.get(
                                 "category"
                             ),
+                            "source_page": raw.get("source_page"),
+                            "match_analysis": review_match.get("analysis"),
                         },
                         original_strategy=strategy,
                     )
@@ -2527,6 +2720,7 @@ def save_venues(
 
     inserted = enriched = skipped = conflict_records = 0
     possible_duplicates = 0
+    hierarchy_links = 0
     fields_filled = fields_updated = 0
     visual_counts = {
         "added": 0,
@@ -2563,6 +2757,38 @@ def save_venues(
             str(raw.get("source_file") or "")
         )
 
+        declared_parent_name = str(
+            raw.get("parent_venue_name") or ""
+        ).strip()
+        hierarchy_assigned = False
+        if declared_parent_name:
+            declared_parent_normalized = normalize_match_name(
+                declared_parent_name
+            )
+            declared_parent = next(
+                (
+                    candidate
+                    for candidate in venue_pool
+                    if normalize_match_name(candidate.get("name"))
+                    == declared_parent_normalized
+                    and not _venue_values_conflict(
+                        raw.get("city"), candidate.get("city")
+                    )
+                    and not _venue_values_conflict(
+                        raw.get("state"), candidate.get("state")
+                    )
+                ),
+                None,
+            )
+            if declared_parent:
+                payload["parent_venue_id"] = declared_parent.get("id")
+                payload["venue_scope"] = "subspace"
+                payload["subspace_name"] = (
+                    raw.get("subspace_name") or raw.get("name")
+                )
+                hierarchy_assigned = True
+                hierarchy_links += 1
+
         existing, match_method = _find_existing_venue_from_pool(
             venue_pool,
             operator_id=operator_id,
@@ -2583,6 +2809,15 @@ def save_venues(
                 match_method = similarity["method"]
             elif similarity["decision"] == "review":
                 review_match = similarity
+            elif similarity["decision"] == "hierarchy" and not hierarchy_assigned:
+                relation = similarity.get("relation") or {}
+                payload["parent_venue_id"] = similarity["candidate"].get("id")
+                payload["venue_scope"] = "subspace"
+                payload["subspace_name"] = raw.get("subspace_name") or raw.get("name")
+                raw["parent_venue_id"] = payload["parent_venue_id"]
+                raw["venue_scope"] = "subspace"
+                raw["subspace_name"] = payload["subspace_name"]
+                hierarchy_links += 1
 
         entity_id = None
 
@@ -2619,9 +2854,12 @@ def save_venues(
                         match_context={
                             "operator_id": operator_id,
                             "city": raw.get("city"),
+                            "state": raw.get("state"),
                             "venue_type": raw.get(
                                 "venue_type"
                             ),
+                            "source_page": raw.get("source_page"),
+                            "match_analysis": review_match.get("analysis"),
                         },
                         original_strategy=strategy,
                     )
@@ -2734,6 +2972,7 @@ def save_venues(
         "records_enriched": enriched,
         "records_with_conflicts": conflict_records,
         "possible_duplicate_records": possible_duplicates,
+        "hierarchy_links_created": hierarchy_links,
         "duplicates_skipped": skipped,
         "fields_filled": fields_filled,
         "fields_updated": fields_updated,

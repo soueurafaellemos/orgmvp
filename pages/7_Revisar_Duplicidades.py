@@ -13,7 +13,13 @@ from branding import (
     page_header,
 )
 from knowledge_details import DETAIL_SCHEMAS
+from entity_matching import analyze_candidate_pair
 from media_library import fetch_primary_media_urls
+from merge_recovery import (
+    fetch_merge_recovery_candidates,
+    recover_incompatible_merges,
+    recover_merged_review,
+)
 from runtime_ui import (
     report_service_error,
     require_admin_access,
@@ -23,6 +29,7 @@ from supabase_db import (
     fetch_duplicate_candidates,
     get_supabase_client,
     resolve_duplicate_as_distinct,
+    resolve_duplicate_as_hierarchy,
     resolve_duplicate_decisions_bulk,
     resolve_duplicate_merge,
     revalidate_pending_duplicate_candidates,
@@ -159,7 +166,7 @@ if not url or not key:
 
 try:
     client = get_supabase_client(url, key)
-    cleanup_key = "duplicate_revalidation_v27_8_8"
+    cleanup_key = "duplicate_revalidation_v27_8_9"
     cleanup_result = None
     if not st.session_state.get(cleanup_key):
         cleanup_result = revalidate_pending_duplicate_candidates(client)
@@ -168,6 +175,10 @@ try:
     reviews = fetch_duplicate_candidates(
         client,
         status="pending",
+    )
+    recovery_candidates = fetch_merge_recovery_candidates(
+        client,
+        limit=1000,
     )
 except Exception as exc:
     report_service_error(
@@ -185,6 +196,175 @@ if cleanup_result and cleanup_result.get("dismissed"):
         "foram removidas automaticamente da fila. Nenhum cadastro ou "
         "arquivo foi apagado."
     )
+
+st.divider()
+st.subheader("Recuperar uniões já realizadas")
+st.caption(
+    "Esta área reconstrói cadastros apagados por uma união incorreta usando "
+    "o payload original da importação ou o snapshot gravado no momento da "
+    "consolidação. A recuperação não apaga o cadastro que ficou na direita."
+)
+
+if recovery_candidates.empty:
+    st.success("Não há uniões anteriores aguardando recuperação.")
+else:
+    recovery_labels = {
+        "incompatible": "União incompatível — recuperação automática segura",
+        "hierarchy": "Local principal e subespaço — recuperar com hierarquia",
+        "ambiguous": "Exige revisão humana",
+        "likely_correct": "União provavelmente correta",
+        "unrecoverable": "Dados insuficientes para reconstrução automática",
+    }
+    recovery_view = recovery_candidates.copy()
+    recovery_view["Classificação"] = (
+        recovery_view["recovery_classification"]
+        .map(recovery_labels)
+        .fillna(recovery_view["recovery_classification"])
+    )
+    recovery_view["Semelhança corrigida"] = recovery_view[
+        "corrected_score"
+    ].map(lambda value: f"{float(value or 0) * 100:.0f}%")
+
+    automatic = recovery_candidates[
+        recovery_candidates["recovery_classification"].isin(
+            ["incompatible", "hierarchy"]
+        )
+    ]
+    ambiguous_recovery = recovery_candidates[
+        recovery_candidates["recovery_classification"] == "ambiguous"
+    ]
+    unavailable_recovery = recovery_candidates[
+        recovery_candidates["recovery_classification"] == "unrecoverable"
+    ]
+
+    recover1, recover2, recover3 = st.columns(3)
+    recover1.metric("Recuperação automática segura", len(automatic))
+    recover2.metric("Revisão humana", len(ambiguous_recovery))
+    recover3.metric("Sem payload recuperável", len(unavailable_recovery))
+
+    with st.expander(
+        "Ver diagnóstico das uniões realizadas",
+        expanded=bool(len(automatic)),
+    ):
+        st.dataframe(
+            recovery_view[
+                [
+                    "source_name",
+                    "candidate_name",
+                    "Classificação",
+                    "Semelhança corrigida",
+                    "recovery_reason",
+                ]
+            ].rename(
+                columns={
+                    "source_name": "Cadastro apagado",
+                    "candidate_name": "Cadastro que foi preservado",
+                    "recovery_reason": "Motivo técnico",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if not automatic.empty:
+        st.warning(
+            f"{len(automatic)} união(ões) foram classificadas como "
+            "incompatíveis ou como relação entre local e subespaço. "
+            "A recuperação recriará os cadastros apagados e devolverá "
+            "as mídias que puderem ser atribuídas pela origem e página."
+        )
+        confirm_recovery = st.checkbox(
+            "Confirmo a recuperação das uniões incompatíveis identificadas acima.",
+            key="confirm_incompatible_merge_recovery",
+        )
+        if st.button(
+            "Recuperar automaticamente as uniões incompatíveis",
+            type="primary",
+            disabled=not confirm_recovery,
+            use_container_width=True,
+            key="recover_incompatible_merges",
+        ):
+            try:
+                with st.spinner("Reconstruindo cadastros e devolvendo mídias..."):
+                    recovery_result = recover_incompatible_merges(client)
+                st.success(
+                    f"Recuperação concluída: {recovery_result.get('recovered', 0)} "
+                    "cadastro(s) reconstruído(s) e "
+                    f"{recovery_result.get('media_restored', 0)} mídia(s) e "
+                    f"{recovery_result.get('costs_restored', 0)} custo(s) "
+                    "devolvido(s)."
+                )
+                if recovery_result.get("failed"):
+                    st.error(
+                        f"{recovery_result.get('failed')} item(ns) não puderam ser "
+                        "recuperados automaticamente. Os registros permanecem no "
+                        "histórico para diagnóstico."
+                    )
+                    st.dataframe(
+                        pd.DataFrame(recovery_result.get("errors") or []),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                st.rerun()
+            except Exception as exc:
+                report_service_error(
+                    "recuperação de uniões incompatíveis",
+                    user_message=(
+                        "Não foi possível concluir a recuperação automática."
+                    ),
+                    exception=exc,
+                )
+
+    if not ambiguous_recovery.empty:
+        st.markdown("#### Recuperação individual de casos ambíguos")
+        ambiguous_options = {}
+        for index, row in ambiguous_recovery.iterrows():
+            label = (
+                f"{row.get('source_name')} ↔ {row.get('candidate_name')} · "
+                f"{float(row.get('corrected_score') or 0) * 100:.0f}%"
+            )
+            ambiguous_options[label] = index
+        selected_recovery_label = st.selectbox(
+            "União realizada para revisar",
+            options=list(ambiguous_options.keys()),
+            key="ambiguous_merge_recovery_selection",
+        )
+        selected_recovery = ambiguous_recovery.loc[
+            ambiguous_options[selected_recovery_label]
+        ].to_dict()
+        st.info(
+            "Use esta ação somente quando os dois nomes representarem itens "
+            "diferentes. O cadastro da esquerda será reconstruído como registro "
+            "separado."
+        )
+        confirm_manual_recovery = st.checkbox(
+            "Confirmei que estes dois cadastros representam itens diferentes.",
+            key="confirm_manual_merge_recovery",
+        )
+        if st.button(
+            "Restaurar o cadastro apagado como item separado",
+            disabled=not confirm_manual_recovery,
+            use_container_width=True,
+            key="recover_ambiguous_merge",
+        ):
+            try:
+                result = recover_merged_review(
+                    client,
+                    review_id=str(selected_recovery["id"]),
+                    force=True,
+                )
+                st.success(
+                    "Cadastro reconstruído. "
+                    f"Mídias devolvidas: {result.get('media_restored', 0)} · "
+                    f"custos devolvidos: {result.get('costs_restored', 0)}."
+                )
+                st.rerun()
+            except Exception as exc:
+                report_service_error(
+                    "recuperação individual de união",
+                    user_message="Não foi possível reconstruir este cadastro.",
+                    exception=exc,
+                )
 
 if reviews.empty:
     st.success(
@@ -219,7 +399,7 @@ if st.button(
 ):
     try:
         result = revalidate_pending_duplicate_candidates(client)
-        st.session_state.pop("duplicate_revalidation_v27_8_8", None)
+        st.session_state.pop("duplicate_revalidation_v27_8_9", None)
         st.success(
             f"Revalidação concluída: {result.get('dismissed', 0)} "
             "falso(s) positivo(s) removido(s) da fila e "
@@ -266,12 +446,92 @@ source = dict(selected.get("source_record") or {})
 candidate = dict(
     selected.get("candidate_record") or {}
 )
+match_analysis = analyze_candidate_pair(
+    entity_type,
+    source,
+    candidate,
+)
+match_relation = match_analysis.get("relation") or {}
 
 st.caption(
     "A semelhança é apenas um sinal. Confirme usando "
     "nome, fornecedor, cidade, valores, características "
     "e imagens."
 )
+
+evidence_labels = {
+    "sku_exact": "Mesmo SKU",
+    "supplier_same": "Mesmo fornecedor",
+    "project_same": "Mesmo projeto",
+    "taxonomy_same": "Taxonomia compatível",
+    "name_exact": "Nome normalizado idêntico",
+    "distinctive_words_exact": "Palavras distintivas em comum",
+    "website_domain_same": "Mesmo domínio oficial",
+    "address_same": "Mesmo endereço",
+    "postal_code_same": "Mesmo CEP",
+    "operator_same": "Mesmo operador",
+    "parent_name_exact": "Nome do local principal contido no ambiente",
+    "location_identifier_same": "Identificador de localização compatível",
+}
+blocker_labels = {
+    "sku_different": "SKUs diferentes",
+    "supplier_different": "Fornecedores diferentes",
+    "project_different": "Projetos diferentes",
+    "taxonomy_incompatible": "Taxonomias incompatíveis",
+    "no_distinctive_word_in_common": "Nenhuma palavra distintiva em comum",
+    "no_distinctive_word_or_identifier_in_common": (
+        "Nenhuma palavra distintiva ou identificador em comum"
+    ),
+    "only_generic_words_in_common": "Somente palavras genéricas em comum",
+    "city_different": "Cidades diferentes",
+    "state_different": "Estados diferentes",
+    "operator_different": "Operadores diferentes",
+    "official_domains_different": "Domínios oficiais diferentes",
+}
+
+signal1, signal2, signal3 = st.columns(3)
+signal1.metric(
+    "Pontuação corrigida",
+    f"{float(match_analysis.get('score') or 0) * 100:.0f}%",
+)
+signal2.metric(
+    "Palavras distintivas em comum",
+    len(
+        (match_analysis.get("name_features") or {}).get(
+            "common_distinctive"
+        ) or []
+    ),
+)
+signal3.metric(
+    "Taxonomia",
+    {
+        "same": "Compatível",
+        "different": "Incompatível",
+    }.get(match_analysis.get("taxonomy_state"), "Não conclusiva"),
+)
+
+if match_analysis.get("evidence"):
+    st.success(
+        "Sinais confirmados: "
+        + "; ".join(
+            evidence_labels.get(item, item)
+            for item in match_analysis.get("evidence") or []
+        )
+    )
+if match_analysis.get("blockers"):
+    st.error(
+        "Travas de segurança: "
+        + "; ".join(
+            blocker_labels.get(item, item)
+            for item in match_analysis.get("blockers") or []
+        )
+    )
+if match_relation.get("type") == "parent_subspace":
+    st.info(
+        "A NAVE identificou uma relação entre local principal e ambiente. "
+        "Os dois cadastros devem permanecer separados e ser vinculados por "
+        "hierarquia, sem apagar nenhum deles."
+    )
 
 try:
     image_urls = fetch_primary_media_urls(
@@ -372,22 +632,69 @@ confirmation = st.checkbox(
     "Revisei as informações e confirmo esta decisão.",
 )
 
-action1, action2 = st.columns(2)
+hierarchy_clicked = False
+merge_clicked = False
 
-with action1:
-    merge_clicked = st.button(
-        "São o mesmo item — unir cadastros",
-        type="primary",
-        disabled=not confirmation,
-        use_container_width=True,
+if match_relation.get("type") == "parent_subspace":
+    action1, action2 = st.columns(2)
+    with action1:
+        hierarchy_clicked = st.button(
+            "Manter separados e vincular como subespaço",
+            type="primary",
+            disabled=not confirmation,
+            use_container_width=True,
+        )
+    with action2:
+        distinct_clicked = st.button(
+            "Não possuem relação — manter totalmente separados",
+            disabled=not confirmation,
+            use_container_width=True,
+        )
+else:
+    merge_confirmation = st.text_input(
+        "Para liberar a união destrutiva, digite UNIR",
+        value="",
+        key=f"merge_confirmation_{selected.get('id')}",
     )
+    action1, action2 = st.columns(2)
+    with action1:
+        merge_clicked = st.button(
+            "São o mesmo item — unir cadastros",
+            type="primary",
+            disabled=(
+                not confirmation
+                or merge_confirmation.strip().upper() != "UNIR"
+                or bool(match_analysis.get("blockers"))
+            ),
+            use_container_width=True,
+        )
+    with action2:
+        distinct_clicked = st.button(
+            "São itens diferentes — manter separados",
+            disabled=not confirmation,
+            use_container_width=True,
+        )
 
-with action2:
-    distinct_clicked = st.button(
-        "São itens diferentes — manter separados",
-        disabled=not confirmation,
-        use_container_width=True,
-    )
+if hierarchy_clicked:
+    try:
+        result = resolve_duplicate_as_hierarchy(
+            client,
+            review_id=str(selected["id"]),
+        )
+        st.success(
+            "Os dois locais foram preservados e o ambiente foi vinculado "
+            "ao local principal."
+        )
+        st.rerun()
+    except Exception as exc:
+        report_service_error(
+            "vínculo hierárquico de locais",
+            user_message=(
+                "Não foi possível criar a relação entre local e subespaço."
+            ),
+            exception=exc,
+        )
+
 
 if merge_clicked:
     try:

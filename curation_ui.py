@@ -320,6 +320,17 @@ EDIT_SCHEMAS = {
                     "type": "supplier",
                 },
                 {
+                    "field": "venue_scope",
+                    "label": "Nível do cadastro",
+                    "type": "select",
+                    "options": ["venue", "subspace"],
+                },
+                {
+                    "field": "subspace_name",
+                    "label": "Nome do ambiente / subespaço",
+                    "type": "text",
+                },
+                {
                     "field": "description",
                     "label": "Descrição",
                     "type": "textarea",

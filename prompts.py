@@ -139,6 +139,15 @@ Cada local físico distinto deve virar um registro separado. Exemplos:
 centro de convenções, pavilhão, hotel, casa de eventos, restaurante, arena,
 auditório, teatro, shopping, galpão ou área externa.
 
+HIERARQUIA:
+- não trate automaticamente um pavimento, salão, auditório, foyer, pavilhão,
+  rooftop, jardim ou área interna como duplicata do empreendimento principal;
+- quando a página descrever um ambiente específico dentro de um local, use
+  venue_scope="subspace", informe parent_venue_name e preserve o nome do
+  ambiente em subspace_name;
+- quando descrever o empreendimento completo, use venue_scope="venue";
+- não invente a relação pai/filho quando a fonte não permitir confirmá-la.
+
 Extraia somente o que está presente na fonte.
 
 IDENTIFICAÇÃO E LOCALIZAÇÃO:

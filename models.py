@@ -289,6 +289,9 @@ class VenueSpace(BaseModel):
     source_page: int | None = None
     visual_crop: VisualCrop | None = None
     operator_name: str | None = None
+    venue_scope: Literal["venue", "subspace", "Não informado"] = "Não informado"
+    parent_venue_name: str | None = None
+    subspace_name: str | None = None
 
     name: str
     venue_type: Literal[

@@ -547,7 +547,6 @@ def _duplicate_resolution_panel(
                     "Decisão",
                     options=[
                         DUPLICATE_DECISION_REVIEW,
-                        DUPLICATE_DECISION_MERGE,
                         DUPLICATE_DECISION_DISTINCT,
                     ],
                     required=True,
@@ -581,9 +580,9 @@ def _duplicate_resolution_panel(
         )
 
         st.caption(
-            "Selecione 'Unir no cadastro existente' somente quando nome, "
-            "contexto, localização e imagens confirmarem que é o mesmo item. "
-            "Na dúvida, mantenha separado ou deixe para revisar depois."
+            "Nesta tela rápida, a única decisão definitiva disponível é manter "
+            "separado. Uniões exigem a comparação completa, com imagens, "
+            "taxonomia e identificadores, na fila detalhada de duplicidades."
         )
 
         selected = decision_df[
@@ -601,11 +600,7 @@ def _duplicate_resolution_panel(
         if apply_clicked:
             decisions = []
             for _, item in selected.iterrows():
-                action = (
-                    "merge"
-                    if item["Decisão"] == DUPLICATE_DECISION_MERGE
-                    else "distinct"
-                )
+                action = "distinct"
                 decisions.append(
                     {
                         "review_id": str(item["review_id"]),
@@ -753,6 +748,12 @@ def _database_save_controls(
         "Campos preenchidos",
         result.get("fields_filled", 0),
     )
+
+    if result.get("hierarchy_links_created", 0):
+        st.info(
+            f"{result.get('hierarchy_links_created', 0)} ambiente(s) foram "
+            "mantidos como cadastros próprios e vinculados ao local principal."
+        )
 
     if allow_visuals:
         visual1, visual2, visual3 = st.columns(3)

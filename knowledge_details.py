@@ -158,6 +158,9 @@ VENUE_SECTIONS = [
         [
             ("name", "Nome"),
             ("venue_type", "Tipo de espaço"),
+            ("venue_scope", "Nível do cadastro"),
+            ("parent_venue_name", "Local principal"),
+            ("subspace_name", "Nome do ambiente"),
             ("description", "Descrição"),
             ("document_name", "Documento de origem"),
             ("document_year", "Ano do documento"),
@@ -260,6 +263,7 @@ INTERNAL_FIELDS = {
     "project_id",
     "import_id",
     "source_file_id",
+    "parent_venue_id",
     "normalized_name",
     "created_at",
     "updated_at",
