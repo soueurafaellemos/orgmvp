@@ -12,7 +12,10 @@ import pandas as pd
 from supabase import Client
 
 from memory_cost_parser import normalize_text
-from memory_learning_models import CostWorkbookResult
+from memory_learning_models import (
+    BriefingExtraction,
+    CostWorkbookResult,
+)
 
 
 COST_BUCKET = "nave-memory-costs"
@@ -23,11 +26,37 @@ COST_MIME_TYPES = {
         "application/vnd.openxmlformats-officedocument."
         "spreadsheetml.sheet"
     ),
-    ".xlsm": (
-        "application/vnd.ms-excel.sheet.macroEnabled.12"
-    ),
+    # Supabase normalizes request MIME values to lowercase.
+    # The generic Excel MIME is accepted by existing buckets and
+    # avoids the case-sensitive macroEnabled/macroenabled mismatch.
+    ".xlsm": "application/vnd.ms-excel",
     ".xls": "application/vnd.ms-excel",
     ".csv": "text/csv",
+}
+
+
+COST_ALLOWED_MIME_TYPES = sorted(
+    {
+        *COST_MIME_TYPES.values(),
+        "application/vnd.ms-excel.sheet.macroenabled.12",
+        "application/vnd.ms-excel.sheet.macroEnabled.12",
+    }
+)
+
+BRIEFING_BUCKET = "nave-memory-briefings"
+BRIEFING_MAX_FILE_SIZE = 50 * 1024 * 1024
+BRIEFING_MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": (
+        "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document"
+    ),
+    ".pptx": (
+        "application/vnd.openxmlformats-officedocument."
+        "presentationml.presentation"
+    ),
+    ".txt": "text/plain",
+    ".md": "text/markdown",
 }
 
 STOPWORDS = {
@@ -178,18 +207,30 @@ def ensure_cost_bucket(
         for bucket in buckets
     }
 
+    options = {
+        "public": False,
+        "allowed_mime_types": (
+            COST_ALLOWED_MIME_TYPES
+        ),
+    }
+
     if COST_BUCKET in bucket_ids:
+        # Corrige também buckets criados pela V26 com a lista antiga.
+        try:
+            client.storage.update_bucket(
+                COST_BUCKET,
+                options=options,
+            )
+        except Exception:
+            # O upload de XLSM usa o MIME genérico do Excel como
+            # segunda proteção quando a atualização não está disponível.
+            pass
         return
 
     try:
         client.storage.create_bucket(
             COST_BUCKET,
-            options={
-                "public": False,
-                "allowed_mime_types": list(
-                    COST_MIME_TYPES.values()
-                ),
-            },
+            options=options,
         )
     except Exception as exc:
         message = str(exc).casefold()
@@ -204,6 +245,46 @@ def ensure_cost_bucket(
         raise LearningDataError(
             "A NAVE não conseguiu preparar o "
             "armazenamento das planilhas."
+        ) from exc
+
+
+def ensure_briefing_bucket(
+    client: Client,
+) -> None:
+    buckets = (
+        client.storage.list_buckets()
+        or []
+    )
+    bucket_ids = {
+        _bucket_identifier(bucket)
+        for bucket in buckets
+    }
+
+    if BRIEFING_BUCKET in bucket_ids:
+        return
+
+    try:
+        # Sem restrição própria de MIME para evitar diferenças de
+        # normalização entre navegador, SDK e Storage.
+        client.storage.create_bucket(
+            BRIEFING_BUCKET,
+            options={
+                "public": False,
+            },
+        )
+    except Exception as exc:
+        message = str(exc).casefold()
+
+        if (
+            "already exists" in message
+            or "duplicate" in message
+            or "409" in message
+        ):
+            return
+
+        raise LearningDataError(
+            "A NAVE não conseguiu preparar o "
+            "armazenamento dos briefings."
         ) from exc
 
 
@@ -300,15 +381,105 @@ def _upload_cost_file(
 
     ensure_cost_bucket(client)
 
-    _retry(
-        lambda: (
+    def upload_with(
+        content_type: str,
+    ):
+        return (
             client.storage
             .from_(COST_BUCKET)
             .upload(
                 path=storage_path,
                 file=file_bytes,
                 file_options={
-                    "content-type": mime_type,
+                    "content-type": (
+                        content_type
+                    ),
+                    "cache-control": "3600",
+                    "upsert": "false",
+                },
+            )
+        )
+
+    try:
+        _retry(
+            lambda: upload_with(
+                mime_type
+            )
+        )
+    except Exception as exc:
+        message = str(exc).casefold()
+
+        if (
+            suffix == ".xlsm"
+            and (
+                "invalid_mime_type"
+                in message
+                or "mime type" in message
+                or "415" in message
+            )
+        ):
+            # Compatibilidade com buckets que ainda aceitam apenas
+            # o MIME genérico de Excel.
+            _retry(
+                lambda: upload_with(
+                    "application/vnd.ms-excel"
+                )
+            )
+            return
+
+        raise
+
+
+def _upload_briefing_file(
+    client: Client,
+    *,
+    storage_path: str,
+    file_name: str,
+    file_bytes: bytes,
+) -> None:
+    if not file_bytes:
+        raise ValueError(
+            "O briefing está vazio."
+        )
+
+    if (
+        len(file_bytes)
+        > BRIEFING_MAX_FILE_SIZE
+    ):
+        raise ValueError(
+            "O briefing ultrapassa o limite "
+            "de 50 MB."
+        )
+
+    suffix = Path(
+        file_name
+    ).suffix.casefold()
+    mime_type = (
+        BRIEFING_MIME_TYPES.get(
+            suffix
+        )
+    )
+
+    if not mime_type:
+        raise ValueError(
+            "Formato de briefing não suportado."
+        )
+
+    ensure_briefing_bucket(
+        client
+    )
+
+    _retry(
+        lambda: (
+            client.storage
+            .from_(BRIEFING_BUCKET)
+            .upload(
+                path=storage_path,
+                file=file_bytes,
+                file_options={
+                    "content-type": (
+                        mime_type
+                    ),
                     "cache-control": "3600",
                     "upsert": "false",
                 },
@@ -1413,12 +1584,807 @@ def delete_cost_document(
     )
 
 
+
+
+def create_briefing_signed_url(
+    client: Client,
+    storage_path: str | None,
+    *,
+    expires_in: int = 3600,
+    download: bool = False,
+) -> str | None:
+    path = str(
+        storage_path or ""
+    ).strip()
+
+    if not path:
+        return None
+
+    bucket = client.storage.from_(
+        BRIEFING_BUCKET
+    )
+
+    if download:
+        response = (
+            bucket.create_signed_url(
+                path,
+                expires_in,
+                {"download": True},
+            )
+        )
+    else:
+        response = (
+            bucket.create_signed_url(
+                path,
+                expires_in,
+            )
+        )
+
+    return _signed_url_value(
+        response
+    )
+
+
+def fetch_briefing_documents(
+    client: Client,
+    *,
+    project_id: str,
+) -> pd.DataFrame:
+    response = (
+        client.table(
+            "memory_briefing_documents"
+        )
+        .select("*")
+        .eq(
+            "project_id",
+            project_id,
+        )
+        .order(
+            "created_at",
+            desc=True,
+        )
+        .execute()
+    )
+
+    return pd.DataFrame(
+        response.data or []
+    )
+
+
+def fetch_briefing_requirements(
+    client: Client,
+    *,
+    project_id: str,
+) -> pd.DataFrame:
+    response = (
+        client.table(
+            "memory_briefing_requirements"
+        )
+        .select("*")
+        .eq(
+            "project_id",
+            project_id,
+        )
+        .order(
+            "sort_order"
+        )
+        .order(
+            "created_at"
+        )
+        .execute()
+    )
+
+    return pd.DataFrame(
+        response.data or []
+    )
+
+
+def fetch_briefing_links(
+    client: Client,
+    *,
+    project_id: str,
+) -> pd.DataFrame:
+    response = (
+        client.table(
+            "memory_briefing_links"
+        )
+        .select("*")
+        .eq(
+            "project_id",
+            project_id,
+        )
+        .order(
+            "match_score",
+            desc=True,
+        )
+        .execute()
+    )
+
+    return pd.DataFrame(
+        response.data or []
+    )
+
+
+def score_briefing_memory_match(
+    requirement: dict,
+    memory_item: dict,
+) -> tuple[float, str]:
+    requirement_text = " ".join(
+        str(
+            requirement.get(key)
+            or ""
+        )
+        for key in [
+            "title",
+            "description",
+            "requirement_type",
+            "tags",
+        ]
+    )
+    memory_text = " ".join(
+        str(
+            memory_item.get(key)
+            or ""
+        )
+        for key in [
+            "title",
+            "summary",
+            "description",
+            "item_type",
+            "tags",
+        ]
+    )
+
+    requirement_tokens = _tokens(
+        requirement_text
+    )
+    memory_tokens = _tokens(
+        memory_text
+    )
+    lexical = _dice(
+        requirement_tokens,
+        memory_tokens,
+    )
+    score = lexical * 0.72
+    reasons = []
+
+    if lexical > 0:
+        reasons.append(
+            "termos em comum"
+        )
+
+    requirement_title = normalize_text(
+        requirement.get(
+            "title"
+        )
+    )
+    memory_title = normalize_text(
+        memory_item.get(
+            "title"
+        )
+    )
+
+    if (
+        requirement_title
+        and memory_title
+        and (
+            requirement_title
+            in memory_title
+            or memory_title
+            in requirement_title
+        )
+    ):
+        score += 0.22
+        reasons.append(
+            "título semelhante"
+        )
+
+    requirement_type = str(
+        requirement.get(
+            "requirement_type"
+        )
+        or ""
+    )
+    section_key = str(
+        memory_item.get(
+            "section_key"
+        )
+        or ""
+    )
+
+    compatible = {
+        "deliverable": {
+            "activations",
+            "gifts",
+            "scenography",
+            "communication",
+            "journey_operation",
+        },
+        "mandatory": {
+            "strategy",
+            "activations",
+            "gifts",
+            "scenography",
+            "communication",
+            "journey_operation",
+        },
+        "objective": {
+            "strategy",
+        },
+        "restriction": {
+            "strategy",
+            "journey_operation",
+            "scenography",
+        },
+        "operation": {
+            "journey_operation",
+        },
+        "communication": {
+            "communication",
+        },
+        "audience": {
+            "strategy",
+        },
+    }
+
+    if section_key in compatible.get(
+        requirement_type,
+        set(),
+    ):
+        score += 0.10
+        reasons.append(
+            "seção compatível"
+        )
+
+    return (
+        min(
+            round(score, 4),
+            1.0,
+        ),
+        ", ".join(reasons)
+        or "sem correspondência forte",
+    )
+
+
+def suggest_briefing_links(
+    requirements: list[dict],
+    memory_items: list[dict],
+    *,
+    minimum_score: float = 0.18,
+) -> list[dict]:
+    suggestions = []
+
+    for requirement in requirements:
+        best_item = None
+        best_score = 0.0
+        best_reason = ""
+
+        for memory_item in memory_items:
+            score, reason = (
+                score_briefing_memory_match(
+                    requirement,
+                    memory_item,
+                )
+            )
+
+            if score > best_score:
+                best_item = memory_item
+                best_score = score
+                best_reason = reason
+
+        if (
+            best_item
+            and best_score
+            >= minimum_score
+        ):
+            suggestions.append(
+                {
+                    "project_id": (
+                        requirement[
+                            "project_id"
+                        ]
+                    ),
+                    "requirement_id": (
+                        requirement["id"]
+                    ),
+                    "memory_item_id": (
+                        best_item["id"]
+                    ),
+                    "match_score": (
+                        best_score
+                    ),
+                    "match_reason": (
+                        best_reason
+                    ),
+                    "link_status": (
+                        "suggested"
+                    ),
+                    "adherence_status": (
+                        "not_assessed"
+                    ),
+                }
+            )
+
+    return suggestions
+
+
+def save_briefing_document(
+    client: Client,
+    *,
+    project_id: str,
+    file_name: str,
+    file_bytes: bytes,
+    extraction: BriefingExtraction,
+    memory_items: list[dict],
+) -> dict:
+    content_hash = hashlib.sha256(
+        file_bytes
+    ).hexdigest()
+
+    duplicate = (
+        client.table(
+            "memory_briefing_documents"
+        )
+        .select("id")
+        .eq(
+            "project_id",
+            project_id,
+        )
+        .eq(
+            "content_sha256",
+            content_hash,
+        )
+        .limit(1)
+        .execute()
+    )
+
+    if duplicate.data:
+        return {
+            "status": "duplicate",
+            "document_id": (
+                duplicate.data[0]["id"]
+            ),
+            "requirements_saved": 0,
+            "links_suggested": 0,
+        }
+
+    document_payload = {
+        "project_id": project_id,
+        "title": (
+            extraction.title
+            or Path(
+                file_name
+            ).stem
+        ),
+        "file_name": file_name,
+        "mime_type": (
+            BRIEFING_MIME_TYPES.get(
+                Path(
+                    file_name
+                ).suffix.casefold()
+            )
+            or "application/octet-stream"
+        ),
+        "content_sha256": (
+            content_hash
+        ),
+        "extraction_status": "pronto",
+        "requirements_count": len(
+            extraction.requirements
+        ),
+        "budget_amount": (
+            extraction.budget_amount
+        ),
+        "currency": (
+            extraction.currency
+        ),
+        "objective": (
+            extraction.objective
+        ),
+        "audience": (
+            extraction.audience
+        ),
+        "metadata": _json_safe(
+            {
+                "project_name": (
+                    extraction.project_name
+                ),
+                "client_brand": (
+                    extraction.client_brand
+                ),
+                "event_name": (
+                    extraction.event_name
+                ),
+                "event_date": (
+                    extraction.event_date
+                ),
+                "venue": (
+                    extraction.venue
+                ),
+                "audience_quantity": (
+                    extraction.audience_quantity
+                ),
+            }
+        ),
+        "diagnostic": {
+            "warnings": (
+                extraction.warnings
+            ),
+        },
+    }
+
+    inserted_document = (
+        client.table(
+            "memory_briefing_documents"
+        )
+        .insert(
+            _json_safe(
+                document_payload
+            )
+        )
+        .execute()
+    )
+
+    if not inserted_document.data:
+        raise LearningDataError(
+            "Não foi possível criar o "
+            "registro do briefing."
+        )
+
+    document_id = str(
+        inserted_document.data[0]["id"]
+    )
+    storage_path = (
+        f"projects/{project_id}/"
+        f"briefings/{document_id}/"
+        f"{_safe_filename(file_name)}"
+    )
+
+    try:
+        _upload_briefing_file(
+            client,
+            storage_path=storage_path,
+            file_name=file_name,
+            file_bytes=file_bytes,
+        )
+
+        (
+            client.table(
+                "memory_briefing_documents"
+            )
+            .update(
+                {
+                    "storage_bucket": (
+                        BRIEFING_BUCKET
+                    ),
+                    "storage_path": (
+                        storage_path
+                    ),
+                }
+            )
+            .eq(
+                "id",
+                document_id,
+            )
+            .execute()
+        )
+
+        requirement_payloads = []
+
+        for sort_order, requirement in enumerate(
+            extraction.requirements,
+            start=1,
+        ):
+            requirement_payloads.append(
+                {
+                    "project_id": (
+                        project_id
+                    ),
+                    "briefing_document_id": (
+                        document_id
+                    ),
+                    "requirement_type": (
+                        requirement.requirement_type
+                    ),
+                    "title": (
+                        requirement.title
+                    ),
+                    "description": (
+                        requirement.description
+                    ),
+                    "priority": (
+                        requirement.priority
+                    ),
+                    "mandatory": (
+                        requirement.mandatory
+                    ),
+                    "source_reference": (
+                        requirement.source_reference
+                    ),
+                    "source_quote": (
+                        requirement.source_quote
+                    ),
+                    "tags": (
+                        requirement.tags
+                    ),
+                    "sort_order": (
+                        sort_order
+                    ),
+                }
+            )
+
+        inserted_requirements = (
+            _insert_chunks(
+                client,
+                table_name=(
+                    "memory_briefing_requirements"
+                ),
+                rows=requirement_payloads,
+            )
+            if requirement_payloads
+            else []
+        )
+
+        suggestions = (
+            suggest_briefing_links(
+                inserted_requirements,
+                memory_items,
+            )
+        )
+
+        if suggestions:
+            _insert_chunks(
+                client,
+                table_name=(
+                    "memory_briefing_links"
+                ),
+                rows=suggestions,
+            )
+
+        if (
+            extraction.budget_amount
+            is not None
+        ):
+            update_project_budget(
+                client,
+                project_id=project_id,
+                budget_amount=(
+                    extraction.budget_amount
+                ),
+                currency=(
+                    extraction.currency
+                ),
+            )
+
+        return {
+            "status": "saved",
+            "document_id": (
+                document_id
+            ),
+            "requirements_saved": len(
+                inserted_requirements
+            ),
+            "links_suggested": len(
+                suggestions
+            ),
+        }
+
+    except Exception:
+        try:
+            (
+                client.storage
+                .from_(BRIEFING_BUCKET)
+                .remove(
+                    [storage_path]
+                )
+            )
+        except Exception:
+            pass
+
+        try:
+            (
+                client.table(
+                    "memory_briefing_documents"
+                )
+                .delete()
+                .eq(
+                    "id",
+                    document_id,
+                )
+                .execute()
+            )
+        except Exception:
+            pass
+
+        raise
+
+
+def save_briefing_adherence(
+    client: Client,
+    *,
+    project_id: str,
+    rows: list[dict],
+) -> None:
+    requirement_ids = [
+        str(
+            row["requirement_id"]
+        )
+        for row in rows
+        if row.get(
+            "requirement_id"
+        )
+    ]
+
+    if requirement_ids:
+        (
+            client.table(
+                "memory_briefing_links"
+            )
+            .delete()
+            .in_(
+                "requirement_id",
+                requirement_ids,
+            )
+            .execute()
+        )
+
+    payloads = []
+
+    for row in rows:
+        requirement_id = str(
+            row["requirement_id"]
+        )
+        adherence_status = (
+            row.get(
+                "adherence_status"
+            )
+            or "not_assessed"
+        )
+        evidence = row.get(
+            "evidence"
+        )
+        notes = row.get(
+            "notes"
+        )
+
+        (
+            client.table(
+                "memory_briefing_requirements"
+            )
+            .update(
+                {
+                    "adherence_status": (
+                        adherence_status
+                    ),
+                    "adherence_evidence": (
+                        evidence
+                    ),
+                    "adherence_notes": (
+                        notes
+                    ),
+                }
+            )
+            .eq(
+                "id",
+                requirement_id,
+            )
+            .eq(
+                "project_id",
+                project_id,
+            )
+            .execute()
+        )
+
+        memory_item_id = row.get(
+            "memory_item_id"
+        )
+
+        if not memory_item_id:
+            continue
+
+        payloads.append(
+            {
+                "project_id": (
+                    project_id
+                ),
+                "requirement_id": (
+                    requirement_id
+                ),
+                "memory_item_id": (
+                    memory_item_id
+                ),
+                "match_score": (
+                    row.get(
+                        "match_score"
+                    )
+                ),
+                "match_reason": (
+                    row.get(
+                        "match_reason"
+                    )
+                    or "Correlação revisada manualmente"
+                ),
+                "link_status": "confirmed",
+                "adherence_status": (
+                    adherence_status
+                ),
+                "evidence": (
+                    evidence
+                ),
+                "notes": notes,
+            }
+        )
+
+    if payloads:
+        _insert_chunks(
+            client,
+            table_name=(
+                "memory_briefing_links"
+            ),
+            rows=payloads,
+        )
+
+
+def delete_briefing_document(
+    client: Client,
+    *,
+    document_id: str,
+) -> None:
+    response = (
+        client.table(
+            "memory_briefing_documents"
+        )
+        .select(
+            "storage_path"
+        )
+        .eq(
+            "id",
+            document_id,
+        )
+        .limit(1)
+        .execute()
+    )
+
+    storage_path = (
+        response.data[0].get(
+            "storage_path"
+        )
+        if response.data
+        else None
+    )
+
+    if storage_path:
+        try:
+            (
+                client.storage
+                .from_(BRIEFING_BUCKET)
+                .remove(
+                    [storage_path]
+                )
+            )
+        except Exception:
+            pass
+
+    (
+        client.table(
+            "memory_briefing_documents"
+        )
+        .delete()
+        .eq(
+            "id",
+            document_id,
+        )
+        .execute()
+    )
+
+
 def build_item_learning_maps(
     client: Client,
     *,
     project_id: str,
 ) -> tuple[
     dict[str, dict],
+    dict[str, list[dict]],
     dict[str, list[dict]],
 ]:
     outcomes = fetch_item_outcomes(
@@ -1429,9 +2395,21 @@ def build_item_learning_maps(
         client,
         project_id=project_id,
     )
-    links = fetch_cost_links(
+    cost_links = fetch_cost_links(
         client,
         project_id=project_id,
+    )
+    briefing_requirements = (
+        fetch_briefing_requirements(
+            client,
+            project_id=project_id,
+        )
+    )
+    briefing_links = (
+        fetch_briefing_links(
+            client,
+            project_id=project_id,
+        )
     )
 
     outcome_map = {}
@@ -1461,9 +2439,9 @@ def build_item_learning_maps(
         list[dict],
     ] = {}
 
-    if not links.empty:
+    if not cost_links.empty:
         for _, link_row in (
-            links.iterrows()
+            cost_links.iterrows()
         ):
             link = link_row.to_dict()
             item_id = str(
@@ -1508,11 +2486,103 @@ def build_item_learning_maps(
                 }
             )
 
+    requirement_map = {}
+
+    if not briefing_requirements.empty:
+        requirement_map = {
+            str(row["id"]): (
+                row.to_dict()
+            )
+            for _, row
+            in briefing_requirements.iterrows()
+        }
+
+    linked_requirements: dict[
+        str,
+        list[dict],
+    ] = {}
+
+    if not briefing_links.empty:
+        for _, link_row in (
+            briefing_links.iterrows()
+        ):
+            link = link_row.to_dict()
+            item_id = str(
+                link.get(
+                    "memory_item_id"
+                )
+                or ""
+            )
+            requirement = (
+                requirement_map.get(
+                    str(
+                        link.get(
+                            "requirement_id"
+                        )
+                        or ""
+                    )
+                )
+            )
+
+            if (
+                not item_id
+                or not requirement
+            ):
+                continue
+
+            linked_requirements.setdefault(
+                item_id,
+                [],
+            ).append(
+                {
+                    **requirement,
+                    "link_status": (
+                        link.get(
+                            "link_status"
+                        )
+                    ),
+                    "match_score": (
+                        link.get(
+                            "match_score"
+                        )
+                    ),
+                    "match_reason": (
+                        link.get(
+                            "match_reason"
+                        )
+                    ),
+                    "adherence_status": (
+                        requirement.get(
+                            "adherence_status"
+                        )
+                        or link.get(
+                            "adherence_status"
+                        )
+                    ),
+                    "evidence": (
+                        requirement.get(
+                            "adherence_evidence"
+                        )
+                        or link.get(
+                            "evidence"
+                        )
+                    ),
+                    "notes": (
+                        requirement.get(
+                            "adherence_notes"
+                        )
+                        or link.get(
+                            "notes"
+                        )
+                    ),
+                }
+            )
+
     return (
         outcome_map,
         linked_costs,
+        linked_requirements,
     )
-
 
 
 def _remove_storage_paths(
@@ -1547,157 +2617,224 @@ def _remove_storage_paths(
             )
 
 
+def _delete_project_rows(
+    client: Client,
+    *,
+    table_name: str,
+    project_id: str,
+) -> str | None:
+    try:
+        (
+            client.table(
+                table_name
+            )
+            .delete()
+            .eq(
+                "project_id",
+                project_id,
+            )
+            .execute()
+        )
+        return None
+    except Exception as exc:
+        message = str(exc)
+
+        if (
+            "does not exist"
+            in message.casefold()
+            or "42p01" in message.casefold()
+        ):
+            return None
+
+        return (
+            table_name
+            + ": "
+            + message
+        )
+
+
 def delete_memory_project(
     client: Client,
     *,
     project_id: str,
 ) -> dict:
     """
-    Exclui integralmente um projeto criado pela Memória.
+    Remove o projeto da Memória sem apagar histórico de recomendações.
 
-    Os arquivos privados são removidos antes do registro principal.
-    As relações de banco são apagadas por ON DELETE CASCADE.
+    Se a linha de ``projects`` estiver referenciada por versões de
+    recomendação ou outro módulo, apenas os dados da Memória são
+    excluídos. Assim o projeto desaparece da lista da Memória sem
+    quebrar o histórico da NAVE.
     """
-    from memory_db import MEMORY_BUCKET
-
-    document_response = (
-        client.table(
-            "memory_documents"
-        )
-        .select(
-            "storage_path"
-        )
-        .eq(
-            "project_id",
-            project_id,
-        )
-        .execute()
+    from memory_db import (
+        MEMORY_BUCKET,
     )
 
-    page_response = (
-        client.table(
-            "memory_pages"
-        )
-        .select(
-            "storage_path"
-        )
-        .eq(
-            "project_id",
-            project_id,
-        )
-        .execute()
-    )
+    storage_warnings = []
+    database_warnings = []
 
-    item_response = (
-        client.table(
-            "memory_items"
-        )
-        .select(
-            "visual_storage_path"
-        )
-        .eq(
-            "project_id",
-            project_id,
-        )
-        .execute()
-    )
-
-    cost_response = (
-        client.table(
-            "memory_cost_documents"
-        )
-        .select(
-            "storage_path"
-        )
-        .eq(
-            "project_id",
-            project_id,
-        )
-        .execute()
-    )
-
-    memory_paths = []
-
-    for row in (
-        document_response.data
-        or []
-    ):
-        if row.get(
-            "storage_path"
-        ):
-            memory_paths.append(
-                row["storage_path"]
+    def select_paths(
+        table_name: str,
+        column_name: str,
+    ) -> list[str]:
+        try:
+            response = (
+                client.table(
+                    table_name
+                )
+                .select(
+                    column_name
+                )
+                .eq(
+                    "project_id",
+                    project_id,
+                )
+                .execute()
             )
+            return [
+                str(
+                    row.get(
+                        column_name
+                    )
+                ).strip()
+                for row in (
+                    response.data
+                    or []
+                )
+                if str(
+                    row.get(
+                        column_name
+                    )
+                    or ""
+                ).strip()
+            ]
+        except Exception:
+            return []
 
-    for row in (
-        page_response.data
-        or []
-    ):
-        if row.get(
-            "storage_path"
-        ):
-            memory_paths.append(
-                row["storage_path"]
-            )
-
-    for row in (
-        item_response.data
-        or []
-    ):
-        if row.get(
-            "visual_storage_path"
-        ):
-            memory_paths.append(
-                row[
-                    "visual_storage_path"
-                ]
-            )
-
-    cost_paths = [
-        row["storage_path"]
-        for row in (
-            cost_response.data
-            or []
-        )
-        if row.get(
-            "storage_path"
-        )
+    memory_paths = [
+        *select_paths(
+            "memory_documents",
+            "storage_path",
+        ),
+        *select_paths(
+            "memory_pages",
+            "storage_path",
+        ),
+        *select_paths(
+            "memory_items",
+            "visual_storage_path",
+        ),
     ]
+    cost_paths = select_paths(
+        "memory_cost_documents",
+        "storage_path",
+    )
+    briefing_paths = select_paths(
+        "memory_briefing_documents",
+        "storage_path",
+    )
+
+    for bucket_name, paths in [
+        (
+            MEMORY_BUCKET,
+            memory_paths,
+        ),
+        (
+            COST_BUCKET,
+            cost_paths,
+        ),
+        (
+            BRIEFING_BUCKET,
+            briefing_paths,
+        ),
+    ]:
+        try:
+            _remove_storage_paths(
+                client,
+                bucket_name=(
+                    bucket_name
+                ),
+                paths=paths,
+            )
+        except Exception as exc:
+            storage_warnings.append(
+                bucket_name
+                + ": "
+                + str(exc)
+            )
+
+    # Remove explicitamente as camadas da Memória. Não dependemos de
+    # apagar a linha principal de projects para acionar cascatas.
+    for table_name in [
+        "memory_briefing_links",
+        "memory_briefing_requirements",
+        "memory_briefing_documents",
+        "memory_cost_links",
+        "memory_cost_items",
+        "memory_cost_documents",
+        "memory_feedback_entries",
+        "memory_item_outcomes",
+        "memory_project_outcomes",
+        "memory_documents",
+    ]:
+        warning = _delete_project_rows(
+            client,
+            table_name=table_name,
+            project_id=project_id,
+        )
+
+        if warning:
+            database_warnings.append(
+                warning
+            )
+
+    if database_warnings:
+        raise LearningDataError(
+            "Parte dos dados do projeto não pôde ser removida: "
+            + " | ".join(
+                database_warnings
+            )
+        )
+
+    project_record_deleted = False
+    project_record_retained = False
+    project_delete_message = None
 
     try:
-        _remove_storage_paths(
-            client,
-            bucket_name=(
-                MEMORY_BUCKET
-            ),
-            paths=memory_paths,
+        (
+            client.table(
+                "projects"
+            )
+            .delete()
+            .eq(
+                "id",
+                project_id,
+            )
+            .execute()
         )
+        project_record_deleted = True
 
-        _remove_storage_paths(
-            client,
-            bucket_name=(
-                COST_BUCKET
-            ),
-            paths=cost_paths,
-        )
     except Exception as exc:
-        raise LearningDataError(
-            "Não foi possível remover todos os "
-            "arquivos privados do projeto. "
-            "O registro não foi excluído."
-        ) from exc
+        message = str(exc)
+        normalized = message.casefold()
 
-    deleted = (
-        client.table(
-            "projects"
-        )
-        .delete()
-        .eq(
-            "id",
-            project_id,
-        )
-        .execute()
-    )
+        if (
+            "foreign key constraint"
+            in normalized
+            or "recommendation_versions"
+            in normalized
+            or "23503" in normalized
+            or "409" in normalized
+        ):
+            # O projeto continua disponível em Projetos porque possui
+            # histórico associado, mas deixa de aparecer na Memória.
+            project_record_retained = True
+            project_delete_message = (
+                "O cadastro geral foi preservado porque "
+                "está associado ao histórico de recomendações."
+            )
+        else:
+            raise
 
     return {
         "project_id": project_id,
@@ -1707,9 +2844,20 @@ def delete_memory_project(
         "cost_files_removed": len(
             set(cost_paths)
         ),
-        "project_deleted": True,
-        "database_response": (
-            deleted.data
-            or []
+        "briefing_files_removed": len(
+            set(briefing_paths)
+        ),
+        "project_record_deleted": (
+            project_record_deleted
+        ),
+        "project_record_retained": (
+            project_record_retained
+        ),
+        "message": (
+            project_delete_message
+        ),
+        "storage_warnings": (
+            storage_warnings
         ),
     }
+

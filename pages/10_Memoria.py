@@ -19,7 +19,6 @@ from document_io import prepare_documents, render_pdf_page
 from memory_db import (
     create_memory_signed_url,
     delete_memory_document,
-    delete_memory_project,
     create_memory_project,
     MemorySaveError,
     fetch_memory_documents,
@@ -35,6 +34,7 @@ from memory_learning_db import (
     delete_memory_project,
 )
 from memory_learning_ui import (
+    render_briefing_adherence_tab,
     render_budget_adherence_tab,
     render_results_learning_tab,
 )
@@ -409,9 +409,11 @@ with consult_tab:
                                         with st.spinner(
                                             "Excluindo projeto e arquivos..."
                                         ):
-                                            delete_memory_project(
-                                                client,
-                                                project_id=project_id,
+                                            delete_result = (
+                                                delete_memory_project(
+                                                    client,
+                                                    project_id=project_id,
+                                                )
                                             )
 
                                         st.session_state.pop(
@@ -419,9 +421,21 @@ with consult_tab:
                                             None,
                                         )
                                         st.cache_data.clear()
-                                        st.success(
-                                            "Projeto excluído da Memória."
-                                        )
+
+                                        if delete_result.get(
+                                            "project_record_retained"
+                                        ):
+                                            st.success(
+                                                "O conteúdo foi removido da "
+                                                "Memória. O cadastro geral do "
+                                                "projeto foi preservado porque "
+                                                "possui histórico de recomendações."
+                                            )
+                                        else:
+                                            st.success(
+                                                "Projeto excluído da Memória."
+                                            )
+
                                         st.rerun()
 
                                     except Exception as exc:
@@ -559,6 +573,7 @@ with consult_tab:
                         (
                             item_outcomes_by_id,
                             cost_links_by_item_id,
+                            briefing_links_by_item_id,
                         ) = build_item_learning_maps(
                             client,
                             project_id=project_id,
@@ -566,11 +581,13 @@ with consult_tab:
                     except Exception:
                         item_outcomes_by_id = {}
                         cost_links_by_item_id = {}
+                        briefing_links_by_item_id = {}
 
                     sections = section_labels_present(items)
                     tab_keys = [
                         "overview",
                         *sections,
+                        "briefing_adherence",
                         "results_learning",
                         "budget_adherence",
                         "documents",
@@ -581,6 +598,7 @@ with consult_tab:
                             MEMORY_SECTION_LABELS[section]
                             for section in sections
                         ],
+                        "Briefing & Aderência",
                         "Resultados & Aprendizados",
                         "Orçamento & Aderência",
                         "Documentos & Versões",
@@ -762,6 +780,15 @@ with consult_tab:
                                                 ),
                                                 exception=exc,
                                             )
+
+                            elif tab_key == "briefing_adherence":
+                                render_briefing_adherence_tab(
+                                    client,
+                                    project_id=project_id,
+                                    memory_items=items,
+                                    api_key=api_key,
+                                    model=model,
+                                )
 
                             elif tab_key == "results_learning":
                                 render_results_learning_tab(
@@ -1001,6 +1028,9 @@ with consult_tab:
                                     ),
                                     cost_links_by_item_id=(
                                         cost_links_by_item_id
+                                    ),
+                                    briefing_links_by_item_id=(
+                                        briefing_links_by_item_id
                                     ),
                                 )
 

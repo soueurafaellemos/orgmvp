@@ -1058,3 +1058,29 @@ Antes de usar, execute:
 - não exige SQL;
 - não altera os demais projetos;
 - não contém arquivos da pasta assets.
+
+
+## V26.3 — Fase 14.1: Briefing & Aderência
+
+- adiciona a aba “Briefing & Aderência” dentro de cada projeto;
+- aceita PDF, DOCX, PPTX, TXT e Markdown;
+- identifica objetivos, público, budget, entregáveis,
+  obrigatoriedades, restrições, operação, comunicação e KPIs;
+- separa demandas diferentes em fichas independentes;
+- permite revisar a extração antes de salvar;
+- preserva o briefing original em armazenamento privado;
+- sugere correlações entre demandas e fichas da apresentação;
+- cria uma matriz editável de aderência;
+- registra demandas cumpridas, parciais, não cumpridas,
+  superadas ou retiradas por budget/prazo;
+- permite guardar evidência e justificativa;
+- apresenta a relação com o briefing dentro de “Abrir ficha”;
+- sincroniza o budget identificado com Orçamento & Aderência;
+- corrige o upload de planilhas XLSM no Supabase Storage;
+- atualiza buckets antigos para aceitar o MIME normalizado;
+- usa MIME genérico de Excel como compatibilidade adicional;
+- corrige a exclusão de projetos relacionados a recomendações;
+- remove somente a camada da Memória quando o projeto precisa ser
+  preservado no histórico geral;
+- não altera automaticamente o ranking das recomendações;
+- não contém arquivos da pasta assets.

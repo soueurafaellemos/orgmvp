@@ -198,3 +198,76 @@ class CostWorkbookResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     unknown_columns: list[str] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
+
+
+BRIEFING_REQUIREMENT_TYPES = {
+    "objective": "Objetivo",
+    "deliverable": "Entregável",
+    "mandatory": "Obrigatoriedade",
+    "restriction": "Restrição",
+    "audience": "Público",
+    "logistics": "Logística",
+    "budget": "Budget",
+    "kpi": "Indicador / KPI",
+    "operation": "Operação",
+    "communication": "Comunicação",
+    "desirable": "Desejável",
+    "context": "Contexto",
+}
+
+BRIEFING_PRIORITIES = {
+    "critical": "Crítica",
+    "high": "Alta",
+    "medium": "Média",
+    "low": "Baixa",
+    "not_informed": "Não informada",
+}
+
+ADHERENCE_STATUS = {
+    "not_assessed": "Não avaliada",
+    "fulfilled": "Cumprida",
+    "partially_fulfilled": "Cumprida parcialmente",
+    "not_fulfilled": "Não cumprida",
+    "exceeded": "Superada",
+    "changed_justified": "Alterada com justificativa",
+    "removed_budget": "Retirada por budget",
+    "removed_timeline": "Retirada por prazo",
+    "not_applicable": "Não aplicável",
+    "unproven": "Não foi possível comprovar",
+}
+
+BRIEFING_LINK_STATUS = {
+    "suggested": "Sugerida",
+    "confirmed": "Confirmada",
+    "rejected": "Rejeitada",
+}
+
+
+class BriefingRequirement(BaseModel):
+    requirement_type: str
+    title: str
+    description: str | None = None
+    priority: str = "not_informed"
+    mandatory: bool = False
+    source_reference: str | None = None
+    source_quote: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class BriefingExtraction(BaseModel):
+    file_name: str
+    title: str | None = None
+    project_name: str | None = None
+    client_brand: str | None = None
+    event_name: str | None = None
+    event_date: str | None = None
+    venue: str | None = None
+    objective: str | None = None
+    audience: str | None = None
+    audience_quantity: str | None = None
+    budget_amount: float | None = None
+    currency: str = "BRL"
+    requirements: list[
+        BriefingRequirement
+    ] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)

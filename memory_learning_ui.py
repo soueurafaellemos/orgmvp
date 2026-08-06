@@ -6,26 +6,43 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from document_io import prepare_documents
+from memory_briefing import (
+    analyze_briefing_document,
+)
 from memory_cost_parser import (
     parse_cost_workbook,
 )
 from memory_learning_db import (
     add_feedback_entry,
+    create_briefing_signed_url,
     create_cost_signed_url,
+    delete_briefing_document,
     delete_cost_document,
     delete_feedback_entry,
+    fetch_briefing_documents,
+    fetch_briefing_links,
+    fetch_briefing_requirements,
     fetch_cost_documents,
     fetch_cost_items,
     fetch_cost_links,
     fetch_feedback_entries,
     fetch_item_outcomes,
     fetch_project_outcome,
+    save_briefing_adherence,
+    save_briefing_document,
     save_cost_correlations,
     save_cost_document,
     update_project_budget,
     upsert_project_outcome,
 )
 from memory_learning_models import (
+    ADHERENCE_STATUS,
+    BRIEFING_LINK_STATUS,
+    BRIEFING_PRIORITIES,
+    BRIEFING_REQUIREMENT_TYPES,
+    BriefingExtraction,
+    BriefingRequirement,
     COMMERCIAL_RESULTS,
     CONFIDENCE_LEVELS,
     COST_ITEM_STATUS,
@@ -1864,5 +1881,941 @@ def render_budget_adherence_tab(
                     )
                     st.success(
                         "Planilha excluída."
+                    )
+                    st.rerun()
+
+
+
+def _briefing_preview_dataframe(
+    extraction: BriefingExtraction,
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Incluir": True,
+                "Tipo": (
+                    requirement.requirement_type
+                ),
+                "Título": (
+                    requirement.title
+                ),
+                "Descrição": (
+                    requirement.description
+                    or ""
+                ),
+                "Obrigatória": (
+                    requirement.mandatory
+                ),
+                "Prioridade": (
+                    requirement.priority
+                ),
+                "Fonte": (
+                    requirement.source_reference
+                    or ""
+                ),
+                "Trecho": (
+                    requirement.source_quote
+                    or ""
+                ),
+                "Tags": " | ".join(
+                    requirement.tags
+                ),
+            }
+            for requirement
+            in extraction.requirements
+        ]
+    )
+
+
+def render_briefing_adherence_tab(
+    client,
+    *,
+    project_id: str,
+    memory_items: pd.DataFrame,
+    api_key: str | None,
+    model: str,
+) -> None:
+    try:
+        documents = fetch_briefing_documents(
+            client,
+            project_id=project_id,
+        )
+        requirements = (
+            fetch_briefing_requirements(
+                client,
+                project_id=project_id,
+            )
+        )
+        links = fetch_briefing_links(
+            client,
+            project_id=project_id,
+        )
+    except Exception as exc:
+        _learning_schema_error(exc)
+        return
+
+    st.subheader(
+        "Briefing & Aderência"
+    )
+    st.caption(
+        "Compare o que foi pedido no briefing com "
+        "o que apareceu na apresentação, no orçamento "
+        "e nos resultados registrados."
+    )
+
+    linked_requirement_ids = set()
+
+    if not links.empty:
+        linked_requirement_ids = {
+            str(value)
+            for value in links[
+                "requirement_id"
+            ].dropna()
+        }
+
+    assessed_requirements = (
+        requirements[
+            requirements[
+                "adherence_status"
+            ].fillna(
+                "not_assessed"
+            ).ne(
+                "not_assessed"
+            )
+        ]
+        if (
+            not requirements.empty
+            and "adherence_status"
+            in requirements.columns
+        )
+        else pd.DataFrame()
+    )
+
+    metric1, metric2, metric3, metric4 = (
+        st.columns(4)
+    )
+    metric1.metric(
+        "Briefings",
+        len(documents),
+    )
+    metric2.metric(
+        "Demandas",
+        len(requirements),
+    )
+    metric3.metric(
+        "Com entrega relacionada",
+        len(
+            linked_requirement_ids
+        ),
+    )
+    metric4.metric(
+        "Avaliadas",
+        len(
+            assessed_requirements
+        ),
+    )
+
+    st.divider()
+    st.subheader(
+        "Adicionar briefing inicial"
+    )
+
+    uploaded = st.file_uploader(
+        "Briefing do projeto",
+        type=[
+            "pdf",
+            "docx",
+            "pptx",
+            "txt",
+            "md",
+        ],
+        key=(
+            "phase14_1_briefing_upload_"
+            + project_id
+        ),
+        help=(
+            "Envie o documento recebido antes da "
+            "criação da proposta."
+        ),
+    )
+
+    analyze = st.button(
+        "Analisar briefing",
+        type="primary",
+        width="stretch",
+        disabled=(
+            uploaded is None
+            or not api_key
+        ),
+        key=(
+            "phase14_1_analyze_briefing_"
+            + project_id
+        ),
+    )
+
+    if analyze and uploaded:
+        try:
+            docs = prepare_documents(
+                [
+                    (
+                        uploaded.name,
+                        uploaded.getvalue(),
+                        uploaded.type,
+                    )
+                ]
+            )
+
+            if not docs:
+                raise ValueError(
+                    "O documento não pôde ser preparado."
+                )
+
+            with st.spinner(
+                "Identificando demandas, obrigatoriedades "
+                "e restrições..."
+            ):
+                extraction = (
+                    analyze_briefing_document(
+                        docs[0],
+                        api_key=api_key,
+                        model=model,
+                    )
+                )
+
+            st.session_state[
+                "phase14_1_briefing_extraction_"
+                + project_id
+            ] = extraction.model_dump()
+            st.session_state[
+                "phase14_1_briefing_bytes_"
+                + project_id
+            ] = uploaded.getvalue()
+            st.session_state[
+                "phase14_1_briefing_name_"
+                + project_id
+            ] = uploaded.name
+            st.session_state[
+                "phase14_1_briefing_editor_"
+                + project_id
+            ] = _briefing_preview_dataframe(
+                extraction
+            )
+
+            st.success(
+                "Briefing analisado. Revise as "
+                "demandas antes de salvar."
+            )
+
+        except Exception as exc:
+            st.error(
+                "Não foi possível analisar "
+                "este briefing."
+            )
+            st.code(
+                str(exc)
+            )
+
+    extraction_payload = (
+        st.session_state.get(
+            "phase14_1_briefing_extraction_"
+            + project_id
+        )
+    )
+
+    if extraction_payload:
+        extraction = (
+            BriefingExtraction
+            .model_validate(
+                extraction_payload
+            )
+        )
+
+        overview_cols = st.columns(4)
+        overview_cols[0].metric(
+            "Demandas identificadas",
+            len(
+                extraction.requirements
+            ),
+        )
+        overview_cols[1].metric(
+            "Obrigatórias",
+            sum(
+                requirement.mandatory
+                for requirement
+                in extraction.requirements
+            ),
+        )
+        overview_cols[2].metric(
+            "Budget identificado",
+            _money(
+                extraction.budget_amount,
+                extraction.currency,
+            ),
+        )
+        overview_cols[3].metric(
+            "Cliente",
+            extraction.client_brand
+            or "Não informado",
+        )
+
+        editor_key = (
+            "phase14_1_briefing_editor_"
+            + project_id
+        )
+        editor = st.session_state.get(
+            editor_key,
+            _briefing_preview_dataframe(
+                extraction
+            ),
+        )
+
+        edited = st.data_editor(
+            editor,
+            hide_index=True,
+            width="stretch",
+            height=480,
+            key=(
+                "phase14_1_briefing_data_editor_"
+                + project_id
+            ),
+            column_config={
+                "Tipo": (
+                    st.column_config
+                    .SelectboxColumn(
+                        options=list(
+                            BRIEFING_REQUIREMENT_TYPES.keys()
+                        ),
+                        format_func=lambda value: (
+                            BRIEFING_REQUIREMENT_TYPES.get(
+                                value,
+                                value,
+                            )
+                        ),
+                    )
+                ),
+                "Prioridade": (
+                    st.column_config
+                    .SelectboxColumn(
+                        options=list(
+                            BRIEFING_PRIORITIES.keys()
+                        ),
+                        format_func=lambda value: (
+                            BRIEFING_PRIORITIES.get(
+                                value,
+                                value,
+                            )
+                        ),
+                    )
+                ),
+            },
+        )
+        st.session_state[
+            editor_key
+        ] = edited
+
+        for warning in (
+            extraction.warnings
+        ):
+            st.warning(
+                warning
+            )
+
+        if st.button(
+            "Salvar briefing e sugerir correlações",
+            type="primary",
+            width="stretch",
+            key=(
+                "phase14_1_save_briefing_"
+                + project_id
+            ),
+        ):
+            selected_requirements = []
+
+            for row in edited.to_dict(
+                orient="records"
+            ):
+                if not bool(
+                    row.get(
+                        "Incluir",
+                        True,
+                    )
+                ):
+                    continue
+
+                title = str(
+                    row.get(
+                        "Título"
+                    )
+                    or ""
+                ).strip()
+
+                if not title:
+                    continue
+
+                selected_requirements.append(
+                    BriefingRequirement(
+                        requirement_type=str(
+                            row.get(
+                                "Tipo"
+                            )
+                            or "context"
+                        ),
+                        title=title,
+                        description=(
+                            str(
+                                row.get(
+                                    "Descrição"
+                                )
+                                or ""
+                            ).strip()
+                            or None
+                        ),
+                        priority=str(
+                            row.get(
+                                "Prioridade"
+                            )
+                            or "not_informed"
+                        ),
+                        mandatory=bool(
+                            row.get(
+                                "Obrigatória"
+                            )
+                        ),
+                        source_reference=(
+                            str(
+                                row.get(
+                                    "Fonte"
+                                )
+                                or ""
+                            ).strip()
+                            or None
+                        ),
+                        source_quote=(
+                            str(
+                                row.get(
+                                    "Trecho"
+                                )
+                                or ""
+                            ).strip()
+                            or None
+                        ),
+                        tags=[
+                            tag.strip()
+                            for tag in str(
+                                row.get(
+                                    "Tags"
+                                )
+                                or ""
+                            ).split("|")
+                            if tag.strip()
+                        ],
+                    )
+                )
+
+            extraction.requirements = (
+                selected_requirements
+            )
+
+            try:
+                result = (
+                    save_briefing_document(
+                        client,
+                        project_id=project_id,
+                        file_name=st.session_state[
+                            "phase14_1_briefing_name_"
+                            + project_id
+                        ],
+                        file_bytes=st.session_state[
+                            "phase14_1_briefing_bytes_"
+                            + project_id
+                        ],
+                        extraction=extraction,
+                        memory_items=(
+                            _safe_records(
+                                memory_items
+                            )
+                        ),
+                    )
+                )
+
+                if (
+                    result.get("status")
+                    == "duplicate"
+                ):
+                    st.warning(
+                        "Este briefing já está "
+                        "vinculado ao projeto."
+                    )
+                else:
+                    st.success(
+                        f"{result.get('requirements_saved', 0)} "
+                        "demanda(s) salva(s) e "
+                        f"{result.get('links_suggested', 0)} "
+                        "correlação(ões) sugerida(s)."
+                    )
+
+                for prefix in [
+                    "phase14_1_briefing_extraction_",
+                    "phase14_1_briefing_bytes_",
+                    "phase14_1_briefing_name_",
+                    "phase14_1_briefing_editor_",
+                ]:
+                    st.session_state.pop(
+                        prefix
+                        + project_id,
+                        None,
+                    )
+
+                st.rerun()
+
+            except Exception as exc:
+                st.error(
+                    "Não foi possível salvar "
+                    "o briefing."
+                )
+                st.code(
+                    str(exc)
+                )
+
+    if requirements.empty:
+        st.info(
+            "Nenhum briefing foi estruturado "
+            "para este projeto."
+        )
+        return
+
+    st.divider()
+    st.subheader(
+        "Matriz de aderência"
+    )
+
+    memory_options = {
+        (
+            str(
+                row.get(
+                    "title"
+                )
+                or "Sem título"
+            )
+            + " · Slide "
+            + str(
+                row.get(
+                    "source_page"
+                )
+                or ""
+            )
+            + " · "
+            + str(
+                row.get("id")
+            )[:6]
+        ): str(
+            row.get("id")
+        )
+        for row in _safe_records(
+            memory_items
+        )
+    }
+    reverse_memory_options = {
+        value: key
+        for key, value
+        in memory_options.items()
+    }
+
+    link_by_requirement = {}
+
+    for link in _safe_records(
+        links
+    ):
+        requirement_id = str(
+            link.get(
+                "requirement_id"
+            )
+            or ""
+        )
+        current = link_by_requirement.get(
+            requirement_id
+        )
+
+        if (
+            current is None
+            or (
+                link.get(
+                    "link_status"
+                )
+                == "confirmed"
+                and current.get(
+                    "link_status"
+                )
+                != "confirmed"
+            )
+            or float(
+                link.get(
+                    "match_score"
+                )
+                or 0
+            )
+            > float(
+                current.get(
+                    "match_score"
+                )
+                or 0
+            )
+        ):
+            link_by_requirement[
+                requirement_id
+            ] = link
+
+    matrix_rows = []
+
+    for requirement in _safe_records(
+        requirements
+    ):
+        requirement_id = str(
+            requirement["id"]
+        )
+        link = link_by_requirement.get(
+            requirement_id,
+            {},
+        )
+        memory_item_id = str(
+            link.get(
+                "memory_item_id"
+            )
+            or ""
+        )
+
+        matrix_rows.append(
+            {
+                "_requirement_id": (
+                    requirement_id
+                ),
+                "Demanda": (
+                    requirement.get(
+                        "title"
+                    )
+                ),
+                "Tipo": (
+                    BRIEFING_REQUIREMENT_TYPES.get(
+                        str(
+                            requirement.get(
+                                "requirement_type"
+                            )
+                        ),
+                        requirement.get(
+                            "requirement_type"
+                        ),
+                    )
+                ),
+                "Obrigatória": bool(
+                    requirement.get(
+                        "mandatory"
+                    )
+                ),
+                "Entrega relacionada": (
+                    reverse_memory_options.get(
+                        memory_item_id,
+                        "Sem associação",
+                    )
+                ),
+                "Aderência": (
+                    str(
+                        requirement.get(
+                            "adherence_status"
+                        )
+                        or link.get(
+                            "adherence_status"
+                        )
+                        or "not_assessed"
+                    )
+                ),
+                "Evidência": (
+                    requirement.get(
+                        "adherence_evidence"
+                    )
+                    or link.get(
+                        "evidence"
+                    )
+                    or ""
+                ),
+                "Observações": (
+                    requirement.get(
+                        "adherence_notes"
+                    )
+                    or link.get(
+                        "notes"
+                    )
+                    or ""
+                ),
+                "Confiança": round(
+                    float(
+                        link.get(
+                            "match_score"
+                        )
+                        or 0
+                    )
+                    * 100,
+                    1,
+                ),
+                "_reason": (
+                    link.get(
+                        "match_reason"
+                    )
+                ),
+            }
+        )
+
+    matrix = pd.DataFrame(
+        matrix_rows
+    )
+
+    edited_matrix = st.data_editor(
+        matrix,
+        hide_index=True,
+        width="stretch",
+        height=560,
+        key=(
+            "phase14_1_adherence_matrix_"
+            + project_id
+        ),
+        column_config={
+            "_requirement_id": None,
+            "_reason": None,
+            "Entrega relacionada": (
+                st.column_config
+                .SelectboxColumn(
+                    options=[
+                        "Sem associação",
+                        *memory_options.keys(),
+                    ],
+                )
+            ),
+            "Aderência": (
+                st.column_config
+                .SelectboxColumn(
+                    options=list(
+                        ADHERENCE_STATUS.keys()
+                    ),
+                    format_func=lambda value: (
+                        ADHERENCE_STATUS.get(
+                            value,
+                            value,
+                        )
+                    ),
+                )
+            ),
+            "Confiança": (
+                st.column_config
+                .ProgressColumn(
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f%%",
+                )
+            ),
+        },
+        disabled=[
+            "Demanda",
+            "Tipo",
+            "Obrigatória",
+            "Confiança",
+        ],
+    )
+
+    if st.button(
+        "Salvar matriz de aderência",
+        type="primary",
+        width="stretch",
+        key=(
+            "phase14_1_save_adherence_"
+            + project_id
+        ),
+    ):
+        rows = []
+
+        for row in edited_matrix.to_dict(
+            orient="records"
+        ):
+            selected_label = str(
+                row.get(
+                    "Entrega relacionada"
+                )
+                or "Sem associação"
+            )
+
+            rows.append(
+                {
+                    "requirement_id": (
+                        row[
+                            "_requirement_id"
+                        ]
+                    ),
+                    "memory_item_id": (
+                        memory_options.get(
+                            selected_label
+                        )
+                    ),
+                    "adherence_status": (
+                        row.get(
+                            "Aderência"
+                        )
+                        or "not_assessed"
+                    ),
+                    "evidence": (
+                        str(
+                            row.get(
+                                "Evidência"
+                            )
+                            or ""
+                        ).strip()
+                        or None
+                    ),
+                    "notes": (
+                        str(
+                            row.get(
+                                "Observações"
+                            )
+                            or ""
+                        ).strip()
+                        or None
+                    ),
+                    "match_score": (
+                        float(
+                            row.get(
+                                "Confiança"
+                            )
+                            or 0
+                        )
+                        / 100
+                    ),
+                    "match_reason": (
+                        row.get(
+                            "_reason"
+                        )
+                    ),
+                }
+            )
+
+        save_briefing_adherence(
+            client,
+            project_id=project_id,
+            rows=rows,
+        )
+        st.success(
+            "Matriz de aderência atualizada."
+        )
+        st.rerun()
+
+    st.divider()
+    st.subheader(
+        "Briefings vinculados"
+    )
+
+    for document in _safe_records(
+        documents
+    ):
+        with st.container(
+            border=True,
+        ):
+            st.markdown(
+                "### "
+                + str(
+                    document.get(
+                        "title"
+                    )
+                    or document.get(
+                        "file_name"
+                    )
+                )
+            )
+            st.caption(
+                str(
+                    document.get(
+                        "requirements_count"
+                    )
+                    or 0
+                )
+                + " demanda(s) · "
+                + _money(
+                    document.get(
+                        "budget_amount"
+                    ),
+                    document.get(
+                        "currency"
+                    )
+                    or "BRL",
+                )
+            )
+
+            original_url = (
+                create_briefing_signed_url(
+                    client,
+                    document.get(
+                        "storage_path"
+                    ),
+                    download=True,
+                )
+            )
+
+            if original_url:
+                st.link_button(
+                    "Abrir briefing original",
+                    original_url,
+                    width="stretch",
+                )
+
+            diagnostic = (
+                document.get(
+                    "diagnostic"
+                )
+                or {}
+            )
+
+            for warning in (
+                diagnostic.get(
+                    "warnings"
+                )
+                or []
+            ):
+                st.warning(
+                    str(warning)
+                )
+
+            with st.expander(
+                "Excluir briefing",
+                expanded=False,
+            ):
+                confirmation = st.text_input(
+                    "Digite EXCLUIR",
+                    key=(
+                        "delete_briefing_confirm_"
+                        + str(
+                            document["id"]
+                        )
+                    ),
+                )
+
+                if st.button(
+                    "Excluir briefing",
+                    disabled=(
+                        confirmation
+                        .strip()
+                        .upper()
+                        != "EXCLUIR"
+                    ),
+                    key=(
+                        "delete_briefing_"
+                        + str(
+                            document["id"]
+                        )
+                    ),
+                    width="stretch",
+                ):
+                    delete_briefing_document(
+                        client,
+                        document_id=str(
+                            document["id"]
+                        ),
+                    )
+                    st.success(
+                        "Briefing excluído."
                     )
                     st.rerun()

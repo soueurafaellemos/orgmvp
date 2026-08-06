@@ -13,6 +13,8 @@ from memory_learning_db import (
     upsert_item_outcome,
 )
 from memory_learning_models import (
+    ADHERENCE_STATUS,
+    BRIEFING_REQUIREMENT_TYPES,
     CONFIDENCE_LEVELS,
     INFORMATION_SOURCES,
     ITEM_OUTCOME_STATUS,
@@ -125,13 +127,103 @@ def _render_learning_summary(
     *,
     item_outcome: dict | None,
     linked_costs: list[dict],
+    linked_requirements: list[dict],
 ) -> None:
-    if not item_outcome and not linked_costs:
+    if (
+        not item_outcome
+        and not linked_costs
+        and not linked_requirements
+    ):
         st.caption(
-            "Ainda não há resultado ou custo "
+            "Ainda não há briefing, resultado ou custo "
             "associado a esta ficha."
         )
         return
+
+    if linked_requirements:
+        st.markdown(
+            "### Relação com o briefing"
+        )
+
+        for requirement in linked_requirements:
+            with st.container(
+                border=True,
+            ):
+                st.markdown(
+                    "**"
+                    + str(
+                        requirement.get(
+                            "title"
+                        )
+                        or "Demanda do briefing"
+                    )
+                    + "**"
+                )
+                st.caption(
+                    BRIEFING_REQUIREMENT_TYPES.get(
+                        str(
+                            requirement.get(
+                                "requirement_type"
+                            )
+                            or ""
+                        ),
+                        "Demanda",
+                    )
+                    + " · "
+                    + ADHERENCE_STATUS.get(
+                        str(
+                            requirement.get(
+                                "adherence_status"
+                            )
+                            or "not_assessed"
+                        ),
+                        "Não avaliada",
+                    )
+                )
+
+                if requirement.get(
+                    "description"
+                ):
+                    st.write(
+                        requirement[
+                            "description"
+                        ]
+                    )
+
+                if requirement.get(
+                    "evidence"
+                ):
+                    st.markdown(
+                        "**Evidência da aderência:**"
+                    )
+                    st.write(
+                        requirement[
+                            "evidence"
+                        ]
+                    )
+
+                if requirement.get(
+                    "source_reference"
+                ):
+                    st.caption(
+                        "Fonte: "
+                        + str(
+                            requirement[
+                                "source_reference"
+                            ]
+                        )
+                    )
+
+                if (
+                    requirement.get(
+                        "link_status"
+                    )
+                    == "suggested"
+                ):
+                    st.warning(
+                        "Correlação sugerida; "
+                        "ainda não confirmada."
+                    )
 
     if item_outcome:
         st.markdown(
@@ -709,6 +801,7 @@ def render_memory_item_row(
     document: dict | None,
     item_outcome: dict | None,
     linked_costs: list[dict],
+    linked_requirements: list[dict],
     card_key: str,
 ) -> None:
     visual_url = (
@@ -812,6 +905,16 @@ def render_memory_item_row(
                     )
                 )
 
+            if linked_requirements:
+                metadata.append(
+                    str(
+                        len(
+                            linked_requirements
+                        )
+                    )
+                    + " demanda(s) do briefing"
+                )
+
             if linked_costs:
                 linked_total = sum(
                     float(
@@ -843,7 +946,7 @@ def render_memory_item_row(
                 ) = st.tabs(
                     [
                         "Informações",
-                        "Resultado & custo",
+                        "Briefing, resultado & custo",
                         "Editar",
                     ]
                 )
@@ -864,6 +967,9 @@ def render_memory_item_row(
                         ),
                         linked_costs=(
                             linked_costs
+                        ),
+                        linked_requirements=(
+                            linked_requirements
                         ),
                     )
                     st.divider()
@@ -914,6 +1020,10 @@ def render_memory_section(
         str,
         list[dict],
     ] | None = None,
+    briefing_links_by_item_id: dict[
+        str,
+        list[dict],
+    ] | None = None,
 ) -> None:
     item_outcomes_by_id = (
         item_outcomes_by_id
@@ -921,6 +1031,10 @@ def render_memory_section(
     )
     cost_links_by_item_id = (
         cost_links_by_item_id
+        or {}
+    )
+    briefing_links_by_item_id = (
+        briefing_links_by_item_id
         or {}
     )
 
@@ -1036,6 +1150,12 @@ def render_memory_section(
             ),
             linked_costs=(
                 cost_links_by_item_id.get(
+                    item_id,
+                    [],
+                )
+            ),
+            linked_requirements=(
+                briefing_links_by_item_id.get(
                     item_id,
                     [],
                 )
