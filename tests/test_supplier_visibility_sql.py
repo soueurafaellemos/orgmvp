@@ -1,15 +1,10 @@
 from pathlib import Path
 
 
-def test_supplier_view_excludes_venue_only_operators():
-    sql = (
-        Path(__file__).resolve().parents[1]
-        / "supabase_patch_v28_0_3_1_fornecedores_visibilidade.sql"
-    ).read_text(encoding="utf-8").lower()
-
-    assert "create or replace view public.supplier_coverage_overview" in sql
-    assert "from public.venues v_filter" in sql
-    assert "from public.products p_filter" in sql
-    assert "from public.activation_solutions a_filter" in sql
-    assert "where not (" in sql
-    assert "and not exists" in sql
+def test_supplier_page_requires_upload_or_repertoire_evidence():
+    source = (Path(__file__).resolve().parents[1] / "pages/5_Cobertura_de_Fornecedores.py").read_text(encoding="utf-8")
+    assert "_recognized_supplier_ids" in source
+    assert "products" in source
+    assert "activations" in source
+    assert "imports" in source
+    assert "recognized_as_supplier" in source

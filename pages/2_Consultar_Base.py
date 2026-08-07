@@ -469,7 +469,7 @@ display["Valor"] = display.apply(
             "",
         ),
     )
-    or "Não informado",
+    or "",
     axis=1,
 )
 display["Prazo"] = display[
@@ -478,7 +478,7 @@ display["Prazo"] = display[
     lambda value: (
         f"{int(value)} dias"
         if pd.notna(value)
-        else "Não informado"
+        else ""
     )
 )
 display["Capacidade"] = display[
@@ -487,7 +487,7 @@ display["Capacidade"] = display[
     lambda value: (
         f"{int(value):,}".replace(",", ".")
         if pd.notna(value)
-        else "Não informado"
+        else ""
     )
 )
 display["Mídia"] = display[
@@ -526,7 +526,7 @@ table = display[columns].rename(
         "supplier_name": "Fornecedor",
         "location": "Localização",
     }
-).fillna("Não informado")
+).fillna("")
 
 st.caption(
     "Selecione uma linha para abrir a ficha ou várias "

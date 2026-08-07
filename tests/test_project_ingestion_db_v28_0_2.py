@@ -51,34 +51,17 @@ def test_event_date_is_used_as_safe_end_date_fallback():
     assert mapped["event_end"] == "2026-10-15"
 
 
-def test_sql_uses_real_projects_columns():
-    sql_path = (
-        Path(__file__).resolve().parents[1]
-        / "supabase_patch_v28_0_2_identidade_projetos.sql"
-    )
-    sql = sql_path.read_text(encoding="utf-8")
-
-    required = (
-        "project.event_date",
-        "project.location_city",
-        "project.location_state",
-        "project.audience_quantity",
-        "project.budget_total_brl",
-    )
-    forbidden = (
-        "project.event_date_start",
-        "project.event_date_end",
-        "project.city",
-        "project.state",
-        "project.audience_size",
-        "project.budget_amount",
-    )
-
-    for fragment in required:
-        assert fragment in sql
-
-    for fragment in forbidden:
-        assert fragment not in sql
+def test_current_python_mapping_uses_real_projects_columns():
+    module_path = Path(__file__).resolve().parents[1] / "project_ingestion_db.py"
+    source = module_path.read_text(encoding="utf-8")
+    for fragment in (
+        'item.get("event_date")',
+        'item.get("location_city")',
+        'item.get("location_state")',
+        'item.get("audience_quantity")',
+        'item.get("budget_total_brl")',
+    ):
+        assert fragment in source
 
 
 def test_python_fallback_does_not_query_nonexistent_columns():
