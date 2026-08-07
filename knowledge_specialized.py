@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from html import escape
 from typing import Any
 
 import streamlit as st
@@ -28,6 +29,8 @@ ENTITY_CONFIG = {
         "subtitle": "Explore, compare, consulte a ficha completa e mantenha o repertório de brindes da NAVE atualizado.",
         "category_field": "category",
         "card_fields": ("category", "material", "supplier_name"),
+        "columns_per_row": 4,
+        "page_size": 16,
         "list_select": "id,supplier_id,name,category,description,material,sku,tags,source_image_url,raw_data",
     },
     "activation": {
@@ -36,6 +39,8 @@ ENTITY_CONFIG = {
         "subtitle": "Consulte ativações, soluções e experiências com contexto, acervo visual, ficha completa e histórico de projetos.",
         "category_field": "category",
         "card_fields": ("category", "client_brand", "project_name"),
+        "columns_per_row": 3,
+        "page_size": 12,
         "list_select": "id,supplier_id,project_id,name,category,record_type,description,client_brand,project_name,event_name,tags,source_image_url,raw_data",
     },
 }
@@ -200,34 +205,197 @@ def fetch_media_assets_batch(client: Any, entity_type: str, entity_ids: list[str
     return grouped
 
 
+def _valid_http_url(value: Any) -> str | None:
+    if isinstance(value, str):
+        clean = value.strip()
+        if clean.startswith(("http://", "https://")):
+            return clean
+    return None
+
+
 def _fallback_image(record: dict) -> str | None:
+    """Retorna somente um recorte claramente associado ao item.
+
+    source_image_url e slides/páginas inteiras NÃO são usados como capa.
+    Eles podem representar uma página de catálogo com vários itens e geraram
+    a poluição visual observada na V28.0.3.
+    """
+    raw = record.get("raw_data")
+    if not isinstance(raw, dict):
+        return None
+
+    for key in (
+        "visual_crop_url",
+        "crop_url",
+        "cropped_image_url",
+        "product_crop_url",
+        "activation_crop_url",
+    ):
+        url = _valid_http_url(raw.get(key))
+        if url:
+            return url
+    return None
+
+
+def source_preview_url(record: dict) -> str | None:
+    """Material de origem, exibido somente na ficha/galeria, nunca como capa."""
     candidates: list[Any] = [record.get("source_image_url")]
     raw = record.get("raw_data")
     if isinstance(raw, dict):
         for key in (
             "source_image_url",
-            "visual_crop_url",
-            "crop_url",
-            "image_url",
             "full_slide_url",
             "slide_image_url",
+            "image_url",
         ):
             candidates.append(raw.get(key))
     for value in candidates:
-        if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
-            return value.strip()
+        url = _valid_http_url(value)
+        if url:
+            return url
     return None
 
 
-def primary_image_url(client: Any, entity_type: str, record: dict, assets: list[dict] | None = None) -> str | None:
-    assets = assets if assets is not None else fetch_media_assets(client, entity_type, str(record.get("id") or ""))
-    image_assets = [asset for asset in assets if asset.get("asset_type") in IMAGE_ASSET_TYPES or str(asset.get("mime_type") or "").startswith("image/")]
-    image_assets.sort(key=lambda asset: (not bool(asset.get("is_primary")), int(asset.get("sort_order") or 0)))
-    for asset in image_assets:
+def _image_assets_for_cover(assets: list[dict]) -> list[dict]:
+    images = [
+        asset
+        for asset in assets
+        if asset.get("asset_type") in IMAGE_ASSET_TYPES
+        or str(asset.get("mime_type") or "").startswith("image/")
+    ]
+    # Uma mídia explicitamente marcada como principal sempre vence.
+    # Em seguida vêm main_image e, só depois, gallery_image.
+    def rank(asset: dict) -> tuple[int, int, int]:
+        if bool(asset.get("is_primary")):
+            kind = 0
+        elif asset.get("asset_type") == "main_image":
+            kind = 1
+        elif asset.get("asset_type") == "gallery_image":
+            kind = 2
+        else:
+            kind = 3
+        return (kind, int(asset.get("sort_order") or 0), 0)
+
+    return sorted(images, key=rank)
+
+
+def primary_image_url(
+    client: Any,
+    entity_type: str,
+    record: dict,
+    assets: list[dict] | None = None,
+) -> str | None:
+    assets = (
+        assets
+        if assets is not None
+        else fetch_media_assets(
+            client, entity_type, str(record.get("id") or "")
+        )
+    )
+    for asset in _image_assets_for_cover(assets):
         url = asset_url(client, asset)
         if url:
             return url
     return _fallback_image(record)
+
+
+SPECIALIZED_CSS = r"""
+<style>
+.nave-specialized-media {
+    width: 100%;
+    height: 220px;
+    border: 1px solid #E1E5EE;
+    border-radius: 12px;
+    background: #F7F8FB;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 0.85rem;
+}
+.nave-specialized-media img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+.nave-specialized-media--detail {
+    height: 320px;
+}
+.nave-specialized-placeholder {
+    color: #8D96AB;
+    text-align: center;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    padding: 1rem;
+}
+.nave-specialized-placeholder strong {
+    display: block;
+    color: #59647E;
+    font-size: 0.83rem;
+    margin-bottom: 0.22rem;
+}
+.nave-specialized-copy {
+    min-height: 94px;
+}
+.nave-specialized-title {
+    color: #121B42;
+    font-size: 0.96rem;
+    font-weight: 760;
+    line-height: 1.28;
+    margin-bottom: 0.42rem;
+}
+.nave-specialized-meta {
+    color: #707B96;
+    font-size: 0.78rem;
+    line-height: 1.38;
+}
+.nave-origin-note {
+    color: #707B96;
+    font-size: 0.78rem;
+    margin: 0.35rem 0 0.7rem;
+}
+</style>
+"""
+
+
+def _render_specialized_css() -> None:
+    st.markdown(SPECIALIZED_CSS, unsafe_allow_html=True)
+
+
+def _render_visual_slot(url: str | None, *, detail: bool = False) -> None:
+    extra = " nave-specialized-media--detail" if detail else ""
+    if url:
+        safe_url = escape(url, quote=True)
+        st.markdown(
+            f'<div class="nave-specialized-media{extra}">'
+            f'<img src="{safe_url}" alt="">'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.markdown(
+        f'<div class="nave-specialized-media{extra}">'
+        '<div class="nave-specialized-placeholder">'
+        '<strong>Imagem principal não definida</strong>'
+        'Adicione ou valide uma imagem no acervo.'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_card_copy(entity_type: str, record: dict) -> None:
+    title = escape(_text(record.get("name")) or "Sem nome")
+    meta = escape(_card_meta(entity_type, record))
+    meta_html = f'<div class="nave-specialized-meta">{meta}</div>' if meta else ""
+    st.markdown(
+        '<div class="nave-specialized-copy">'
+        f'<div class="nave-specialized-title">{title}</div>'
+        f'{meta_html}'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _text(value: Any) -> str:
@@ -265,7 +433,14 @@ def _card_meta(entity_type: str, record: dict) -> str:
     return " · ".join(values[:3])
 
 
-def render_cards(client: Any, entity_type: str, rows: list[dict], *, page: int, page_size: int = 12) -> None:
+def render_cards(
+    client: Any,
+    entity_type: str,
+    rows: list[dict],
+    *,
+    page: int,
+    page_size: int,
+) -> None:
     start = (page - 1) * page_size
     visible = rows[start:start + page_size]
     if not visible:
@@ -277,30 +452,35 @@ def render_cards(client: Any, entity_type: str, rows: list[dict], *, page: int, 
         entity_type,
         [str(record.get("id") or "") for record in visible],
     )
+    columns_per_row = int(ENTITY_CONFIG[entity_type].get("columns_per_row") or 3)
 
-    for start_index in range(0, len(visible), 3):
-        columns = st.columns(3)
-        for column, record in zip(columns, visible[start_index:start_index + 3]):
+    for start_index in range(0, len(visible), columns_per_row):
+        columns = st.columns(columns_per_row)
+        for column, record in zip(
+            columns, visible[start_index:start_index + columns_per_row]
+        ):
             entity_id = str(record.get("id") or "")
             with column:
                 with st.container(border=True):
                     try:
                         image = primary_image_url(
-                            client, entity_type, record, media_by_entity.get(entity_id, [])
+                            client,
+                            entity_type,
+                            record,
+                            media_by_entity.get(entity_id, []),
                         )
                     except Exception:
                         image = _fallback_image(record)
-                    if image:
-                        st.image(image, width="stretch")
-                    else:
-                        st.markdown("**Sem imagem principal**")
-                        st.caption("O acervo visual pode ser complementado na Base de Conhecimento.")
-                    st.markdown(f"**{_text(record.get('name')) or 'Sem nome'}**")
-                    meta = _card_meta(entity_type, record)
-                    if meta:
-                        st.caption(meta)
-                    if st.button("Ver ficha", key=f"open_{entity_type}_{entity_id}", width="stretch"):
-                        st.session_state[f"specialized_selected_{entity_type}"] = entity_id
+                    _render_visual_slot(image)
+                    _render_card_copy(entity_type, record)
+                    if st.button(
+                        "Ver ficha",
+                        key=f"open_{entity_type}_{entity_id}",
+                        width="stretch",
+                    ):
+                        st.session_state[
+                            f"specialized_selected_{entity_type}"
+                        ] = entity_id
                         st.rerun()
 
 
@@ -313,23 +493,28 @@ def render_gallery(client: Any, entity_type: str, record: dict) -> None:
         url = asset_url(client, asset)
         if not url:
             continue
-        is_image = asset.get("asset_type") in IMAGE_ASSET_TYPES or str(asset.get("mime_type") or "").startswith("image/")
+        is_image = (
+            asset.get("asset_type") in IMAGE_ASSET_TYPES
+            or str(asset.get("mime_type") or "").startswith("image/")
+        )
         if is_image:
             images.append((asset, url))
         elif asset.get("asset_type") in DOCUMENT_ASSET_TYPES:
             documents.append((asset, url))
 
-    fallback = _fallback_image(record)
-    if not images and fallback:
-        images.append((None, fallback))
+    safe_crop = _fallback_image(record)
+    if not images and safe_crop:
+        images.append((None, safe_crop))
 
     st.markdown("### Galeria visual")
     if images:
-        for start in range(0, len(images), 3):
+        for start_index in range(0, len(images), 3):
             columns = st.columns(3)
-            for column, (asset, url) in zip(columns, images[start:start + 3]):
+            for column, (asset, url) in zip(
+                columns, images[start_index:start_index + 3]
+            ):
                 with column:
-                    st.image(url, width="stretch")
+                    _render_visual_slot(url)
                     if asset:
                         title = _text(asset.get("title"))
                         if title:
@@ -337,16 +522,40 @@ def render_gallery(client: Any, entity_type: str, record: dict) -> None:
                         if asset.get("is_primary"):
                             st.caption("Imagem principal")
     else:
-        st.caption("Nenhuma imagem foi associada a este cadastro ainda.")
+        st.caption(
+            "Ainda não há uma imagem principal validada para este cadastro."
+        )
+
+    origin_preview = source_preview_url(record)
+    if origin_preview:
+        st.markdown("### Material de origem")
+        st.markdown(
+            '<div class="nave-origin-note">'
+            'A página ou o slide de origem fica disponível para consulta, '
+            'mas não é usado automaticamente como capa do item.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        _render_visual_slot(origin_preview, detail=True)
 
     if documents:
         st.markdown("### Documentos e referências")
         for asset, url in documents:
-            title = _text(asset.get("title")) or _text(asset.get("file_name")) or "Abrir material"
+            title = (
+                _text(asset.get("title"))
+                or _text(asset.get("file_name"))
+                or "Abrir material"
+            )
             st.link_button(title, url, width="stretch")
 
-    st.caption("A gestão de uploads, exclusões e imagem principal continua usando o acervo central da Base de Conhecimento.")
-    st.page_link("pages/2_Consultar_Base.py", label="Abrir Base de Conhecimento")
+    st.caption(
+        "A gestão de uploads, exclusões e imagem principal continua usando "
+        "o acervo central da Base de Conhecimento."
+    )
+    st.page_link(
+        "pages/2_Consultar_Base.py",
+        label="Abrir Base de Conhecimento",
+    )
 
 
 def _field_label(entity_type: str, field: str) -> str:
@@ -570,6 +779,7 @@ def render_specialized_page(entity_type: str) -> None:
         raise ValueError("Tipo de página especializada não configurado.")
     config = ENTITY_CONFIG[entity_type]
     client = get_nave_client()
+    _render_specialized_css()
 
     try:
         from branding import page_header
@@ -599,7 +809,42 @@ def render_specialized_page(entity_type: str) -> None:
     filtered = _filter_rows(entity_type, rows, search=search, category=category)
     st.caption(f"{len(filtered)} de {len(rows)} cadastros")
 
-    page_size = 12
+    page_size = int(config.get("page_size") or 12)
     pages = max(1, math.ceil(len(filtered) / page_size))
-    page = st.number_input("Página", min_value=1, max_value=pages, value=1, step=1, key=f"specialized_page_{entity_type}")
-    render_cards(client, entity_type, filtered, page=int(page), page_size=page_size)
+    page_key = f"specialized_page_{entity_type}"
+    current_page = int(st.session_state.get(page_key, 1) or 1)
+    current_page = max(1, min(current_page, pages))
+    st.session_state[page_key] = current_page
+
+    previous_col, next_col, info_col = st.columns([1, 1, 5])
+    with previous_col:
+        if st.button(
+            "← Anterior",
+            key=f"specialized_prev_{entity_type}",
+            disabled=current_page <= 1,
+            width="stretch",
+        ):
+            st.session_state[page_key] = current_page - 1
+            st.rerun()
+    with next_col:
+        if st.button(
+            "Próxima →",
+            key=f"specialized_next_{entity_type}",
+            disabled=current_page >= pages,
+            width="stretch",
+        ):
+            st.session_state[page_key] = current_page + 1
+            st.rerun()
+    with info_col:
+        st.caption(
+            f"Página {current_page} de {pages} · "
+            f"{page_size} itens por página"
+        )
+
+    render_cards(
+        client,
+        entity_type,
+        filtered,
+        page=current_page,
+        page_size=page_size,
+    )
