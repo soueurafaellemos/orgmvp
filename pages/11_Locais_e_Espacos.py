@@ -29,6 +29,7 @@ from venue_types import (
     filter_records_by_type,
     normalize_venue_type,
     safe_type_from_record,
+    venue_type_suggestion,
     venue_group,
     venue_type_options,
 )
@@ -627,50 +628,70 @@ def _save_manual_type(
     _load_venues.clear()
 
 
-def _safe_classification_batch(
+def _classification_plan(
     records: list[dict[str, Any]],
-) -> tuple[int, int]:
-    client = _database_client()
-    updated = 0
-    unchanged = 0
-
+) -> list[dict[str, Any]]:
+    plan: list[dict[str, Any]] = []
     for record in records:
         raw_data = _json_dict(record.get("raw_data"))
         classification = raw_data.get("venue_type_classification")
         if isinstance(classification, dict) and classification.get("manual"):
-            unchanged += 1
             continue
-
-        current = normalize_venue_type(record.get("venue_type"))
-        if current:
-            # Normalize only equivalent values. Never replace a valid type.
-            if str(record.get("venue_type") or "").strip() == current:
-                unchanged += 1
-                continue
-            suggested = current
-        else:
-            suggested = safe_type_from_record(record)
-
-        if not suggested:
-            unchanged += 1
+        if normalize_venue_type(record.get("venue_type")):
             continue
+        suggestion = venue_type_suggestion(record)
+        if not suggestion:
+            continue
+        confidence = float(suggestion.get("confidence") or 0)
+        if confidence < 0.9:
+            continue
+        plan.append(
+            {
+                "id": str(record.get("id") or ""),
+                "name": str(record.get("name") or "Sem nome"),
+                "current": str(record.get("venue_type") or ""),
+                "suggested": str(suggestion.get("label") or ""),
+                "confidence": confidence,
+                "source": str(suggestion.get("source") or ""),
+                "evidence": str(suggestion.get("evidence") or ""),
+            }
+        )
+    return plan
 
-        if not raw_data.get("venue_type_original"):
-            original = str(record.get("venue_type") or "").strip()
-            if original:
-                raw_data["venue_type_original"] = original
+
+def _safe_classification_batch(
+    records: list[dict[str, Any]],
+) -> tuple[int, int]:
+    client = _database_client()
+    plan = _classification_plan(records)
+    by_id = {
+        str(record.get("id") or ""): record
+        for record in records
+    }
+    updated = 0
+
+    for item in plan:
+        record = by_id.get(str(item.get("id") or ""))
+        if not record:
+            continue
+        raw_data = _json_dict(record.get("raw_data"))
+        original = str(record.get("venue_type") or "").strip()
+        if original and not raw_data.get("venue_type_original"):
+            raw_data["venue_type_original"] = original
         raw_data["venue_type_classification"] = {
-            "source": "safe_exact_alias",
+            "source": item.get("source") or "smart_safe_backfill",
             "manual": False,
-            "current_value": suggested,
+            "confidence": item.get("confidence"),
+            "evidence": item.get("evidence"),
+            "previous_value": original or None,
+            "current_value": item.get("suggested"),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-
         (
             client.table("venues")
             .update(
                 {
-                    "venue_type": suggested,
+                    "venue_type": item.get("suggested"),
                     "raw_data": raw_data,
                 }
             )
@@ -680,6 +701,7 @@ def _safe_classification_batch(
         updated += 1
 
     _load_venues.clear()
+    unchanged = max(0, len(records) - updated)
     return updated, unchanged
 
 
@@ -942,6 +964,40 @@ metric_cols[0].metric("Locais", total)
 metric_cols[1].metric("Com tipo definido", typed)
 metric_cols[2].metric("Tipo não definido", undefined)
 metric_cols[3].metric("Com foto", with_photo)
+
+classification_plan = _classification_plan(venues)
+if undefined and classification_plan:
+    with st.expander(
+        f"A NAVE encontrou {len(classification_plan)} tipo(s) que podem ser recuperados com segurança",
+        expanded=True,
+    ):
+        unresolved_after_plan = max(0, undefined - len(classification_plan))
+        st.caption(
+            "A classificação usa primeiro a categoria/tags preservadas no upload e "
+            "o volume visual de origem. Nome e descrição só entram quando o termo "
+            "é inequívoco. Nenhuma classificação manual é substituída."
+        )
+        plan_cols = st.columns(3)
+        plan_cols[0].metric("Sem tipo agora", undefined)
+        plan_cols[1].metric("Correções seguras", len(classification_plan))
+        plan_cols[2].metric("Ainda para revisão", unresolved_after_plan)
+        if st.button(
+            "Aplicar classificações seguras agora",
+            type="primary",
+            key="safe_venue_type_batch_top",
+        ):
+            try:
+                with st.spinner("Atualizando os tipos seguros..."):
+                    updated, unchanged = _safe_classification_batch(venues)
+                st.success(
+                    f"{updated} registro(s) classificados. "
+                    f"{unchanged} mantido(s) sem alteração."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error("Não foi possível concluir a classificação segura.")
+                with st.expander("Detalhes técnicos"):
+                    st.code(str(exc))
 
 st.markdown("### Encontrar um local")
 filter_cols = st.columns([2.2, 1.8, 1.2, 1.2])
@@ -1272,24 +1328,3 @@ if selected_record:
                 )
 else:
     st.info("Selecione um local na tabela para abrir a ficha completa, a galeria visual e os documentos associados.")
-
-with st.expander("Classificar registros existentes com correspondência segura"):
-    st.write(
-        "A NAVE analisa somente campos explícitos de categoria e aplica um "
-        "tipo quando encontra uma correspondência exata. Nome e descrição "
-        "não são usados para adivinhar. Registros ambíguos permanecem como "
-        "Tipo não definido. Classificações manuais não são substituídas."
-    )
-    if st.button("Aplicar classificação segura", key="safe_venue_type_batch"):
-        try:
-            with st.spinner("Classificando os registros seguros..."):
-                updated, unchanged = _safe_classification_batch(venues)
-            st.success(
-                f"{updated} registro(s) classificados. "
-                f"{unchanged} mantido(s) sem alteração."
-            )
-            st.rerun()
-        except Exception as exc:
-            st.error("Não foi possível concluir a classificação segura.")
-            with st.expander("Detalhes técnicos"):
-                st.code(str(exc))

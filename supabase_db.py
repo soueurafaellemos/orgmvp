@@ -29,6 +29,7 @@ from enrichment_engine import (
 )
 from media_library import upload_generated_media_asset
 from pdf_visuals import prepare_visual_assignments
+from venue_types import venue_type_suggestion
 from taxonomy import (
     annotate_candidate_taxonomy,
     normalize_record_taxonomy,
@@ -2976,6 +2977,29 @@ def save_venues(
             raw,
             VENUE_COLUMNS,
         )
+
+        # Persistir sempre o tipo canônico quando o próprio documento já traz
+        # evidência segura. Isso evita que rótulos legados como
+        # ``Restaurante / bar`` ou ``Auditório / teatro`` voltem a gerar
+        # centenas de registros aparentemente sem tipo na interface.
+        type_suggestion = venue_type_suggestion(raw)
+        if (
+            type_suggestion
+            and float(type_suggestion.get("confidence") or 0) >= 0.9
+        ):
+            payload["venue_type"] = type_suggestion.get("label")
+            raw_payload = payload.get("raw_data")
+            if not isinstance(raw_payload, dict):
+                raw_payload = dict(raw)
+            raw_payload["venue_type_classification"] = {
+                "source": type_suggestion.get("source") or "ingestion",
+                "manual": False,
+                "confidence": type_suggestion.get("confidence"),
+                "evidence": type_suggestion.get("evidence"),
+                "current_value": type_suggestion.get("label"),
+            }
+            payload["raw_data"] = _json_safe(raw_payload)
+
         payload["operator_id"] = operator_id
         payload["import_id"] = import_id
         payload["source_file_id"] = file_map.get(

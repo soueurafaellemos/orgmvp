@@ -298,6 +298,19 @@ class VenueSpace(BaseModel):
 
     name: str
     venue_type: Literal[
+        # Tipologia canônica atual da NAVE.
+        "Galpão / Fábrica",
+        "Centro de Convenções / Pavilhão",
+        "Espaço de Eventos",
+        "Casas de Show",
+        "Teatros / Auditórios",
+        "Hotéis",
+        "Bares",
+        "Restaurantes",
+        "Galerias de Arte",
+        "Estádios",
+        # Valores legados continuam aceitos durante a transição para que
+        # documentos antigos/modelos em cache não quebrem a ingestão.
         "Centro de convenções",
         "Pavilhão",
         "Casa de eventos",

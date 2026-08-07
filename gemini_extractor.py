@@ -562,43 +562,36 @@ def _read_spreadsheet(doc: InputDocument) -> dict[str, pd.DataFrame] | None:
 
 
 def _venue_type_from_value(value: object) -> str:
+    """Converte categorias tabulares diretamente para a taxonomia canônica."""
     normalized = _normalize_header(value)
     if not normalized:
         return "Não informado"
     if "GALPAO" in normalized or "FABRICA" in normalized:
-        return "Galpão"
-    if "CENTRO_DE_CONVEN" in normalized:
-        return "Centro de convenções"
-    if "PAVILHAO" in normalized:
-        return "Pavilhão"
+        return "Galpão / Fábrica"
+    if "CENTRO_DE_CONVEN" in normalized or "PAVILHAO" in normalized:
+        return "Centro de Convenções / Pavilhão"
+    if "CASA_DE_SHOW" in normalized or "CASAS_DE_SHOW" in normalized:
+        return "Casas de Show"
+    if "TEATRO" in normalized or "AUDITORIO" in normalized:
+        return "Teatros / Auditórios"
     if "HOTEL" in normalized:
-        return "Hotel"
-    if "RESTAURANTE" in normalized or "BAR" in normalized:
-        return "Restaurante / bar"
-    if any(
-        token in normalized
-        for token in ("TEATRO", "AUDITORIO", "CASA_DE_SHOW")
-    ):
-        return "Auditório / teatro"
-    if any(
-        token in normalized
-        for token in ("GALERIA", "MUSEU", "CULTURAL")
-    ):
-        return "Espaço cultural"
-    if "ESTADIO" in normalized or "ARENA" in normalized:
-        return "Estádio / arena"
+        return "Hotéis"
+    if "RESTAURANTE" in normalized:
+        return "Restaurantes"
+    if re.search(r"(^|_)BARES?($|_)", normalized):
+        return "Bares"
+    if any(token in normalized for token in ("GALERIA", "MUSEU", "CULTURAL")):
+        return "Galerias de Arte"
+    if "ESTADIO" in normalized or "ARENA_ESPORT" in normalized:
+        return "Estádios"
+    if any(token in normalized for token in ("ESPACO_DE_EVENTOS", "CASA_DE_EVENTOS")):
+        return "Espaço de Eventos"
+    # Categorias fora das dez famílias atuais continuam legadas/abertas em vez
+    # de serem forçadas artificialmente para uma família incorreta.
     if "SHOPPING" in normalized:
         return "Shopping"
-    if any(
-        token in normalized
-        for token in ("AREA_EXTERNA", "PARQUE", "PRACA")
-    ):
+    if any(token in normalized for token in ("AREA_EXTERNA", "PARQUE", "PRACA")):
         return "Área externa"
-    if any(
-        token in normalized
-        for token in ("ESPACO_DE_EVENTOS", "CASA_DE_EVENTOS")
-    ):
-        return "Casa de eventos"
     return "Não informado"
 
 
