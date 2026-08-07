@@ -109,6 +109,8 @@ def _install_cover_table_guard() -> None:
 
     def guarded_dataframe(data=None, *args, **kwargs):
         cleaned = sanitize_cover_dataframe(data)
+        cover_column = None
+        promote_to_multi = False
         if hasattr(cleaned, "columns"):
             cover_column = next(
                 (name for name in COVER_COLUMN_NAMES if name in cleaned.columns),
@@ -126,7 +128,54 @@ def _install_cover_table_guard() -> None:
                 )
                 kwargs["column_config"] = config
                 kwargs.setdefault("row_height", 64)
-        return original(cleaned, *args, **kwargs)
+
+                # Padrão NAVE: tabelas especializadas com Capa permitem
+                # seleção múltipla. A Base de Conhecimento já usa o seu
+                # fluxo próprio de seleção múltipla e não é alterada aqui.
+                if (
+                    kwargs.get("selection_mode") == "single-row"
+                    and kwargs.get("on_select") == "rerun"
+                ):
+                    kwargs["selection_mode"] = "multi-row"
+                    promote_to_multi = True
+
+        event = original(cleaned, *args, **kwargs)
+
+        # Compatibilidade transversal para páginas que antes aceitavam
+        # somente uma linha (Locais, Brindes, Ativações e Fornecedores).
+        # Duas ou mais linhas selecionadas reativam o PDF de possibilidades.
+        if promote_to_multi and cover_column and hasattr(cleaned, "iloc"):
+            selected_rows = list(
+                getattr(getattr(event, "selection", None), "rows", []) or []
+            )
+            valid_rows = [
+                position for position in selected_rows
+                if isinstance(position, int) and 0 <= position < len(cleaned)
+            ]
+            if len(valid_rows) >= 2:
+                from selection_pdf import build_selection_pdf
+
+                selected_records = cleaned.iloc[valid_rows].to_dict(orient="records")
+                pdf_bytes = build_selection_pdf(
+                    selected_records,
+                    title="Seleção de possibilidades — NAVE by VOE",
+                )
+                action_col, info_col = st.columns([1.15, 3.85])
+                with action_col:
+                    st.download_button(
+                        "Exportar seleção em PDF",
+                        data=pdf_bytes,
+                        file_name="NAVE_selecao_possibilidades.pdf",
+                        mime="application/pdf",
+                        width="stretch",
+                        key=f"nave_selection_pdf_{kwargs.get('key', 'table')}",
+                    )
+                with info_col:
+                    st.caption(
+                        f"{len(valid_rows)} itens selecionados. "
+                        "A ficha abaixo continua usando o primeiro item selecionado."
+                    )
+        return event
 
     guarded_dataframe._nave_cover_guard = True
     guarded_dataframe._nave_original = original

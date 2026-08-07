@@ -74,7 +74,18 @@ def _value(record: dict, *keys: str) -> str:
 
 
 def _item_type(record: dict) -> str:
-    return _value(record, "item_type", "entity_type", "type") or "item"
+    explicit = _value(record, "item_type", "entity_type", "type")
+    if explicit:
+        return explicit
+    if "Brinde" in record:
+        return "product"
+    if "Ativação" in record:
+        return "activation"
+    if "Local" in record:
+        return "venue"
+    if "Fornecedor" in record:
+        return "supplier"
+    return "item"
 
 
 def build_selection_pdf(*args: Any, **kwargs: Any) -> bytes:
@@ -141,7 +152,9 @@ def build_selection_pdf(*args: Any, **kwargs: Any) -> bytes:
     if not rows:
         story.append(Paragraph("Nenhum item foi selecionado.", body))
     for index, record in enumerate(rows, start=1):
-        name = _value(record, "name", "Nome", "Local", "Fornecedor") or f"Item {index}"
+        name = _value(
+            record, "name", "Nome", "Brinde", "Ativação", "Local", "Fornecedor"
+        ) or f"Item {index}"
         type_code = _item_type(record)
         type_label = ENTITY_LABELS.get(type_code, _value(record, "Tipo") or "Possibilidade")
         story.append(Paragraph(f"{index:02d} · {type_label} — {name}", item_style))
