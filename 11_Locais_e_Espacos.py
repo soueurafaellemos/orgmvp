@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -12,6 +13,15 @@ from supabase import Client, create_client
 
 from branding import NAVE_APP_ICON, apply_nave_branding, page_header
 from knowledge_details import render_complete_record
+from curation_ui import render_curation_editor
+from media_library import (
+    ASSET_TYPE_LABELS as MEDIA_ASSET_TYPE_LABELS,
+    IMAGE_ASSET_TYPES,
+    add_external_media_link,
+    create_signed_media_url,
+    upload_media_asset,
+)
+from supabase_db import fetch_supplier_options
 from venue_types import (
     ALL_VENUE_TYPES,
     UNDEFINED_VENUE_TYPE,
@@ -19,6 +29,7 @@ from venue_types import (
     filter_records_by_type,
     normalize_venue_type,
     safe_type_from_record,
+    venue_type_suggestion,
     venue_group,
     venue_type_options,
 )
@@ -45,6 +56,161 @@ TYPE_COLORS = {
     "Estádios": "#EAF4E5",
     UNDEFINED_VENUE_TYPE: "#EEF0F4",
 }
+
+
+ASSET_TYPE_LABELS = {
+    "main_image": "Imagem principal",
+    "gallery_image": "Imagem",
+    "floor_plan": "Planta baixa",
+    "elevation": "Elevação",
+    "access_map": "Mapa de acesso",
+    "technical_sheet": "Ficha técnica",
+}
+PLAN_ASSET_TYPES = {"floor_plan", "elevation", "access_map", "technical_sheet"}
+DOCUMENT_MIME_PREFIXES = ("application/", "text/")
+
+
+def _is_http_url(value: Any) -> bool:
+    text = str(value or "").strip()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        key = (str(item.get("kind") or ""), str(item.get("url") or "").strip())
+        if not key[1] or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _scan_raw_data_urls(value: Any, *, path: str = "") -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            next_path = f"{path}.{key}" if path else str(key)
+            found.extend(_scan_raw_data_urls(item, path=next_path))
+        return found
+    if isinstance(value, (list, tuple, set)):
+        for index, item in enumerate(value):
+            next_path = f"{path}[{index}]" if path else str(index)
+            found.extend(_scan_raw_data_urls(item, path=next_path))
+        return found
+    if _is_http_url(value):
+        found.append((path.casefold(), str(value).strip()))
+    return found
+
+
+def _asset_label(asset: dict[str, Any], fallback: str) -> str:
+    asset_type = str(asset.get("asset_type") or "").strip()
+    file_name = str(asset.get("file_name") or "").strip()
+    if file_name:
+        return file_name
+    return ASSET_TYPE_LABELS.get(asset_type, fallback)
+
+
+def _resolve_asset_url(client: Client, asset: dict[str, Any]) -> str | None:
+    try:
+        return create_signed_media_url(client, asset)
+    except Exception:
+        external = str(asset.get("external_url") or "").strip()
+        return external or None
+
+
+def _media_for_record(record: dict[str, Any], media_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    target = str(record.get("id") or "")
+    assets = [
+        dict(asset)
+        for asset in media_rows
+        if str(asset.get("entity_id") or "") == target
+    ]
+    def _sort_key(asset: dict[str, Any]) -> tuple[int, int, str]:
+        primary = 0 if bool(asset.get("is_primary")) else 1
+        sort_order = asset.get("sort_order")
+        try:
+            order = int(float(sort_order))
+        except (TypeError, ValueError):
+            order = 9999
+        created = str(asset.get("created_at") or "")
+        return (primary, order, created)
+    return sorted(assets, key=_sort_key)
+
+
+def _build_record_gallery(record: dict[str, Any], media_rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    client = _database_client()
+    images: list[dict[str, Any]] = []
+    plans: list[dict[str, Any]] = []
+    documents: list[dict[str, Any]] = []
+
+    source_image = str(record.get("source_image_url") or "").strip()
+    if source_image:
+        images.append({"kind": "image", "label": "Imagem de origem", "url": source_image, "source": "Cadastro do local"})
+
+    for asset in _media_for_record(record, media_rows):
+        url = _resolve_asset_url(client, asset)
+        if not url:
+            continue
+        mime_type = str(asset.get("mime_type") or "").strip().casefold()
+        asset_type = str(asset.get("asset_type") or "").strip()
+        label = _asset_label(asset, "Documento associado")
+        source = "Acervo da NAVE"
+        item = {"label": label, "url": url, "source": source, "asset_type": asset_type, "mime_type": mime_type}
+        if mime_type.startswith("image/"):
+            if asset_type in PLAN_ASSET_TYPES:
+                plans.append({"kind": "plan", **item})
+            else:
+                images.append({"kind": "image", **item})
+        else:
+            kind = "plan_document" if asset_type in PLAN_ASSET_TYPES else "document"
+            documents.append({"kind": kind, **item})
+
+    raw_data = _json_dict(record.get("raw_data"))
+    for raw_key, url in _scan_raw_data_urls(raw_data):
+        if url == source_image:
+            continue
+        label = raw_key.replace("_", " ").replace(".", " / ").strip(" /") or "Material associado"
+        item = {"label": label.capitalize(), "url": url, "source": "Dados estruturados"}
+        if any(term in raw_key for term in ("planta", "floor_plan", "floorplan", "mapa", "elevation")):
+            plans.append({"kind": "plan", **item})
+        elif any(term in raw_key for term in ("ficha", "technical_sheet", "brochure", "pdf", "documento")):
+            documents.append({"kind": "document", **item})
+        elif any(term in raw_key for term in ("foto", "photo", "image", "imagem")):
+            images.append({"kind": "image", **item})
+
+    return {
+        "images": _dedupe_items(images),
+        "plans": _dedupe_items(plans),
+        "documents": _dedupe_items(documents),
+    }
+
+
+def _render_visual_gallery(title: str, items: list[dict[str, Any]], *, empty_message: str) -> None:
+    st.markdown(f"#### {title}")
+    if not items:
+        st.caption(empty_message)
+        return
+    lead = items[0]
+    st.image(lead["url"], caption=lead.get("label") or title, width="stretch")
+    if len(items) > 1:
+        cols = st.columns(2)
+        for index, item in enumerate(items[1:]):
+            with cols[index % 2]:
+                st.image(item["url"], caption=item.get("label") or title, width="stretch")
+
+
+def _render_document_links(title: str, items: list[dict[str, Any]], *, empty_message: str) -> None:
+    st.markdown(f"#### {title}")
+    if not items:
+        st.caption(empty_message)
+        return
+    for item in items:
+        label = str(item.get("label") or "Documento")
+        source = str(item.get("source") or "")
+        suffix = f" · {source}" if source else ""
+        st.markdown(f"- [{label}]({item['url']}){suffix}")
 
 
 def _mapping_to_dict(value: Any) -> dict[str, Any]:
@@ -208,6 +374,17 @@ def _load_venues() -> list[dict[str, Any]]:
         .execute()
     )
     records = [dict(record) for record in (response.data or [])]
+    names_by_id = {
+        str(record.get("id") or ""): str(record.get("name") or "")
+        for record in records
+    }
+    for record in records:
+        parent_id = str(record.get("parent_venue_id") or "").strip()
+        record["parent_venue_name"] = names_by_id.get(parent_id) if parent_id else None
+        scope = str(record.get("venue_scope") or "venue").strip().casefold()
+        record["venue_scope_label"] = (
+            "Ambiente interno" if scope == "subspace" else "Local principal"
+        )
 
     # Some historical schemas do not have archived_at. Filter only when the
     # field exists, and sort in Python so the query does not depend on columns
@@ -217,8 +394,33 @@ def _load_venues() -> list[dict[str, Any]]:
         for record in records
         if not record.get("archived_at")
     ]
+
+    by_id = {str(record.get("id") or ""): record for record in records}
+    children_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        scope = str(record.get("venue_scope") or "venue").strip().casefold()
+        parent_id = str(record.get("parent_venue_id") or "").strip()
+        if scope == "subspace" and parent_id and parent_id in by_id:
+            children_by_parent.setdefault(parent_id, []).append(record)
+
+    visible_records: list[dict[str, Any]] = []
+    for record in records:
+        venue_id = str(record.get("id") or "")
+        scope = str(record.get("venue_scope") or "venue").strip().casefold()
+        parent_id = str(record.get("parent_venue_id") or "").strip()
+        # Ambientes internos fazem parte da ficha do local principal e não
+        # aparecem como um segundo local na lista. Se o vínculo estiver órfão,
+        # o registro continua visível para não esconder informação da base.
+        if scope == "subspace" and parent_id and parent_id in by_id:
+            continue
+        record["_subspaces"] = sorted(
+            children_by_parent.get(venue_id, []),
+            key=lambda item: str(item.get("name") or "").casefold(),
+        )
+        visible_records.append(record)
+
     return sorted(
-        records,
+        visible_records,
         key=lambda record: str(record.get("name") or "").casefold(),
     )
 
@@ -253,6 +455,7 @@ def _media_index(
             {
                 "count": 0,
                 "has_image": False,
+                "has_photo": False,
                 "has_plan": False,
                 "cover_url": None,
             },
@@ -272,6 +475,13 @@ def _media_index(
             "technical_sheet",
         }
         summary["has_image"] = summary["has_image"] or is_image
+        # Foto válida para o indicador precisa estar explicitamente no acervo
+        # visual do local. Um PNG de mapa/planta ou imagem técnica não conta.
+        is_photo = bool(
+            asset_type in {"main_image", "gallery_image"}
+            or (bool(asset.get("is_primary")) and is_image and not is_plan)
+        )
+        summary["has_photo"] = summary["has_photo"] or is_photo
         summary["has_plan"] = summary["has_plan"] or is_plan
         if (
             not summary["cover_url"]
@@ -286,17 +496,46 @@ def _media_index(
     return index
 
 
+PHOTO_RAW_KEYS = (
+    "foto_url_aprovada",
+    "FOTO_URL_APROVADA",
+    "photo_url_approved",
+    "main_image",
+    "main_image_url",
+    "cover_image",
+    "cover_image_url",
+)
+
+
+def _usable_photo_url(value: Any) -> bool:
+    """Foto contabilizada precisa ser uma URL real, não um status ou página-fonte."""
+    text = str(value or "").strip()
+    if not _is_http_url(text):
+        return False
+    lowered = text.casefold()
+    blocked = (
+        ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xlsx", ".xls",
+        "drive.google.com/file", "docs.google.com",
+    )
+    return not any(token in lowered for token in blocked)
+
+
 def _has_photo(record: dict[str, Any], media: dict[str, Any]) -> bool:
-    if media.get("has_image"):
+    """Conta somente foto realmente utilizável pela NAVE.
+
+    ``source_image_url`` não é prova de foto: historicamente ele pode apontar
+    para imagem de página/slide/origem do documento. Também não basta existir
+    uma chave genérica com ``image`` no raw_data.
+    """
+    if media.get("has_photo"):
         return True
-    if str(record.get("source_image_url") or "").strip():
-        return True
+
     raw_data = _json_dict(record.get("raw_data"))
-    for key, value in raw_data.items():
-        key_text = str(key).casefold()
-        if any(term in key_text for term in ("foto", "photo", "image")):
-            if value:
-                return True
+    for key in PHOTO_RAW_KEYS:
+        if _usable_photo_url(record.get(key)):
+            return True
+        if _usable_photo_url(raw_data.get(key)):
+            return True
     return False
 
 
@@ -344,8 +583,16 @@ def _format_capacity(value: int | None) -> str:
     return f"{value:,}".replace(",", ".")
 
 
+def _city_filter_label(row: dict[str, Any]) -> str:
+    city = str(row.get("city") or "").strip()
+    state = str(row.get("state") or "").strip().upper()
+    if not city:
+        return ""
+    return f"{city} — {state}" if state else city
+
+
 def _record_search_text(record: dict[str, Any]) -> str:
-    fields = (
+    fields = [
         record.get("name"),
         record.get("venue_type"),
         record.get("description"),
@@ -354,7 +601,20 @@ def _record_search_text(record: dict[str, Any]) -> str:
         record.get("neighborhood"),
         record.get("address"),
         record.get("tags"),
-    )
+    ]
+    # Pesquisar pelo nome de um pavilhão/sala também deve encontrar o
+    # empreendimento principal que o contém.
+    for subspace in record.get("_subspaces") or []:
+        fields.extend(
+            [
+                subspace.get("name"),
+                subspace.get("subspace_name"),
+                subspace.get("venue_type"),
+                subspace.get("description"),
+                subspace.get("rooms_or_areas"),
+                subspace.get("tags"),
+            ]
+        )
     return " ".join(str(value or "") for value in fields).casefold()
 
 
@@ -405,50 +665,104 @@ def _save_manual_type(
     _load_venues.clear()
 
 
-def _safe_classification_batch(
-    records: list[dict[str, Any]],
-) -> tuple[int, int]:
-    client = _database_client()
-    updated = 0
-    unchanged = 0
+def _unresolved_type_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
+    """Gera a fila dos casos que realmente exigem pesquisa externa."""
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if normalize_venue_type(record.get("venue_type")):
+            continue
+        raw = _json_dict(record.get("raw_data"))
+        suggestion = venue_type_suggestion(record)
+        if suggestion and float(suggestion.get("confidence") or 0) >= 0.9:
+            continue
 
+        def first(*keys: str) -> str:
+            for key in keys:
+                value = record.get(key)
+                if value is None or not str(value).strip():
+                    value = raw.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+            return ""
+
+        rows.append({
+            "ID": str(record.get("id") or ""),
+            "Local": first("name", "LOCAL", "local"),
+            "Cidade": first("city", "cidade", "CIDADE"),
+            "UF": first("state", "estado", "ESTADO"),
+            "Site": first("site", "website", "SITE", "SITE_ORIGINAL"),
+            "Descrição": first("description", "DESCRICAO_NAVE", "descricao_nave"),
+            "Categoria original": first("category", "CATEGORIA", "TIPO_LOCAL_PADRONIZADO", "GRUPO_LOCAL"),
+            "Arquivo / origem": first("source_file", "document_name", "ARQUIVO_VISUAL", "ARQUIVO_VISUAL_PREVISTO"),
+            "Tipo atual": str(record.get("venue_type") or "").strip(),
+        })
+    return pd.DataFrame(rows)
+
+
+def _classification_plan(
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    plan: list[dict[str, Any]] = []
     for record in records:
         raw_data = _json_dict(record.get("raw_data"))
         classification = raw_data.get("venue_type_classification")
         if isinstance(classification, dict) and classification.get("manual"):
-            unchanged += 1
             continue
-
-        current = normalize_venue_type(record.get("venue_type"))
-        if current:
-            # Normalize only equivalent values. Never replace a valid type.
-            if str(record.get("venue_type") or "").strip() == current:
-                unchanged += 1
-                continue
-            suggested = current
-        else:
-            suggested = safe_type_from_record(record)
-
-        if not suggested:
-            unchanged += 1
+        if normalize_venue_type(record.get("venue_type")):
             continue
+        suggestion = venue_type_suggestion(record)
+        if not suggestion:
+            continue
+        confidence = float(suggestion.get("confidence") or 0)
+        if confidence < 0.9:
+            continue
+        plan.append(
+            {
+                "id": str(record.get("id") or ""),
+                "name": str(record.get("name") or "Sem nome"),
+                "current": str(record.get("venue_type") or ""),
+                "suggested": str(suggestion.get("label") or ""),
+                "confidence": confidence,
+                "source": str(suggestion.get("source") or ""),
+                "evidence": str(suggestion.get("evidence") or ""),
+            }
+        )
+    return plan
 
-        if not raw_data.get("venue_type_original"):
-            original = str(record.get("venue_type") or "").strip()
-            if original:
-                raw_data["venue_type_original"] = original
+
+def _safe_classification_batch(
+    records: list[dict[str, Any]],
+) -> tuple[int, int]:
+    client = _database_client()
+    plan = _classification_plan(records)
+    by_id = {
+        str(record.get("id") or ""): record
+        for record in records
+    }
+    updated = 0
+
+    for item in plan:
+        record = by_id.get(str(item.get("id") or ""))
+        if not record:
+            continue
+        raw_data = _json_dict(record.get("raw_data"))
+        original = str(record.get("venue_type") or "").strip()
+        if original and not raw_data.get("venue_type_original"):
+            raw_data["venue_type_original"] = original
         raw_data["venue_type_classification"] = {
-            "source": "safe_exact_alias",
+            "source": item.get("source") or "smart_safe_backfill",
             "manual": False,
-            "current_value": suggested,
+            "confidence": item.get("confidence"),
+            "evidence": item.get("evidence"),
+            "previous_value": original or None,
+            "current_value": item.get("suggested"),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-
         (
             client.table("venues")
             .update(
                 {
-                    "venue_type": suggested,
+                    "venue_type": item.get("suggested"),
                     "raw_data": raw_data,
                 }
             )
@@ -458,7 +772,226 @@ def _safe_classification_batch(
         updated += 1
 
     _load_venues.clear()
+    unchanged = max(0, len(records) - updated)
     return updated, unchanged
+
+
+UPLOAD_ASSET_TYPES = [
+    "main_image",
+    "gallery_image",
+    "floor_plan",
+    "elevation",
+    "access_map",
+    "technical_sheet",
+    "commercial_book",
+    "presentation",
+    "other",
+]
+LINK_ASSET_TYPES = [
+    "video",
+    "external_link",
+    "commercial_book",
+    "presentation",
+    "other",
+]
+
+
+def _render_add_material(
+    record: dict[str, Any],
+    *,
+    key_prefix: str,
+) -> None:
+    entity_id = str(record.get("id") or "")
+    item_name = str(record.get("name") or "Local")
+    client = _database_client()
+
+    with st.expander(
+        "Adicionar imagens, plantas ou documentos",
+        expanded=False,
+    ):
+        upload_tab, link_tab = st.tabs(
+            ["Enviar arquivos", "Adicionar link"]
+        )
+
+        with upload_tab:
+            asset_type = st.selectbox(
+                "Tipo de material",
+                options=UPLOAD_ASSET_TYPES,
+                format_func=lambda value: MEDIA_ASSET_TYPE_LABELS.get(
+                    value,
+                    value,
+                ),
+                key=f"{key_prefix}_asset_type_{entity_id}",
+            )
+            title = st.text_input(
+                "Título",
+                placeholder=(
+                    "Ex.: Foto do salão principal, planta do térreo "
+                    "ou ficha técnica"
+                ),
+                key=f"{key_prefix}_asset_title_{entity_id}",
+            )
+            description = st.text_area(
+                "Descrição ou observação",
+                key=f"{key_prefix}_asset_description_{entity_id}",
+            )
+            uploaded_assets = st.file_uploader(
+                "Arquivos",
+                type=[
+                    "jpg",
+                    "jpeg",
+                    "png",
+                    "webp",
+                    "gif",
+                    "pdf",
+                    "docx",
+                    "pptx",
+                    "xlsx",
+                ],
+                accept_multiple_files=True,
+                key=f"{key_prefix}_asset_files_{entity_id}",
+            )
+            st.caption(
+                "Formatos aceitos: JPG, PNG, WEBP, GIF, PDF, DOCX, "
+                "PPTX e XLSX. Limite de 50 MB por arquivo."
+            )
+
+            if asset_type in IMAGE_ASSET_TYPES:
+                primary_choice = st.radio(
+                    "Definir a primeira imagem como capa do local?",
+                    options=["Não", "Sim"],
+                    index=1 if asset_type == "main_image" else 0,
+                    horizontal=True,
+                    key=f"{key_prefix}_asset_primary_{entity_id}_{asset_type}",
+                )
+                is_primary = primary_choice == "Sim"
+            else:
+                is_primary = False
+
+            if st.button(
+                "Adicionar ao acervo do local",
+                type="primary",
+                width="stretch",
+                key=f"{key_prefix}_asset_upload_{entity_id}",
+            ):
+                if not uploaded_assets:
+                    st.warning("Selecione ao menos um arquivo.")
+                else:
+                    try:
+                        for index, uploaded in enumerate(uploaded_assets):
+                            item_title = title.strip() or uploaded.name
+                            if len(uploaded_assets) > 1:
+                                item_title = f"{item_title} {index + 1}"
+                            upload_media_asset(
+                                client,
+                                entity_type="venue",
+                                entity_id=entity_id,
+                                asset_type=asset_type,
+                                title=item_title,
+                                description=description,
+                                file_name=uploaded.name,
+                                file_bytes=uploaded.getvalue(),
+                                mime_type=uploaded.type,
+                                is_primary=bool(is_primary) and index == 0,
+                            )
+                        _load_media.clear()
+                        st.success(
+                            f"Material adicionado ao acervo de {item_name}."
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível adicionar o material.")
+                        with st.expander("Detalhes técnicos"):
+                            st.code(f"{type(exc).__name__}: {exc}")
+
+        with link_tab:
+            link_type = st.selectbox(
+                "Tipo de link",
+                options=LINK_ASSET_TYPES,
+                format_func=lambda value: MEDIA_ASSET_TYPE_LABELS.get(
+                    value,
+                    value,
+                ),
+                key=f"{key_prefix}_link_type_{entity_id}",
+            )
+            link_title = st.text_input(
+                "Título do link",
+                placeholder="Ex.: Tour virtual, vídeo ou book comercial",
+                key=f"{key_prefix}_link_title_{entity_id}",
+            )
+            external_url = st.text_input(
+                "Endereço",
+                placeholder="https://...",
+                key=f"{key_prefix}_link_url_{entity_id}",
+            )
+            link_description = st.text_area(
+                "Descrição",
+                key=f"{key_prefix}_link_description_{entity_id}",
+            )
+            if st.button(
+                "Adicionar link ao acervo",
+                type="primary",
+                width="stretch",
+                key=f"{key_prefix}_link_add_{entity_id}",
+            ):
+                if not external_url.strip().startswith(("http://", "https://")):
+                    st.warning(
+                        "Informe um endereço válido começando com http:// "
+                        "ou https://."
+                    )
+                else:
+                    try:
+                        add_external_media_link(
+                            client,
+                            entity_type="venue",
+                            entity_id=entity_id,
+                            asset_type=link_type,
+                            title=link_title.strip() or "Link externo",
+                            external_url=external_url,
+                            description=link_description,
+                        )
+                        _load_media.clear()
+                        st.success("Link adicionado ao acervo do local.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível adicionar o link.")
+                        with st.expander("Detalhes técnicos"):
+                            st.code(f"{type(exc).__name__}: {exc}")
+
+
+def _render_full_edit_action(record: dict[str, Any]) -> None:
+    entity_id = str(record.get("id") or "")
+    state_key = f"venue_full_edit_open_{entity_id}"
+    button_label = (
+        "Fechar edição"
+        if st.session_state.get(state_key)
+        else "Editar ficha completa"
+    )
+    if st.button(
+        button_label,
+        type="secondary",
+        width="content",
+        key=f"venue_full_edit_button_{entity_id}",
+    ):
+        st.session_state[state_key] = not bool(
+            st.session_state.get(state_key)
+        )
+        st.rerun()
+
+    if st.session_state.get(state_key):
+        try:
+            supplier_options = fetch_supplier_options(_database_client())
+        except Exception:
+            supplier_options = {}
+        render_curation_editor(
+            _database_client(),
+            entity_type="venue",
+            entity_id=entity_id,
+            record=record,
+            supplier_options=supplier_options,
+            title="Editar ficha completa",
+            expanded=True,
+        )
 
 
 page_header(
@@ -501,7 +1034,62 @@ metric_cols = st.columns(4)
 metric_cols[0].metric("Locais", total)
 metric_cols[1].metric("Com tipo definido", typed)
 metric_cols[2].metric("Tipo não definido", undefined)
-metric_cols[3].metric("Com foto", with_photo)
+metric_cols[3].metric("Locais com foto", with_photo)
+
+classification_plan = _classification_plan(venues)
+if undefined and classification_plan:
+    with st.expander(
+        f"A NAVE encontrou {len(classification_plan)} tipo(s) que podem ser recuperados com segurança",
+        expanded=True,
+    ):
+        unresolved_after_plan = max(0, undefined - len(classification_plan))
+        st.caption(
+            "A classificação usa primeiro a categoria/tags preservadas no upload e "
+            "o volume visual de origem. Nome e descrição só entram quando o termo "
+            "é inequívoco. Nenhuma classificação manual é substituída."
+        )
+        plan_cols = st.columns(3)
+        plan_cols[0].metric("Sem tipo agora", undefined)
+        plan_cols[1].metric("Correções seguras", len(classification_plan))
+        plan_cols[2].metric("Ainda para revisão", unresolved_after_plan)
+        if st.button(
+            "Aplicar classificações seguras agora",
+            type="primary",
+            key="safe_venue_type_batch_top",
+        ):
+            try:
+                with st.spinner("Atualizando os tipos seguros..."):
+                    updated, unchanged = _safe_classification_batch(venues)
+                st.success(
+                    f"{updated} registro(s) classificados. "
+                    f"{unchanged} mantido(s) sem alteração."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error("Não foi possível concluir a classificação segura.")
+                with st.expander("Detalhes técnicos"):
+                    st.code(str(exc))
+
+# O que sobra após o backfill seguro é a fila real de pesquisa externa.
+residual_df = _unresolved_type_dataframe(venues)
+if not residual_df.empty:
+    with st.expander(
+        f"{len(residual_df)} local(is) ainda precisam de pesquisa complementar",
+        expanded=False,
+    ):
+        st.caption(
+            "A NAVE não encontrou evidência local suficiente para classificar "
+            "esses registros sem risco de erro. Baixe a lista para pesquisa "
+            "externa e enriquecimento em lote."
+        )
+        st.dataframe(residual_df, hide_index=True, width="stretch")
+        st.download_button(
+            "Baixar pendentes de tipologia (CSV)",
+            data=residual_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="NAVE_LOCAIS_PENDENTES_TIPOLOGIA.csv",
+            mime="text/csv",
+            width="stretch",
+        )
 
 st.markdown("### Encontrar um local")
 filter_cols = st.columns([2.2, 1.8, 1.2, 1.2])
@@ -517,15 +1105,17 @@ with filter_cols[1]:
         index=0,
     )
 with filter_cols[2]:
-    selected_state = st.selectbox(
-        "Estado",
-        options=["Todos"] + sorted(
-            {
-                str(row.get("state") or "").strip()
-                for row in venues
-                if str(row.get("state") or "").strip()
-            }
-        ),
+    city_options = sorted(
+        {
+            _city_filter_label(row)
+            for row in venues
+            if _city_filter_label(row)
+        },
+        key=lambda value: str(value).casefold(),
+    )
+    selected_city = st.selectbox(
+        "Cidade",
+        options=["Todas", *city_options],
     )
 with filter_cols[3]:
     selected_media = st.selectbox(
@@ -546,11 +1136,11 @@ if search:
         for row in filtered
         if search in _record_search_text(row)
     ]
-if selected_state != "Todos":
+if selected_city != "Todas":
     filtered = [
         row
         for row in filtered
-        if str(row.get("state") or "").strip() == selected_state
+        if _city_filter_label(row) == selected_city
     ]
 if selected_media != "Todos":
     selected_rows = []
@@ -590,6 +1180,7 @@ for row in filtered:
             "Local": str(row.get("name") or "Sem nome"),
             "Tipo": label,
             "Grupo": venue_group(row.get("venue_type")),
+            "Ambientes": len(row.get("_subspaces") or []),
             "Cidade": str(row.get("city") or "Não informado"),
             "Estado": str(row.get("state") or ""),
             "Capacidade": _format_capacity(_capacity(row)),
@@ -598,7 +1189,27 @@ for row in filtered:
         }
     )
 
-table_df = pd.DataFrame(table_rows)
+table_df = pd.DataFrame(table_rows).reset_index(drop=True)
+
+# A chave muda quando filtros ou linhas visíveis mudam. Isso impede que
+# uma seleção da tabela anterior seja reaproveitada na tabela atual.
+table_signature_payload = "\x1f".join(
+    [
+        str(search),
+        str(selected_type),
+        str(selected_city),
+        str(selected_media),
+        *(
+            table_df["_id"].astype(str).tolist()
+            if "_id" in table_df.columns
+            else []
+        ),
+    ]
+)
+table_signature = hashlib.sha256(
+    table_signature_payload.encode("utf-8")
+).hexdigest()[:16]
+
 if table_df.empty:
     st.info("Nenhum local corresponde aos filtros selecionados.")
     selected_record = None
@@ -610,7 +1221,7 @@ else:
         height=min(620, 86 + len(table_df) * 36),
         on_select="rerun",
         selection_mode="single-row",
-        key="nave_venue_type_table",
+        key=f"nave_venue_type_table_{table_signature}",
         column_config={
             "Capa": st.column_config.ImageColumn(
                 "Capa",
@@ -620,6 +1231,11 @@ else:
             "Local": st.column_config.TextColumn("Local", width="large"),
             "Tipo": st.column_config.TextColumn("Tipo", width="medium"),
             "Grupo": st.column_config.TextColumn("Grupo", width="medium"),
+            "Ambientes": st.column_config.NumberColumn(
+                "Ambientes",
+                width="small",
+                help="Quantidade de pavilhões, salas ou outros ambientes internos vinculados ao local.",
+            ),
             "Cidade": st.column_config.TextColumn("Cidade", width="medium"),
             "Estado": st.column_config.TextColumn("UF", width="small"),
             "Capacidade": st.column_config.TextColumn(
@@ -631,18 +1247,35 @@ else:
         },
     )
 
-    selected_rows = event.selection.rows if event else []
+    selected_rows = []
+    if event:
+        try:
+            selected_rows = list(event.selection.rows or [])
+        except (AttributeError, TypeError):
+            selected_rows = []
+
     selected_record = None
     if selected_rows:
-        selected_id = str(table_df.iloc[selected_rows[0]]["_id"])
-        selected_record = next(
-            (
-                row
-                for row in venues
-                if str(row.get("id") or "") == selected_id
-            ),
-            None,
-        )
+        try:
+            selected_position = int(selected_rows[0])
+        except (TypeError, ValueError):
+            selected_position = -1
+
+        # A seleção armazenada pelo Streamlit pode se referir à tabela
+        # anterior. Só acessamos o DataFrame se a posição ainda existir.
+        if 0 <= selected_position < len(table_df):
+            selected_id = str(
+                table_df.iloc[selected_position].get("_id") or ""
+            ).strip()
+            if selected_id:
+                selected_record = next(
+                    (
+                        row
+                        for row in venues
+                        if str(row.get("id") or "") == selected_id
+                    ),
+                    None,
+                )
 
 if selected_record:
     st.divider()
@@ -696,27 +1329,94 @@ if selected_record:
                 with st.expander("Detalhes técnicos"):
                     st.code(str(exc))
 
-    render_complete_record("venue", selected_record)
-else:
-    st.info("Selecione um local na tabela para abrir a ficha completa.")
-
-with st.expander("Classificar registros existentes com correspondência segura"):
-    st.write(
-        "A NAVE analisa somente campos explícitos de categoria e aplica um "
-        "tipo quando encontra uma correspondência exata. Nome e descrição "
-        "não são usados para adivinhar. Registros ambíguos permanecem como "
-        "Tipo não definido. Classificações manuais não são substituídas."
-    )
-    if st.button("Aplicar classificação segura", key="safe_venue_type_batch"):
-        try:
-            with st.spinner("Classificando os registros seguros..."):
-                updated, unchanged = _safe_classification_batch(venues)
-            st.success(
-                f"{updated} registro(s) classificados. "
-                f"{unchanged} mantido(s) sem alteração."
+    subspaces = list(selected_record.get("_subspaces") or [])
+    if subspaces:
+        st.markdown("### Ambientes e subespaços")
+        st.caption(
+            "Pavilhões, salas e outros ambientes pertencem a este local e "
+            "não aparecem como locais independentes na lista principal."
+        )
+        for index, subspace in enumerate(subspaces, start=1):
+            subspace_name = str(
+                subspace.get("subspace_name")
+                or subspace.get("name")
+                or f"Ambiente {index}"
             )
-            st.rerun()
-        except Exception as exc:
-            st.error("Não foi possível concluir a classificação segura.")
-            with st.expander("Detalhes técnicos"):
-                st.code(str(exc))
+            subspace_type = display_venue_type(subspace.get("venue_type"))
+            label_suffix = (
+                f" · {subspace_type}"
+                if subspace_type and subspace_type != UNDEFINED_VENUE_TYPE
+                else ""
+            )
+            with st.expander(f"{subspace_name}{label_suffix}", expanded=False):
+                render_complete_record("venue", subspace)
+                sub_gallery = _build_record_gallery(subspace, media_rows)
+                if sub_gallery["images"]:
+                    st.markdown("#### Imagens deste ambiente")
+                    cols = st.columns(min(2, len(sub_gallery["images"])))
+                    for image_index, item in enumerate(sub_gallery["images"][:4]):
+                        with cols[image_index % len(cols)]:
+                            st.image(
+                                item["url"],
+                                caption=item.get("label") or subspace_name,
+                                width="stretch",
+                            )
+
+    gallery = _build_record_gallery(selected_record, media_rows)
+    visual_count = len(gallery["images"])
+    plan_count = len(gallery["plans"])
+    document_count = len(gallery["documents"])
+
+    st.markdown("### Conteúdos do local")
+    info_cols = st.columns(3)
+    info_cols[0].metric("Imagens", visual_count)
+    info_cols[1].metric("Plantas e mapas", plan_count)
+    info_cols[2].metric("Documentos", document_count)
+
+    details_tab, gallery_tab, docs_tab = st.tabs(
+        [
+            "Ficha completa",
+            "Galeria visual",
+            "Plantas e documentos",
+        ]
+    )
+    with details_tab:
+        _render_full_edit_action(selected_record)
+        render_complete_record("venue", selected_record)
+    with gallery_tab:
+        _render_add_material(selected_record, key_prefix="gallery")
+        _render_visual_gallery(
+            "Galeria de imagens",
+            gallery["images"],
+            empty_message=(
+                "Nenhuma imagem pública foi encontrada para este local ainda."
+            ),
+        )
+        st.markdown("---")
+        _render_visual_gallery(
+            "Plantas, mapas e peças técnicas em imagem",
+            gallery["plans"],
+            empty_message=(
+                "Nenhuma planta ou mapa em formato de imagem foi associado até o momento."
+            ),
+        )
+    with docs_tab:
+        _render_add_material(selected_record, key_prefix="documents")
+        _render_document_links(
+            "Documentos associados",
+            gallery["documents"],
+            empty_message=(
+                "Nenhum documento associado foi localizado para este local."
+            ),
+        )
+        if selected_record.get("source_file"):
+            st.markdown("#### Origem do cadastro")
+            st.markdown(
+                f"- Arquivo de origem: **{selected_record.get('source_file')}**"
+            )
+            if selected_record.get("source_page") not in (None, ""):
+                st.markdown(
+                    f"- Página de origem: **{selected_record.get('source_page')}**"
+                )
+else:
+    st.info("Selecione um local na tabela para abrir a ficha completa, a galeria visual e os documentos associados.")
