@@ -1038,22 +1038,30 @@ def _projects_section(projects: list[dict], styles: dict[str, ParagraphStyle], f
 
 
 def _logo_flowable(max_w: float = 54 * mm, max_h: float = 20 * mm) -> Image | None:
-    """Renderiza o lockup oficial já existente em assets/nave_lockup.svg.
+    """Usa o lockup oficial fornecido pelo usuário, sem reconstruir a marca.
 
-    PyMuPDF já faz parte do ambiente da NAVE. Se o SVG não estiver disponível
-    ou não puder ser rasterizado, a capa mantém um fallback tipográfico.
+    O PNG é a referência visual canônica do PDF. O SVG antigo permanece apenas
+    como fallback de compatibilidade para instalações que ainda não receberam
+    o novo asset.
     """
-    logo_path = Path(__file__).resolve().parent / "assets" / "nave_lockup.svg"
-    if not logo_path.exists():
+    asset_dir = Path(__file__).resolve().parent / "assets"
+    png_path = asset_dir / "nave_lockup.png"
+    if png_path.exists():
+        try:
+            return _image_flowable(png_path.read_bytes(), max_w, max_h)
+        except Exception:
+            pass
+
+    svg_path = asset_dir / "nave_lockup.svg"
+    if not svg_path.exists():
         return None
     try:
         import pymupdf
 
-        svg_doc = pymupdf.open(str(logo_path))
+        svg_doc = pymupdf.open(str(svg_path))
         page = svg_doc[0]
         pix = page.get_pixmap(matrix=pymupdf.Matrix(2.4, 2.4), alpha=True)
-        png = pix.tobytes("png")
-        return _image_flowable(png, max_w, max_h)
+        return _image_flowable(pix.tobytes("png"), max_w, max_h)
     except Exception:
         return None
 
