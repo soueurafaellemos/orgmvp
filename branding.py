@@ -303,6 +303,7 @@ def render_sidebar() -> None:
 
         st.page_link("streamlit_app.py", label="Home")
         st.page_link("pages/1_Organizar_Conhecimento.py", label="Upload de Conhecimento")
+        st.page_link("pages/14_Importar_Projeto.py", label="Importar projeto completo")
         st.page_link("pages/2_Consultar_Base.py", label="Base de Conhecimento")
         st.page_link("pages/12_Ativacoes.py", label="Ativações")
         st.page_link("pages/13_Brindes.py", label="Brindes")
