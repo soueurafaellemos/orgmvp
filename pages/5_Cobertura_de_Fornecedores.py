@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import unicodedata
 from typing import Any
 
 import pandas as pd
@@ -15,7 +16,6 @@ from knowledge_specialized import (
 )
 from nave_data_client import enforce_existing_app_access, get_nave_client
 from nave_table_utils import clean_cover_value
-from supplier_visibility import is_visible_supplier
 
 
 st.set_page_config(page_title="Fornecedores | NAVE by VOE", page_icon=NAVE_APP_ICON, layout="wide")
@@ -24,7 +24,7 @@ apply_nave_branding()
 
 
 def _rows(response: Any) -> list[dict]:
-    return list(getattr(response, "data", None) or [])
+    return [dict(row) for row in (getattr(response, "data", None) or []) if isinstance(row, dict)]
 
 
 def _count_by(rows: list[dict], field: str) -> dict[str, int]:
@@ -34,6 +34,58 @@ def _count_by(rows: list[dict], field: str) -> dict[str, int]:
         if value:
             result[value] = result.get(value, 0) + 1
     return result
+
+
+def _normalized(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return " ".join(text.casefold().replace("/", " ").replace("_", " ").split())
+
+
+def _is_venue_only_import(row: dict) -> bool:
+    """Diferencia um local importado de um fornecedor reconhecido no upload."""
+    classification = row.get("classification")
+    if not isinstance(classification, dict):
+        classification = {}
+
+    contains_products = classification.get("contains_products") is True
+    contains_activations = classification.get("contains_services_or_activations") is True
+    contains_venues = classification.get("contains_venues_or_spaces") is True
+    mode = _normalized(classification.get("suggested_mode"))
+    destination = _normalized(row.get("destination_base"))
+    document_type = _normalized(row.get("document_type"))
+
+    if contains_products or contains_activations:
+        return False
+    if contains_venues:
+        return True
+    venue_signal = any(
+        token in f"{mode} {destination} {document_type}"
+        for token in ("venue", "local", "locais", "espaco", "espacos")
+    )
+    supplier_signal = any(
+        token in f"{mode} {destination} {document_type}"
+        for token in ("fornecedor", "supplier", "produto", "brinde", "ativacao", "solucao")
+    )
+    return venue_signal and not supplier_signal
+
+
+def _recognized_supplier_ids(
+    products: list[dict],
+    activations: list[dict],
+    imports: list[dict],
+) -> set[str]:
+    """Mostra somente fornecedores efetivamente reconhecidos em uploads da NAVE."""
+    recognized = {
+        str(row.get("supplier_id"))
+        for row in [*products, *activations]
+        if row.get("supplier_id")
+    }
+    for row in imports:
+        supplier_id = str(row.get("supplier_id") or "")
+        if supplier_id and not _is_venue_only_import(row):
+            recognized.add(supplier_id)
+    return recognized
 
 
 def _coverage_level(row: dict) -> str:
@@ -47,17 +99,50 @@ def _coverage_level(row: dict) -> str:
 
 
 def _base_label(row: dict) -> str:
-    return ", ".join(str(row.get(field) or "").strip() for field in ("base_city", "base_state") if str(row.get(field) or "").strip())
+    return ", ".join(
+        str(row.get(field) or "").strip()
+        for field in ("base_city", "base_state")
+        if str(row.get(field) or "").strip()
+    )
 
 
 def _load_suppliers(client: Any) -> list[dict]:
     suppliers = _rows(client.table("suppliers").select("*").order("name").limit(4000).execute())
-    products = _rows(client.table("products").select("supplier_id").limit(10000).execute())
-    activations = _rows(client.table("activation_solutions").select("supplier_id").limit(10000).execute())
+    products = _rows(
+        client.table("products")
+        .select("id,supplier_id,name,source_image_url,raw_data")
+        .limit(10000).execute()
+    )
+    activations = _rows(
+        client.table("activation_solutions")
+        .select("id,supplier_id,name,source_image_url,raw_data")
+        .limit(10000).execute()
+    )
     venues = _rows(client.table("venues").select("id,name,operator_id").limit(10000).execute())
+    try:
+        imports = _rows(
+            client.table("imports")
+            .select("supplier_id,destination_base,document_type,classification")
+            .limit(10000).execute()
+        )
+    except Exception:
+        imports = []
 
+    recognized_ids = _recognized_supplier_ids(products, activations, imports)
     product_counts = _count_by(products, "supplier_id")
     activation_counts = _count_by(activations, "supplier_id")
+
+    first_product: dict[str, dict] = {}
+    for row in products:
+        supplier_id = str(row.get("supplier_id") or "")
+        if supplier_id and supplier_id not in first_product:
+            first_product[supplier_id] = row
+    first_activation: dict[str, dict] = {}
+    for row in activations:
+        supplier_id = str(row.get("supplier_id") or "")
+        if supplier_id and supplier_id not in first_activation:
+            first_activation[supplier_id] = row
+
     venue_names: dict[str, list[str]] = {}
     for venue in venues:
         operator_id = str(venue.get("operator_id") or "")
@@ -67,22 +152,21 @@ def _load_suppliers(client: Any) -> list[dict]:
     result = []
     for supplier in suppliers:
         supplier_id = str(supplier.get("id") or "")
-        linked_names = venue_names.get(supplier_id, [])
-        products_count = product_counts.get(supplier_id, 0)
-        activations_count = activation_counts.get(supplier_id, 0)
-        if not is_visible_supplier(
-            supplier,
-            linked_venue_names=linked_names,
-            products_count=products_count,
-            activations_count=activations_count,
-        ):
+        # Regra definitiva: existir tecnicamente em suppliers ou operar um local não basta.
+        # O cadastro precisa ter sido reconhecido como fornecedor em um upload, ou aparecer
+        # vinculado a produto/ativação extraídos do repertório.
+        if not supplier_id or supplier_id not in recognized_ids:
             continue
+
+        linked_names = venue_names.get(supplier_id, [])
         item = dict(supplier)
-        item["products_count"] = products_count
-        item["activations_count"] = activations_count
+        item["products_count"] = product_counts.get(supplier_id, 0)
+        item["activations_count"] = activation_counts.get(supplier_id, 0)
         item["venues_count"] = len(linked_names)
         item["linked_venue_names"] = linked_names
         item["coverage_level"] = _coverage_level(item)
+        item["_representative_product"] = first_product.get(supplier_id)
+        item["_representative_activation"] = first_activation.get(supplier_id)
         result.append(item)
     return result
 
@@ -94,7 +178,7 @@ def _table_key(page: int, rows: list[dict]) -> str:
 
 page_header(
     "Fornecedores",
-    "Base de parceiros da NAVE. Locais podem ter um fornecedor/operador relacionado, mas um local não se transforma em fornecedor.",
+    "Base de parceiros reconhecidos nos uploads da NAVE. Um local pode ter um fornecedor/operador relacionado, mas o local nunca entra nesta lista apenas por existir em Locais e espaços.",
 )
 client = get_nave_client()
 try:
@@ -139,18 +223,20 @@ for row in suppliers:
 
 st.caption(f"{len(filtered)} fornecedor(es) encontrado(s)")
 pages = max(1, math.ceil(len(filtered) / page_size))
-page_key = "suppliers_page_v28032"
+page_key = "suppliers_page_v28034"
 page = max(1, min(int(st.session_state.get(page_key, 1) or 1), pages))
 st.session_state[page_key] = page
 prev_col, info_col, next_col = st.columns([1, 4, 1])
 with prev_col:
     if st.button("← Anterior", disabled=page <= 1, width="stretch", key="supplier_prev"):
-        st.session_state[page_key] = page - 1; st.rerun()
+        st.session_state[page_key] = page - 1
+        st.rerun()
 with info_col:
     st.caption(f"Página {page} de {pages}")
 with next_col:
     if st.button("Próxima →", disabled=page >= pages, width="stretch", key="supplier_next"):
-        st.session_state[page_key] = page + 1; st.rerun()
+        st.session_state[page_key] = page + 1
+        st.rerun()
 
 start = (page - 1) * page_size
 visible = filtered[start:start + page_size]
@@ -158,15 +244,49 @@ if not visible:
     st.info("Nenhum fornecedor encontrado com estes filtros.")
     st.stop()
 
-media = fetch_media_assets_batch(client, "supplier", [str(row.get("id") or "") for row in visible])
+supplier_ids = [str(row.get("id") or "") for row in visible]
+supplier_media = fetch_media_assets_batch(client, "supplier", supplier_ids)
+product_ids = [
+    str((row.get("_representative_product") or {}).get("id") or "")
+    for row in visible
+]
+activation_ids = [
+    str((row.get("_representative_activation") or {}).get("id") or "")
+    for row in visible
+]
+product_media = fetch_media_assets_batch(client, "product", product_ids)
+activation_media = fetch_media_assets_batch(client, "activation", activation_ids)
+
 table_rows = []
 for row in visible:
     supplier_id = str(row.get("id") or "")
+    cover = None
     try:
-        cover = primary_image_url(client, "supplier", row, media.get(supplier_id, [])) or ""
+        cover = primary_image_url(client, "supplier", row, supplier_media.get(supplier_id, []))
     except Exception:
-        cover = ""
+        cover = None
+
+    # Se o fornecedor não tiver logo/capa própria, usa uma imagem validada do seu
+    # repertório apenas como capa representativa da lista.
+    if not cover:
+        representative = row.get("_representative_product") or {}
+        rep_id = str(representative.get("id") or "")
+        if rep_id:
+            try:
+                cover = primary_image_url(client, "product", representative, product_media.get(rep_id, []))
+            except Exception:
+                cover = None
+    if not cover:
+        representative = row.get("_representative_activation") or {}
+        rep_id = str(representative.get("id") or "")
+        if rep_id:
+            try:
+                cover = primary_image_url(client, "activation", representative, activation_media.get(rep_id, []))
+            except Exception:
+                cover = None
+
     table_rows.append({
+        "_id": supplier_id,
         "Capa": clean_cover_value(cover),
         "Fornecedor": str(row.get("name") or ""),
         "Cobertura": str(row.get("coverage_level") or ""),
@@ -185,7 +305,10 @@ event = st.dataframe(
     on_select="rerun",
     selection_mode="single-row",
     key=_table_key(page, visible),
-    column_config={"Capa": st.column_config.ImageColumn("Capa", width="small")},
+    column_config={
+        "_id": None,
+        "Capa": st.column_config.ImageColumn("Capa", width="small"),
+    },
 )
 selected_rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
 if not selected_rows:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import escape
 from typing import Any
+from urllib.parse import quote_plus
 import unicodedata
 
 import pandas as pd
@@ -59,7 +60,8 @@ MONEY_FIELDS = {"unit_price", "price_min", "price_max", "base_price", "default_t
 INTEGER_FIELDS = {"document_year", "price_reference_qty", "min_order_qty", "lead_time_days", "standing_capacity", "seated_capacity", "auditorium_capacity", "travel_lead_days", "products_count", "activations_count", "venues_count"}
 DECIMAL_SUFFIXES = {"capacity_ml": " ml", "total_area_sqm": " m²", "indoor_area_sqm": " m²", "outdoor_area_sqm": " m²", "ceiling_height_m": " m", "discount_percent": "%"}
 BOOLEAN_FIELDS = {"customizable", "staff_included", "serves_nationally", "has_local_teams", "equipment_transport_required", "accommodation_required"}
-URL_FIELDS = {"source_image_url", "map_url", "website_url"}
+URL_FIELDS = {"source_image_url", "map_url", "website_url", "instagram_url", "linkedin_url"}
+ADDRESS_FIELDS = {"address"}
 
 MISSING_SENTINELS = {
     "nao informado", "n a", "na", "none", "null", "sem informacao",
@@ -176,15 +178,42 @@ def _format_value(field: str, value: Any, record: dict) -> tuple[str, bool, bool
     return text, False, field in URL_FIELDS and text.startswith(("http://", "https://"))
 
 
-def _field_card(label: str, value: str, *, missing: bool, is_url: bool) -> str:
+def _field_card(
+    label: str,
+    value: str,
+    *,
+    missing: bool,
+    is_url: bool,
+    field: str | None = None,
+) -> str:
     if missing:
         return ""
-    if is_url:
-        value_html = f'<a href="{escape(value)}" target="_blank" rel="noopener noreferrer">Abrir link</a>'
+    if field in ADDRESS_FIELDS:
+        href = "https://www.google.com/maps/search/?api=1&query=" + quote_plus(value)
+        value_html = (
+            f'<a href="{escape(href, quote=True)}" target="_blank" '
+            f'rel="noopener noreferrer">{escape(value)}</a>'
+        )
+    elif is_url:
+        link_label = {
+            "website_url": "Abrir site",
+            "map_url": "Abrir mapa",
+            "instagram_url": "Abrir Instagram",
+            "linkedin_url": "Abrir LinkedIn",
+            "source_image_url": "Abrir imagem",
+        }.get(field or "", "Abrir link")
+        value_html = (
+            f'<a href="{escape(value, quote=True)}" target="_blank" '
+            f'rel="noopener noreferrer">{escape(link_label)}</a>'
+        )
     else:
         value_html = escape(value).replace("\n", "<br>")
-    return f'''<div class="nave-field-card"><div class="nave-field-label">{escape(label)}</div><div class="nave-field-value">{value_html}</div></div>'''
-
+    return (
+        f'<div class="nave-field-card">'
+        f'<div class="nave-field-label">{escape(label)}</div>'
+        f'<div class="nave-field-value">{value_html}</div>'
+        f'</div>'
+    )
 
 def _render_fields(fields: list[tuple[str, str]], record: dict) -> None:
     fields = visible_fields(fields, record)
@@ -197,11 +226,11 @@ def _render_fields(fields: list[tuple[str, str]], record: dict) -> None:
             value, missing, is_url = _format_value(field, record_value(record, field), record)
             if not missing:
                 with column:
-                    st.markdown(_field_card(label, value, missing=False, is_url=is_url), unsafe_allow_html=True)
+                    st.markdown(_field_card(label, value, missing=False, is_url=is_url, field=field), unsafe_allow_html=True)
     for field, label in wide:
         value, missing, is_url = _format_value(field, record_value(record, field), record)
         if not missing:
-            st.markdown(_field_card(label, value, missing=False, is_url=is_url), unsafe_allow_html=True)
+            st.markdown(_field_card(label, value, missing=False, is_url=is_url, field=field), unsafe_allow_html=True)
 
 
 def _known_fields(entity_type: str) -> set[str]:

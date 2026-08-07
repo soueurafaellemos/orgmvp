@@ -5,6 +5,7 @@ import json
 import math
 from html import escape
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
@@ -190,14 +191,77 @@ def _valid_http_url(value: Any) -> str | None:
     return None
 
 
-def _fallback_image(record: dict) -> str | None:
-    """Somente recorte explicitamente associado; nunca slide/página inteira."""
+def _looks_like_external_photo(url: str) -> bool:
+    """Aceita foto pública de local, mas evita páginas renderizadas do acervo técnico."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.netloc or "").casefold()
+    path = (parsed.path or "").casefold()
+    query = (parsed.query or "").casefold()
+    if not host:
+        return False
+    if "supabase" in host or "streamlit" in host:
+        return False
+    blocked = ("rendered_page", "rendered-pages", "/pages/", "slide_render", "page_render")
+    if any(token in path or token in query for token in blocked):
+        return False
+    photo_hosts = (
+        "wikimedia.org", "squarespace-cdn.com", "cloudfront.net",
+        "googleusercontent.com", "wp-content", "images.", "imagekit", "cdn",
+    )
+    image_ext = path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"))
+    image_query = any(token in query for token in ("image", "img", "webp", "jpg", "jpeg", "png"))
+    return image_ext or image_query or any(token in host or token in path for token in photo_hosts)
+
+
+def _iter_visual_urls(value: Any, *, parent_key: str = ""):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _iter_visual_urls(item, parent_key=str(key).casefold())
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_visual_urls(item, parent_key=parent_key)
+    elif isinstance(value, str):
+        url = _valid_http_url(value)
+        if not url:
+            return
+        visual_signal = any(
+            token in parent_key
+            for token in ("photo", "foto", "image", "imagem", "cover", "capa", "gallery", "galeria", "visual")
+        )
+        blocked_signal = any(
+            token in parent_key
+            for token in ("slide", "page", "pagina", "document", "pdf", "plan", "planta", "source_file")
+        )
+        if visual_signal and not blocked_signal:
+            yield url
+
+
+def _fallback_image(record: dict, entity_type: str | None = None) -> str | None:
+    """Prioriza recortes validados; para locais aceita foto pública explicitamente visual."""
     raw = record.get("raw_data")
-    if not isinstance(raw, dict):
-        return None
-    for key in ("visual_crop_url", "crop_url", "cropped_image_url", "product_crop_url", "activation_crop_url"):
-        url = _valid_http_url(raw.get(key))
-        if url:
+    if isinstance(raw, dict):
+        for key in (
+            "visual_crop_url", "crop_url", "cropped_image_url",
+            "product_crop_url", "activation_crop_url", "venue_crop_url",
+            "cover_url", "main_image_url", "gallery_image_url", "photo_url",
+            "foto_url", "official_photo_url", "imagem_url",
+        ):
+            url = _valid_http_url(raw.get(key))
+            if url:
+                return url
+        if entity_type in {"venue", "supplier"}:
+            for url in _iter_visual_urls(raw):
+                if entity_type != "venue" or _looks_like_external_photo(url):
+                    return url
+
+    # Em Locais, source_image_url pode ser a foto oficial pública importada
+    # pelo catálogo visual. Esse fallback não é aplicado a Brindes/Ativações.
+    if entity_type == "venue":
+        url = _valid_http_url(record.get("source_image_url"))
+        if url and _looks_like_external_photo(url):
             return url
     return None
 
@@ -239,7 +303,7 @@ def primary_image_url(client: Any, entity_type: str, record: dict, assets: list[
         url = asset_url(client, asset)
         if url:
             return url
-    return _fallback_image(record)
+    return _fallback_image(record, entity_type)
 
 
 DETAIL_CSS = r"""
@@ -263,7 +327,7 @@ def render_gallery(client: Any, entity_type: str, record: dict) -> None:
             images.append((asset, url))
         elif asset.get("asset_type") in DOCUMENT_ASSET_TYPES:
             documents.append((asset, url))
-    safe_crop = _fallback_image(record)
+    safe_crop = _fallback_image(record, entity_type)
     if not images and safe_crop:
         images.append((None, safe_crop))
 
@@ -465,6 +529,7 @@ def _filter_rows(entity_type: str, rows: list[dict], *, search: str, category: s
 def _table_record(entity_type: str, record: dict, cover: str) -> dict:
     if entity_type == "product":
         return {
+            "_id": str(record.get("id") or ""),
             "Capa": clean_cover_value(cover),
             "Brinde": _text(record.get("name")),
             "Categoria": _category_value(entity_type, record),
@@ -473,6 +538,7 @@ def _table_record(entity_type: str, record: dict, cover: str) -> dict:
             "Código / SKU": _text(record.get("sku")),
         }
     return {
+        "_id": str(record.get("id") or ""),
         "Capa": clean_cover_value(cover),
         "Ativação": _text(record.get("name")),
         "Categoria": _category_value(entity_type, record),
@@ -543,7 +609,7 @@ def render_specialized_page(entity_type: str) -> None:
         try:
             cover = primary_image_url(client, entity_type, record, media_by_entity.get(entity_id, [])) or ""
         except Exception:
-            cover = _fallback_image(record) or ""
+            cover = _fallback_image(record, entity_type) or ""
         table_rows.append(_table_record(entity_type, record, cover))
     table_df = pd.DataFrame(table_rows)
     event = st.dataframe(

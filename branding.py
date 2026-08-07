@@ -95,6 +95,84 @@ div[data-baseweb="input"] > div, div[data-baseweb="select"] > div, textarea, [da
 """
 
 
+
+def _entity_type_from_table_columns(columns: set[str]) -> str | None:
+    if "Brinde" in columns:
+        return "product"
+    if "Ativação" in columns or "Ativacao" in columns:
+        return "activation"
+    if "Local" in columns:
+        return "venue"
+    if "Fornecedor" in columns and (
+        "Cobertura" in columns or "Locais relacionados" in columns
+    ):
+        return "supplier"
+    return None
+
+
+def _hydrate_missing_covers(data):
+    """Recupera capas validadas para tabelas especializadas sem alterar as páginas."""
+    if not hasattr(data, "columns"):
+        return data
+    columns = set(str(column) for column in data.columns)
+    cover_column = next((name for name in COVER_COLUMN_NAMES if name in data.columns), None)
+    entity_type = _entity_type_from_table_columns(columns)
+    id_column = "_id" if "_id" in data.columns else ("id" if "id" in data.columns else None)
+    if not cover_column or not entity_type or not id_column:
+        return data
+
+    missing_positions = [
+        position
+        for position, value in enumerate(data[cover_column].tolist())
+        if not str(value or "").strip() or str(value).strip().casefold() in {"none", "nan", "null", "<na>"}
+    ]
+    if not missing_positions:
+        return data
+
+    ids = [
+        str(data.iloc[position].get(id_column) or "").strip()
+        for position in missing_positions
+    ]
+    ids = [entity_id for entity_id in ids if entity_id]
+    if not ids:
+        return data
+
+    try:
+        from nave_data_client import get_nave_client
+        from knowledge_specialized import fetch_media_assets_batch, primary_image_url
+
+        client = get_nave_client()
+        table = {
+            "product": "products",
+            "activation": "activation_solutions",
+            "venue": "venues",
+            "supplier": "suppliers",
+        }[entity_type]
+        response = client.table(table).select("*").in_("id", ids).execute()
+        full_rows = {
+            str(row.get("id") or ""): dict(row)
+            for row in (getattr(response, "data", None) or [])
+            if isinstance(row, dict) and row.get("id")
+        }
+        media = fetch_media_assets_batch(client, entity_type, ids)
+        result = data.copy()
+        for position in missing_positions:
+            entity_id = str(result.iloc[position].get(id_column) or "").strip()
+            if not entity_id:
+                continue
+            record = full_rows.get(entity_id) or {"id": entity_id}
+            cover = primary_image_url(
+                client,
+                entity_type,
+                record,
+                media.get(entity_id, []),
+            )
+            if cover:
+                result.iat[position, result.columns.get_loc(cover_column)] = cover
+        return result
+    except Exception:
+        return data
+
 def _install_cover_table_guard() -> None:
     """Padroniza a coluna Capa sem tocar no código das páginas existentes.
 
@@ -108,7 +186,7 @@ def _install_cover_table_guard() -> None:
     original = current
 
     def guarded_dataframe(data=None, *args, **kwargs):
-        cleaned = sanitize_cover_dataframe(data)
+        cleaned = _hydrate_missing_covers(sanitize_cover_dataframe(data))
         cover_column = None
         promote_to_multi = False
         if hasattr(cleaned, "columns"):
@@ -118,14 +196,14 @@ def _install_cover_table_guard() -> None:
             )
             if cover_column:
                 config = dict(kwargs.get("column_config") or {})
-                config.setdefault(
+                # Força Capa como imagem mesmo quando uma página antiga a configurou como texto.
+                config[cover_column] = st.column_config.ImageColumn(
                     cover_column,
-                    st.column_config.ImageColumn(
-                        cover_column,
-                        width="small",
-                        help="Imagem principal validada no acervo.",
-                    ),
+                    width="small",
+                    help="Imagem principal validada no acervo.",
                 )
+                if "_id" in getattr(cleaned, "columns", []):
+                    config["_id"] = None
                 kwargs["column_config"] = config
                 kwargs.setdefault("row_height", 64)
 
@@ -156,16 +234,33 @@ def _install_cover_table_guard() -> None:
                 from selection_pdf import build_selection_pdf
 
                 selected_records = cleaned.iloc[valid_rows].to_dict(orient="records")
+
+                # Contexto da área que originou a exportação. Isso permite que o
+                # PDF seja identificado como Brindes, Ativações, Locais ou
+                # Fornecedores, em vez de gerar um documento genérico.
+                table_columns = set(str(column) for column in cleaned.columns)
+                if "Brinde" in table_columns:
+                    source_context, file_slug = "Brindes", "brindes"
+                elif "Ativação" in table_columns or "Ativacao" in table_columns:
+                    source_context, file_slug = "Ativações", "ativacoes"
+                elif "Local" in table_columns:
+                    source_context, file_slug = "Locais e espaços", "locais"
+                elif "Fornecedor" in table_columns:
+                    source_context, file_slug = "Fornecedores", "fornecedores"
+                else:
+                    source_context, file_slug = "Base de Conhecimento", "base_conhecimento"
+
                 pdf_bytes = build_selection_pdf(
                     selected_records,
-                    title="Seleção de possibilidades — NAVE by VOE",
+                    title=f"Seleção de {source_context} - NAVE by VOE",
+                    source_context=source_context,
                 )
                 action_col, info_col = st.columns([1.15, 3.85])
                 with action_col:
                     st.download_button(
                         "Exportar seleção em PDF",
                         data=pdf_bytes,
-                        file_name="NAVE_selecao_possibilidades.pdf",
+                        file_name=f"NAVE_selecao_{file_slug}.pdf",
                         mime="application/pdf",
                         width="stretch",
                         key=f"nave_selection_pdf_{kwargs.get('key', 'table')}",
