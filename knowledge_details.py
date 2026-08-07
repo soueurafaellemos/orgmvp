@@ -282,7 +282,11 @@ def render_complete_record(
         )
         _render_fields(fields, record)
 
-    additional = _additional_fields(entity_type, record)
+    # Dados brutos de ingestão são rastreabilidade para a inteligência da NAVE,
+    # não conteúdo de apresentação. Em fornecedores, uma planilha pode carregar
+    # dezenas de colunas, URLs técnicas e payloads ainda não normalizados. Tudo
+    # permanece preservado em raw_data, mas a ficha exibe apenas campos canônicos.
+    additional = [] if entity_type == "supplier" else _additional_fields(entity_type, record)
     if additional:
         with st.expander("Informações adicionais do material original", expanded=False):
             _render_fields(additional, record)

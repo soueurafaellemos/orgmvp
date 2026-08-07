@@ -38,6 +38,16 @@ PROVENANCE_FIELDS = {
 }
 
 
+# Neutral values used only when an old merge snapshot contains ``null`` for a
+# database column that is currently NOT NULL.  Recovery must never fail merely
+# because the historical snapshot predates a stricter schema constraint.
+REVERT_NULL_DEFAULTS = {
+    "product": {
+        "origin": "Não informado",
+    },
+}
+
+
 def _as_dict(value: Any) -> dict:
     if isinstance(value, dict):
         return dict(value)
@@ -470,6 +480,131 @@ def _recover_activation_costs(
     }
 
 
+def _revert_value(entity_type: str, field: str, value: Any) -> Any:
+    """Return a schema-safe value when undoing a historical merge.
+
+    Older snapshots may contain ``None`` even for columns that are NOT NULL in
+    the current schema.  In those cases we restore a neutral canonical value
+    instead of attempting an invalid update.
+    """
+    if value is None:
+        default = REVERT_NULL_DEFAULTS.get(entity_type, {}).get(field)
+        if default is not None:
+            return default
+    return _json_safe(value)
+
+
+def _partial_recovery_records(
+    client: Client,
+    *,
+    review: dict,
+    source_record: dict,
+) -> list[dict]:
+    """Find entities already recreated by a previous interrupted recovery.
+
+    Recovery is a multi-step operation over PostgREST and therefore cannot be
+    wrapped in a single database transaction from Streamlit.  Every recreated
+    entity receives a marker in ``raw_data``.  If a later step fails, a retry
+    must reuse that entity rather than create another duplicate.
+    """
+    entity_type = str(review.get("entity_type") or "")
+    table = DUPLICATE_ENTITY_TABLES[entity_type]
+    query = client.table(table).select("*")
+
+    source_name = str(source_record.get("name") or "").strip()
+    if source_name:
+        query = query.eq("name", source_name)
+    import_id = str(review.get("import_id") or "").strip()
+    if import_id:
+        query = query.eq("import_id", import_id)
+    source_file_id = str(review.get("source_file_id") or "").strip()
+    if source_file_id:
+        query = query.eq("source_file_id", source_file_id)
+
+    response = query.limit(100).execute()
+    review_id = str(review.get("id") or "")
+    matches: list[dict] = []
+    for item in response.data or []:
+        raw_data = _as_dict(item.get("raw_data"))
+        marker = _as_dict(raw_data.get("_nave_merge_recovery"))
+        if str(marker.get("review_id") or "") == review_id:
+            matches.append(dict(item))
+
+    return sorted(
+        matches,
+        key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")),
+    )
+
+
+def _consolidate_partial_recoveries(
+    client: Client,
+    *,
+    review: dict,
+    records: list[dict],
+) -> str | None:
+    """Reuse the first interrupted recovery and remove duplicates from retries."""
+    if not records:
+        return None
+
+    entity_type = str(review.get("entity_type") or "")
+    table = DUPLICATE_ENTITY_TABLES[entity_type]
+    primary_id = str(records[0].get("id") or "")
+    if not primary_id:
+        return None
+
+    for extra in records[1:]:
+        extra_id = str(extra.get("id") or "")
+        if not extra_id or extra_id == primary_id:
+            continue
+
+        # Media may already have been reassigned before a previous failure.
+        try:
+            (
+                client.table("media_assets")
+                .update({"entity_id": primary_id})
+                .eq("entity_type", entity_type)
+                .eq("entity_id", extra_id)
+                .execute()
+            )
+        except Exception:
+            pass
+
+        if entity_type == "activation":
+            try:
+                costs = (
+                    client.table("activation_costs")
+                    .select("id")
+                    .eq("solution_id", extra_id)
+                    .execute()
+                )
+                for cost in costs.data or []:
+                    try:
+                        (
+                            client.table("activation_costs")
+                            .update({"solution_id": primary_id})
+                            .eq("id", cost["id"])
+                            .execute()
+                        )
+                    except Exception:
+                        # If a uniqueness rule blocks the move, keeping the
+                        # primary copy is safer than failing the whole recovery.
+                        try:
+                            client.table("activation_costs").delete().eq("id", cost["id"]).execute()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        try:
+            client.table(table).delete().eq("id", extra_id).execute()
+        except Exception:
+            # A leftover technical duplicate is preferable to aborting the
+            # user's correction. It will still carry the recovery marker.
+            pass
+
+    return primary_id
+
+
 def _revert_target_fields(
     client: Client,
     *,
@@ -496,13 +631,22 @@ def _revert_target_fields(
         for field in fields:
             if field in PROVENANCE_FIELDS or field == "name":
                 continue
+            # Snapshots históricos podem ser parciais. Chave ausente não equivale
+            # a valor NULL; preservamos o valor atual e sinalizamos para revisão.
+            if field not in target_snapshot:
+                unresolved.append(field)
+                continue
             # Three-way safety: do not overwrite an edit made after the merge.
             if target_post and not _same_value(
                 target_record.get(field), target_post.get(field)
             ):
                 unresolved.append(field)
                 continue
-            changes[field] = _json_safe(target_snapshot.get(field))
+            changes[field] = _revert_value(
+                str(review.get("entity_type") or ""),
+                field,
+                target_snapshot.get(field),
+            )
     else:
         # Older merges did not store the pre-merge snapshot. We can safely undo
         # only fields explicitly reported as filled into an empty target and
@@ -511,7 +655,11 @@ def _revert_target_fields(
             if field in PROVENANCE_FIELDS or field in {"name", "tags"}:
                 continue
             if _same_value(target_record.get(field), source_record.get(field)):
-                changes[field] = None
+                changes[field] = _revert_value(
+                    str(review.get("entity_type") or ""),
+                    field,
+                    None,
+                )
         unresolved.extend(
             str(field)
             for field in [
@@ -580,12 +728,27 @@ def recover_merged_review(
 
     table = DUPLICATE_ENTITY_TABLES[entity_type]
     old_source_id = str(review.get("source_entity_id") or "")
+
+    partial_records = _partial_recovery_records(
+        client,
+        review=review,
+        source_record=source_record,
+    )
+    partial_entity_id = _consolidate_partial_recoveries(
+        client,
+        review=review,
+        records=partial_records,
+    )
+
     existing_source = _entity_record(
         client,
         entity_type=entity_type,
         entity_id=old_source_id,
     )
-    if existing_source:
+    if partial_entity_id:
+        new_entity_id = partial_entity_id
+        inserted = False
+    elif existing_source:
         new_entity_id = old_source_id
         inserted = False
     else:
