@@ -18,6 +18,7 @@ from project_batch_ingestion import (
     rank_project_candidates,
     save_project_bundle,
 )
+from project_bundle_materializer import repair_v2810_projects
 
 st.set_page_config(
     page_title="Importar projeto completo | NAVE by VOE",
@@ -30,10 +31,30 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.1",
+    eyebrow="NAVE by VOE · V28.1.1",
 )
 
 client = get_nave_client()
+
+# Corrige automaticamente lotes da V28.1.0 que foram preservados em
+# source_files, mas ainda não tinham sido incorporados às tabelas do workspace.
+# A rotina é idempotente e roda uma vez por sessão para não penalizar a navegação.
+if not st.session_state.get("v2811_legacy_repair_done"):
+    with st.spinner("Verificando projetos importados pela V28.1.0..."):
+        legacy_repair = repair_v2810_projects(client)
+    st.session_state["v2811_legacy_repair_done"] = True
+    st.session_state["v2811_legacy_repair_result"] = legacy_repair
+else:
+    legacy_repair = st.session_state.get("v2811_legacy_repair_result") or {}
+
+if legacy_repair.get("repaired"):
+    st.success(
+        f"A NAVE incorporou ao workspace {legacy_repair['repaired']} arquivo(s) de importações anteriores que estavam apenas preservados no lote."
+    )
+if legacy_repair.get("errors"):
+    st.warning(
+        f"{legacy_repair['errors']} arquivo(s) antigo(s) ainda precisam de revisão. Os demais foram preservados e incorporados normalmente."
+    )
 
 st.markdown("### 1. Arquivos do projeto")
 st.caption(
@@ -173,11 +194,29 @@ if documents:
             )
 
     st.markdown("### 4. Destino")
+    strong_match = bool(
+        candidates
+        and candidates[0].confidence == "alta"
+        and not candidates[0].conflicts
+    )
     destination = st.radio(
         "Este conjunto pertence a:",
         ["Um novo projeto", "Um projeto que já existe"],
         horizontal=True,
+        index=1 if strong_match else 0,
     )
+
+    force_new_confirmed = True
+    if destination == "Um novo projeto" and strong_match:
+        force_new_confirmed = st.checkbox(
+            f"Confirmo criar um novo projeto mesmo com forte correspondência a **{candidates[0].project_name}**.",
+            value=False,
+            help="Esta confirmação existe para evitar duplicatas como projetos com o mesmo cliente, nome e edição.",
+        )
+        if not force_new_confirmed:
+            st.caption(
+                "A NAVE recomenda associar o lote ao projeto existente. O novo cadastro só será liberado após a confirmação acima."
+            )
 
     existing_project_id = None
     selected_existing = None
@@ -234,7 +273,11 @@ if documents:
             ])
             st.dataframe(preview, hide_index=True, width="stretch")
 
-    can_save = bool(include_sha256) and bool(project_name.strip() or existing_project_id)
+    can_save = (
+        bool(include_sha256)
+        and bool(project_name.strip() or existing_project_id)
+        and bool(force_new_confirmed)
+    )
     if st.button(
         "Importar projeto completo",
         type="primary",
@@ -271,17 +314,27 @@ if documents:
                 st.error(f"A importação não pôde ser concluída. Detalhe técnico: {exc}")
             else:
                 st.session_state["v281_last_result"] = result
+                workspace_ok = int(result.get("workspace_materialized") or 0)
+                workspace_errors = int(result.get("workspace_errors") or 0)
                 st.success(
-                    f"Projeto importado: {result['documents_saved']} arquivo(s) preservado(s)."
+                    f"Projeto importado: {result['documents_saved']} arquivo(s) preservado(s) e {workspace_ok} incorporado(s) ao workspace."
                 )
                 if result.get("duplicates_reused"):
                     st.info(
                         f"{result['duplicates_reused']} arquivo(s) já existiam no projeto e foram reaproveitados sem duplicar o arquivo físico."
                     )
-                cols = st.columns(3)
+                if workspace_errors:
+                    st.warning(
+                        f"{workspace_errors} arquivo(s) tiveram alguma etapa de incorporação incompleta. O original continua preservado para nova tentativa, sem perda do lote."
+                    )
+                cols = st.columns(4)
                 cols[0].metric("Arquivos", result["documents_saved"])
-                cols[1].metric("Reaproveitados", result.get("duplicates_reused", 0))
-                cols[2].metric("Projeto", "Novo" if result.get("created_project") else "Existente")
+                cols[1].metric("No workspace", workspace_ok)
+                cols[2].metric("Reaproveitados", result.get("duplicates_reused", 0))
+                cols[3].metric("Projeto", "Novo" if result.get("created_project") else "Existente")
+                st.caption(
+                    "Briefing, custos, apresentações, feedbacks e relatórios passam a alimentar as estruturas que a Visão geral e as abas do projeto realmente consultam."
+                )
                 st.page_link(
                     "pages/4_Historico_de_Projetos.py",
                     label="Abrir Projetos",
@@ -296,7 +349,8 @@ else:
         3. você revisa a classificação;
         4. a plataforma compara o conjunto com projetos existentes;
         5. você confirma **novo projeto** ou **projeto existente**;
-        6. os arquivos são preservados no acervo privado do projeto com papel, confiança, origem e áreas de destino.
+        6. os arquivos são preservados no acervo privado do projeto com papel, confiança e origem;
+        7. briefing, custos, apresentações, feedbacks e relatórios são incorporados às estruturas reais do workspace.
         """
     )
     st.info(

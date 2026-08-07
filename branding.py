@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import escape
 from pathlib import Path
+import hashlib
 
 import streamlit as st
 from nave_table_utils import COVER_COLUMN_NAMES, sanitize_cover_dataframe
@@ -179,11 +180,101 @@ def _hydrate_missing_covers(data):
     except Exception:
         return data
 
-def _install_cover_table_guard() -> None:
-    """Padroniza a coluna Capa sem tocar no código das páginas existentes.
+def _deletion_context(columns: set[str], data) -> tuple[str, str, str] | None:
+    """Detecta somente listas canônicas em que exclusão explícita é segura.
 
-    A V28.0.3 não deve transformar valores ausentes em texto ``None``.
-    Também garante que uma coluna chamada Capa seja interpretada como imagem.
+    Locais ficam de fora deliberadamente. A exclusão é oferecida para Brindes,
+    Ativações, Fornecedores e Projetos quando a tabela carrega um identificador
+    real do registro — nunca por posição visual da linha.
+    """
+    id_candidates = ("_id", "id", "_project_id", "project_id")
+    id_column = next((item for item in id_candidates if item in getattr(data, "columns", [])), None)
+    if not id_column:
+        return None
+    if "Brinde" in columns:
+        return "product", "brinde", id_column
+    if "Ativação" in columns or "Ativacao" in columns:
+        return "activation", "ativação", id_column
+    if "Fornecedor" in columns:
+        return "supplier", "fornecedor", id_column
+    if "Projeto" in columns and ({"Cliente", "Evento", "Status"} & columns):
+        return "project", "projeto", id_column
+    return None
+
+
+def _render_deletion_action(*, cleaned, valid_rows: list[int], context: tuple[str, str, str], table_key: str) -> None:
+    entity_type, singular_label, id_column = context
+    entity_ids = [
+        str(cleaned.iloc[position].get(id_column) or "").strip()
+        for position in valid_rows
+    ]
+    entity_ids = [item for item in dict.fromkeys(entity_ids) if item]
+    if not entity_ids:
+        return
+
+    amount = len(entity_ids)
+    plural = singular_label if amount == 1 else {
+        "brinde": "brindes",
+        "ativação": "ativações",
+        "fornecedor": "fornecedores",
+        "projeto": "projetos",
+    }.get(singular_label, f"{singular_label}s")
+    suffix = hashlib.sha1(
+        f"{table_key}|{entity_type}|{'|'.join(entity_ids)}".encode("utf-8")
+    ).hexdigest()[:12]
+
+    selected_word = "selecionado" if amount == 1 else "selecionados"
+    with st.expander(f"Excluir {amount} {plural} {selected_word}", expanded=False):
+        if entity_type == "project":
+            st.warning(
+                "A exclusão remove o projeto e os dados que pertencem exclusivamente a ele. "
+                "Cadastros transversais que apenas estavam relacionados ao projeto não são apagados."
+            )
+        else:
+            st.warning(
+                "Use esta ação somente quando o cadastro realmente entrou errado. "
+                "A exclusão é permanente; vínculos técnicos que usam este registro são preservados ou desvinculados quando o banco permitir."
+            )
+        confirmed = st.checkbox(
+            f"Confirmo a exclusão de {amount} {plural} {selected_word}.",
+            key=f"nave_delete_confirm_{suffix}",
+        )
+        if st.button(
+            f"Excluir {plural} {selected_word}",
+            disabled=not confirmed,
+            width="stretch",
+            key=f"nave_delete_button_{suffix}",
+        ):
+            from nave_data_client import get_nave_client
+            from nave_delete import delete_entities
+
+            client = get_nave_client()
+            with st.spinner("Excluindo os registros selecionados com segurança..."):
+                results = delete_entities(
+                    client,
+                    entity_type=entity_type,
+                    entity_ids=entity_ids,
+                )
+            deleted = [item for item in results if item.get("status") == "deleted"]
+            protected = [item for item in results if item.get("status") == "protected"]
+            errors = [
+                item for item in results
+                if item.get("status") not in {"deleted", "not_found"}
+                and item not in protected
+            ]
+            if deleted:
+                st.success(f"{len(deleted)} registro(s) excluído(s).")
+            for item in protected + errors:
+                st.warning(f"{item.get('label')}: {item.get('message')}")
+            if deleted:
+                st.rerun()
+
+
+def _install_cover_table_guard() -> None:
+    """Padroniza tabelas canônicas sem exigir alterações em todas as páginas.
+
+    Preserva o tratamento de Capa, seleção múltipla/PDF e acrescenta exclusão
+    explícita por seleção para Brindes, Ativações, Fornecedores e Projetos.
     """
     current = st.dataframe
     if getattr(current, "_nave_cover_guard", False):
@@ -195,87 +286,97 @@ def _install_cover_table_guard() -> None:
         cleaned = _hydrate_missing_covers(sanitize_cover_dataframe(data))
         cover_column = None
         promote_to_multi = False
+        deletion_context = None
+        table_columns: set[str] = set()
         if hasattr(cleaned, "columns"):
+            table_columns = set(str(column) for column in cleaned.columns)
             cover_column = next(
                 (name for name in COVER_COLUMN_NAMES if name in cleaned.columns),
                 None,
             )
+            deletion_context = _deletion_context(table_columns, cleaned)
+            config = dict(kwargs.get("column_config") or {})
+
             if cover_column:
-                config = dict(kwargs.get("column_config") or {})
                 # Força Capa como imagem mesmo quando uma página antiga a configurou como texto.
                 config[cover_column] = st.column_config.ImageColumn(
                     cover_column,
                     width="small",
                     help="Imagem principal validada no acervo.",
                 )
-                if "_id" in getattr(cleaned, "columns", []):
-                    config["_id"] = None
-                kwargs["column_config"] = config
                 kwargs.setdefault("row_height", 64)
 
-                # Padrão NAVE: tabelas especializadas com Capa permitem
-                # seleção múltipla. A Base de Conhecimento já usa o seu
-                # fluxo próprio de seleção múltipla e não é alterada aqui.
-                if (
-                    kwargs.get("selection_mode") == "single-row"
-                    and kwargs.get("on_select") == "rerun"
-                ):
-                    kwargs["selection_mode"] = "multi-row"
-                    promote_to_multi = True
+            # IDs são necessários para ações seguras, mas nunca precisam aparecer.
+            for hidden_id in ("_id", "id", "_project_id", "project_id"):
+                if hidden_id in getattr(cleaned, "columns", []):
+                    config[hidden_id] = None
+            if config:
+                kwargs["column_config"] = config
+
+            # Padrão NAVE: listas especializadas + Projetos aceitam seleção
+            # múltipla. A posição nunca é usada como identidade para exclusão.
+            if (
+                kwargs.get("selection_mode") == "single-row"
+                and kwargs.get("on_select") == "rerun"
+                and (cover_column or deletion_context)
+            ):
+                kwargs["selection_mode"] = "multi-row"
+                promote_to_multi = True
 
         event = original(cleaned, *args, **kwargs)
 
-        # Compatibilidade transversal para páginas que antes aceitavam
-        # somente uma linha (Locais, Brindes, Ativações e Fornecedores).
-        # Duas ou mais linhas selecionadas reativam o PDF de possibilidades.
-        if promote_to_multi and cover_column and hasattr(cleaned, "iloc"):
-            selected_rows = list(
-                getattr(getattr(event, "selection", None), "rows", []) or []
+        selected_rows = list(
+            getattr(getattr(event, "selection", None), "rows", []) or []
+        )
+        valid_rows = [
+            position for position in selected_rows
+            if isinstance(position, int) and hasattr(cleaned, "iloc") and 0 <= position < len(cleaned)
+        ]
+
+        # Duas ou mais linhas das áreas visuais mantêm o PDF de possibilidades.
+        if promote_to_multi and cover_column and hasattr(cleaned, "iloc") and len(valid_rows) >= 2:
+            from selection_pdf import build_selection_pdf
+
+            selected_records = cleaned.iloc[valid_rows].to_dict(orient="records")
+            if "Brinde" in table_columns:
+                source_context, file_slug = "Brindes", "brindes"
+            elif "Ativação" in table_columns or "Ativacao" in table_columns:
+                source_context, file_slug = "Ativações", "ativacoes"
+            elif "Local" in table_columns:
+                source_context, file_slug = "Locais e espaços", "locais"
+            elif "Fornecedor" in table_columns:
+                source_context, file_slug = "Fornecedores", "fornecedores"
+            else:
+                source_context, file_slug = "Base de Conhecimento", "base_conhecimento"
+
+            pdf_bytes = build_selection_pdf(
+                selected_records,
+                title=f"Seleção de {source_context} - NAVE by VOE",
+                source_context=source_context,
             )
-            valid_rows = [
-                position for position in selected_rows
-                if isinstance(position, int) and 0 <= position < len(cleaned)
-            ]
-            if len(valid_rows) >= 2:
-                from selection_pdf import build_selection_pdf
-
-                selected_records = cleaned.iloc[valid_rows].to_dict(orient="records")
-
-                # Contexto da área que originou a exportação. Isso permite que o
-                # PDF seja identificado como Brindes, Ativações, Locais ou
-                # Fornecedores, em vez de gerar um documento genérico.
-                table_columns = set(str(column) for column in cleaned.columns)
-                if "Brinde" in table_columns:
-                    source_context, file_slug = "Brindes", "brindes"
-                elif "Ativação" in table_columns or "Ativacao" in table_columns:
-                    source_context, file_slug = "Ativações", "ativacoes"
-                elif "Local" in table_columns:
-                    source_context, file_slug = "Locais e espaços", "locais"
-                elif "Fornecedor" in table_columns:
-                    source_context, file_slug = "Fornecedores", "fornecedores"
-                else:
-                    source_context, file_slug = "Base de Conhecimento", "base_conhecimento"
-
-                pdf_bytes = build_selection_pdf(
-                    selected_records,
-                    title=f"Seleção de {source_context} - NAVE by VOE",
-                    source_context=source_context,
+            action_col, info_col = st.columns([1.15, 3.85])
+            with action_col:
+                st.download_button(
+                    "Exportar seleção em PDF",
+                    data=pdf_bytes,
+                    file_name=f"NAVE_selecao_{file_slug}.pdf",
+                    mime="application/pdf",
+                    width="stretch",
+                    key=f"nave_selection_pdf_{kwargs.get('key', 'table')}",
                 )
-                action_col, info_col = st.columns([1.15, 3.85])
-                with action_col:
-                    st.download_button(
-                        "Exportar seleção em PDF",
-                        data=pdf_bytes,
-                        file_name=f"NAVE_selecao_{file_slug}.pdf",
-                        mime="application/pdf",
-                        width="stretch",
-                        key=f"nave_selection_pdf_{kwargs.get('key', 'table')}",
-                    )
-                with info_col:
-                    st.caption(
-                        f"{len(valid_rows)} itens selecionados. "
-                        "A ficha abaixo continua usando o primeiro item selecionado."
-                    )
+            with info_col:
+                st.caption(
+                    f"{len(valid_rows)} itens selecionados. "
+                    "A ficha abaixo continua usando o primeiro item selecionado."
+                )
+
+        if deletion_context and valid_rows and hasattr(cleaned, "iloc"):
+            _render_deletion_action(
+                cleaned=cleaned,
+                valid_rows=valid_rows,
+                context=deletion_context,
+                table_key=str(kwargs.get("key") or "table"),
+            )
         return event
 
     guarded_dataframe._nave_cover_guard = True
@@ -285,6 +386,27 @@ def _install_cover_table_guard() -> None:
 
 def apply_nave_branding() -> None:
     _install_cover_table_guard()
+
+    # V28.1.1: corrige uma única vez por sessão os lotes V28.1.0 que foram
+    # preservados em source_files, mas ainda não apareciam no workspace. A
+    # rotina é silenciosa aqui; a página Importar projeto completo exibe o
+    # resumo quando for aberta.
+    if not st.session_state.get("v2811_legacy_repair_done"):
+        try:
+            from nave_data_client import get_nave_client
+            from project_bundle_materializer import repair_v2810_projects
+
+            repair_result = repair_v2810_projects(get_nave_client())
+            st.session_state["v2811_legacy_repair_result"] = repair_result
+            st.session_state["v2811_legacy_repair_done"] = True
+        except Exception as exc:
+            st.session_state["v2811_legacy_repair_result"] = {
+                "repaired": 0,
+                "errors": 1,
+                "warnings": [str(exc)],
+            }
+            st.session_state["v2811_legacy_repair_done"] = True
+
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
     render_sidebar()
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.1.0"
+WORKFLOW_VERSION = "28.1.1"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_BYTES = 100 * 1024 * 1024
 
@@ -877,29 +877,84 @@ def save_project_bundle(
             if rows:
                 saved_rows.append(dict(rows[0]))
 
-        client.table("imports").update({
-            "status": "projeto_importado",
-            "imported_records": len(saved_rows),
-            "warnings": ([f"{duplicate_count} arquivo(s) já existiam no projeto e foram reaproveitados."] if duplicate_count else []),
-        }).eq("id", import_id).execute()
+        # V28.1.1: o lote deixa de apenas classificar/rotear documentos e
+        # passa a materializá-los nas estruturas que o workspace realmente lê.
+        # A materialização é idempotente por projeto + hash e, portanto, também
+        # pode ser executada sobre arquivos reaproveitados sem criar duplicatas.
+        from project_bundle_materializer import materialize_new_source_files
 
-        current_raw = _project_raw_data(client, project_id)
-        current_raw.update({
-            "last_project_bundle_import_id": import_id,
-            "last_project_bundle_at_version": WORKFLOW_VERSION,
-            "last_project_bundle_documents": len(selected),
-            "last_project_bundle_roles": sorted(set(roles_for_document.values())),
-        })
-        client.table("projects").update({"raw_data": current_raw}).eq("id", project_id).execute()
+        documents_by_sha = {document.sha256: document for document in selected}
+        materialization_results = materialize_new_source_files(
+            client,
+            saved_rows,
+            documents_by_sha=documents_by_sha,
+        )
+        workspace_materialized = sum(
+            1 for item in materialization_results
+            if str(item.get("status") or "") != "error"
+        )
+        workspace_errors = sum(
+            1 for item in materialization_results
+            if str(item.get("status") or "") == "error"
+        )
+        workspace_warnings = [
+            warning
+            for item in materialization_results
+            for warning in (item.get("warnings") or [])
+            if str(warning).strip()
+        ]
+
+        import_warnings = []
+        if duplicate_count:
+            import_warnings.append(
+                f"{duplicate_count} arquivo(s) já existiam no projeto e foram reaproveitados."
+            )
+        if workspace_errors:
+            import_warnings.append(
+                f"{workspace_errors} arquivo(s) tiveram erro ao incorporar conteúdo ao workspace."
+            )
+        if workspace_warnings:
+            import_warnings.extend(str(item)[:900] for item in workspace_warnings[:20])
+
+        try:
+            client.table("imports").update({
+                "status": "projeto_importado" if not workspace_errors else "projeto_importado_com_alertas",
+                "imported_records": len(saved_rows),
+                "warnings": import_warnings,
+            }).eq("id", import_id).execute()
+        except Exception as exc:
+            workspace_warnings.append(
+                f"O lote foi incorporado ao workspace, mas o resumo técnico do import não pôde ser atualizado: {exc}"
+            )
+
+        try:
+            current_raw = _project_raw_data(client, project_id)
+            current_raw.update({
+                "last_project_bundle_import_id": import_id,
+                "last_project_bundle_at_version": WORKFLOW_VERSION,
+                "last_project_bundle_documents": len(selected),
+                "last_project_bundle_roles": sorted(set(roles_for_document.values())),
+                "last_project_bundle_materialized": workspace_materialized,
+                "last_project_bundle_errors": workspace_errors,
+            })
+            client.table("projects").update({"raw_data": current_raw}).eq("id", project_id).execute()
+        except Exception as exc:
+            workspace_warnings.append(
+                f"O conteúdo foi incorporado, mas o resumo técnico do projeto não pôde ser atualizado: {exc}"
+            )
 
         return {
-            "status": "saved",
+            "status": "saved" if not workspace_errors else "saved_with_warnings",
             "project_id": project_id,
             "import_id": import_id,
             "created_project": created_project,
             "documents_saved": len(saved_rows),
             "duplicates_reused": duplicate_count,
             "roles": roles_for_document,
+            "workspace_materialized": workspace_materialized,
+            "workspace_errors": workspace_errors,
+            "workspace_warnings": workspace_warnings[:40],
+            "materialization_results": materialization_results,
         }
 
     except Exception as exc:
