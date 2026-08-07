@@ -127,6 +127,18 @@ def _parenthetical_aliases(value: Any) -> set[str]:
     }
 
 
+def _learned_aliases(record: Mapping[str, Any]) -> set[str]:
+    raw = _raw_data(record)
+    values = raw.get("identity_aliases")
+    if not isinstance(values, list):
+        values = []
+    return {
+        normalize_name(value)
+        for value in values
+        if normalize_name(value)
+    }
+
+
 def normalize_postal_code(value: Any) -> str:
     digits = re.sub(r"\D", "", str(value or ""))
     return digits[:8] if len(digits) >= 8 else digits
@@ -240,8 +252,8 @@ def compare_venues(
     name_b = normalize_name(right_name)
     base_a = base_name(left_name)
     base_b = base_name(right_name)
-    aliases_a = _parenthetical_aliases(left_name)
-    aliases_b = _parenthetical_aliases(right_name)
+    aliases_a = _parenthetical_aliases(left_name) | _learned_aliases(left)
+    aliases_b = _parenthetical_aliases(right_name) | _learned_aliases(right)
 
     city_a = normalize_text(_lookup(left, "city", "CIDADE"))
     city_b = normalize_text(_lookup(right, "city", "CIDADE"))
@@ -259,7 +271,18 @@ def compare_venues(
     exact_name = bool(name_a and name_a == name_b)
     exact_base_name = bool(base_a and base_a == base_b)
     alias_cross_match = bool(
-        base_a and base_b and (base_a in aliases_b or base_b in aliases_a)
+        base_a and base_b and (
+            base_a in aliases_b
+            or base_b in aliases_a
+            or name_a in aliases_b
+            or name_b in aliases_a
+            or bool(aliases_a & aliases_b)
+        )
+    )
+    token_set_equal = bool(
+        name_a
+        and name_b
+        and set(name_a.split()) == set(name_b.split())
     )
     name_similarity = max(
         _similarity(name_a, name_b),
@@ -282,12 +305,15 @@ def compare_venues(
     if exact_name and location_compatible:
         score = 1.0
         method = "exact_normalized_name"
+    elif token_set_equal and location_compatible:
+        score = 0.99
+        method = "same_name_tokens"
     elif exact_base_name and location_compatible:
         score = 0.98
         method = "same_base_name"
     elif alias_cross_match and location_compatible:
         score = 0.97
-        method = "parenthetical_alias"
+        method = "semantic_alias"
     elif same_instagram and name_similarity >= 0.45 and location_compatible:
         score = 0.97
         method = "same_instagram"
@@ -323,6 +349,9 @@ def compare_venues(
         "exact_name": exact_name,
         "exact_base_name": exact_base_name,
         "alias_cross_match": alias_cross_match,
+        "token_set_equal": token_set_equal,
+        "learned_aliases_left": sorted(_learned_aliases(left)),
+        "learned_aliases_right": sorted(_learned_aliases(right)),
         "same_city": same_city,
         "same_state": same_state,
         "same_address": same_address,

@@ -239,6 +239,17 @@ def _coverage_score(
         )
 
     if state and base_state and state == base_state:
+        if city:
+            return (
+                5.0,
+                "Mesmo estado — cidade não confirmada",
+                ["Fornecedor baseado no mesmo estado do projeto."],
+                [
+                    *warnings,
+                    "A presença na cidade do projeto não está confirmada; "
+                    "fornecedores locais devem ter prioridade quando disponíveis.",
+                ],
+            )
         return (
             8.0,
             "Fornecedor regional",
@@ -247,6 +258,16 @@ def _coverage_score(
         )
 
     if state and state in served_states:
+        if city:
+            return (
+                5.0,
+                "Cobertura estadual — cidade não confirmada",
+                ["Atendimento confirmado no estado."],
+                [
+                    *warnings,
+                    "A cidade específica do projeto não consta na cobertura cadastrada.",
+                ],
+            )
         return (
             8.0,
             "Cobertura estadual confirmada",
@@ -255,15 +276,21 @@ def _coverage_score(
         )
 
     if national:
-        if has_local_teams:
+        if city:
+            # Declarar cobertura nacional não prova presença operacional na
+            # cidade do projeto. Quando não há cidade-base, cidade atendida ou
+            # equipe local explicitamente mapeada, a NAVE mantém o fornecedor
+            # elegível, mas sinaliza a incerteza e prioriza quem tem presença
+            # local confirmada.
             return (
-                8.0,
-                "Cobertura nacional com equipes locais",
+                6.0,
+                "Cobertura nacional — cidade não confirmada",
+                ["Fornecedor declara atendimento nacional."],
                 [
-                    "Fornecedor declara atendimento nacional "
-                    "e possui equipes locais."
+                    *warnings,
+                    "A presença operacional na cidade do projeto não está cadastrada; "
+                    "confirme deslocamento, equipe e logística antes da contratação.",
                 ],
-                warnings,
             )
         return (
             7.0,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -519,6 +520,14 @@ def _format_capacity(value: int | None) -> str:
     return f"{value:,}".replace(",", ".")
 
 
+def _city_filter_label(row: dict[str, Any]) -> str:
+    city = str(row.get("city") or "").strip()
+    state = str(row.get("state") or "").strip().upper()
+    if not city:
+        return ""
+    return f"{city} — {state}" if state else city
+
+
 def _record_search_text(record: dict[str, Any]) -> str:
     fields = (
         record.get("name"),
@@ -910,15 +919,17 @@ with filter_cols[1]:
         index=0,
     )
 with filter_cols[2]:
-    selected_state = st.selectbox(
-        "Estado",
-        options=["Todos"] + sorted(
-            {
-                str(row.get("state") or "").strip()
-                for row in venues
-                if str(row.get("state") or "").strip()
-            }
-        ),
+    city_options = sorted(
+        {
+            _city_filter_label(row)
+            for row in venues
+            if _city_filter_label(row)
+        },
+        key=lambda value: str(value).casefold(),
+    )
+    selected_city = st.selectbox(
+        "Cidade",
+        options=["Todas", *city_options],
     )
 with filter_cols[3]:
     selected_media = st.selectbox(
@@ -939,11 +950,11 @@ if search:
         for row in filtered
         if search in _record_search_text(row)
     ]
-if selected_state != "Todos":
+if selected_city != "Todas":
     filtered = [
         row
         for row in filtered
-        if str(row.get("state") or "").strip() == selected_state
+        if _city_filter_label(row) == selected_city
     ]
 if selected_media != "Todos":
     selected_rows = []
@@ -993,7 +1004,27 @@ for row in filtered:
         }
     )
 
-table_df = pd.DataFrame(table_rows)
+table_df = pd.DataFrame(table_rows).reset_index(drop=True)
+
+# A chave muda quando filtros ou linhas visíveis mudam. Isso impede que
+# uma seleção da tabela anterior seja reaproveitada na tabela atual.
+table_signature_payload = "\x1f".join(
+    [
+        str(search),
+        str(selected_type),
+        str(selected_state),
+        str(selected_media),
+        *(
+            table_df["_id"].astype(str).tolist()
+            if "_id" in table_df.columns
+            else []
+        ),
+    ]
+)
+table_signature = hashlib.sha256(
+    table_signature_payload.encode("utf-8")
+).hexdigest()[:16]
+
 if table_df.empty:
     st.info("Nenhum local corresponde aos filtros selecionados.")
     selected_record = None
@@ -1005,7 +1036,7 @@ else:
         height=min(620, 86 + len(table_df) * 36),
         on_select="rerun",
         selection_mode="single-row",
-        key="nave_venue_type_table",
+        key=f"nave_venue_type_table_{table_signature}",
         column_config={
             "Capa": st.column_config.ImageColumn(
                 "Capa",
@@ -1031,18 +1062,35 @@ else:
         },
     )
 
-    selected_rows = event.selection.rows if event else []
+    selected_rows = []
+    if event:
+        try:
+            selected_rows = list(event.selection.rows or [])
+        except (AttributeError, TypeError):
+            selected_rows = []
+
     selected_record = None
     if selected_rows:
-        selected_id = str(table_df.iloc[selected_rows[0]]["_id"])
-        selected_record = next(
-            (
-                row
-                for row in venues
-                if str(row.get("id") or "") == selected_id
-            ),
-            None,
-        )
+        try:
+            selected_position = int(selected_rows[0])
+        except (TypeError, ValueError):
+            selected_position = -1
+
+        # A seleção armazenada pelo Streamlit pode se referir à tabela
+        # anterior. Só acessamos o DataFrame se a posição ainda existir.
+        if 0 <= selected_position < len(table_df):
+            selected_id = str(
+                table_df.iloc[selected_position].get("_id") or ""
+            ).strip()
+            if selected_id:
+                selected_record = next(
+                    (
+                        row
+                        for row in venues
+                        if str(row.get("id") or "") == selected_id
+                    ),
+                    None,
+                )
 
 if selected_record:
     st.divider()

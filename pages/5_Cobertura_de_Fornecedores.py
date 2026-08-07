@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import re
 import unicodedata
 from typing import Any
 
@@ -106,6 +108,105 @@ def _base_label(row: dict) -> str:
     )
 
 
+def _list_values(value: Any) -> list[str]:
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                loaded = json.loads(text)
+                if isinstance(loaded, list):
+                    return [str(item).strip() for item in loaded if str(item).strip()]
+            except Exception:
+                pass
+        parts = [item.strip() for item in re.split(r"[;|\n]+", text) if item.strip()]
+        if len(parts) > 1:
+            return parts
+        # Vírgula pode separar cidade/UF. Só a tratamos como lista quando o
+        # último trecho não parece uma UF de duas letras.
+        comma = [item.strip() for item in text.split(",") if item.strip()]
+        if len(comma) > 1 and not (len(comma[-1]) == 2 and comma[-1].isalpha()):
+            return comma
+        return [text]
+    return [str(value).strip()]
+
+
+def _city_state(value: Any, fallback_state: str = "") -> tuple[str, str]:
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    for pattern in (
+        r"^(.+?)\s*[—–]\s*([A-Za-z]{2})$",
+        r"^(.+?)\s+-\s+([A-Za-z]{2})$",
+        r"^(.+?)\s*[,/]\s*([A-Za-z]{2})$",
+    ):
+        match = re.match(pattern, text)
+        if match:
+            return match.group(1).strip(), match.group(2).upper()
+    return text, str(fallback_state or "").strip().upper()
+
+
+def _city_label(city: str, state: str = "") -> str:
+    city = str(city or "").strip()
+    state = str(state or "").strip().upper()
+    return f"{city} — {state}" if city and state else city
+
+
+def _supplier_city_presence(row: dict) -> dict[tuple[str, str], str]:
+    """Retorna presença territorial explícita por cidade.
+
+    Nacional não implica presença local. Só entram cidades que aparecem como
+    base, equipe local ou atendimento declarado no cadastro.
+    """
+    result: dict[tuple[str, str], str] = {}
+    base_state = str(row.get("base_state") or "").strip().upper()
+    base_city = str(row.get("base_city") or "").strip()
+    if base_city:
+        key = (_normalized(base_city), _normalized(base_state))
+        result[key] = "Base local"
+
+    served_states = [item.upper() for item in _list_values(row.get("served_states")) if len(item.strip()) == 2]
+    fallback_served_state = served_states[0] if len(served_states) == 1 else ""
+
+    # Ordem de prioridade: base > equipe local > atendimento declarado.
+    for value in _list_values(row.get("local_team_locations")):
+        city, state = _city_state(value, fallback_served_state)
+        if city:
+            key = (_normalized(city), _normalized(state))
+            result.setdefault(key, "Equipe local")
+    for value in _list_values(row.get("served_cities")):
+        city, state = _city_state(value, fallback_served_state)
+        if city:
+            key = (_normalized(city), _normalized(state))
+            result.setdefault(key, "Atendimento declarado")
+    return result
+
+
+def _supplier_city_options(rows: list[dict]) -> dict[str, tuple[str, str]]:
+    options: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        base_state = str(row.get("base_state") or "").strip().upper()
+        entries: list[tuple[str, str]] = []
+        if str(row.get("base_city") or "").strip():
+            entries.append((str(row.get("base_city") or "").strip(), base_state))
+        served_states = [item.upper() for item in _list_values(row.get("served_states")) if len(item.strip()) == 2]
+        fallback = served_states[0] if len(served_states) == 1 else ""
+        for field in ("local_team_locations", "served_cities"):
+            for value in _list_values(row.get(field)):
+                entries.append(_city_state(value, fallback))
+        for city, state in entries:
+            if not city:
+                continue
+            label = _city_label(city, state)
+            options.setdefault(label, (_normalized(city), _normalized(state)))
+    return dict(sorted(options.items(), key=lambda item: _normalized(item[0])))
+
+
 def _load_suppliers(client: Any) -> list[dict]:
     suppliers = _rows(client.table("suppliers").select("*").order("name").limit(4000).execute())
     products = _rows(
@@ -188,28 +289,45 @@ except Exception as exc:
     st.stop()
 
 national = sum(1 for row in suppliers if row.get("coverage_level") == "Nacional")
-regional = sum(1 for row in suppliers if row.get("coverage_level") == "Regional / local")
+city_mapped = sum(1 for row in suppliers if _supplier_city_presence(row))
 missing = sum(1 for row in suppliers if row.get("coverage_level") == "Cobertura não cadastrada")
 metric_cols = st.columns(4)
 metric_cols[0].metric("Fornecedores", len(suppliers))
 metric_cols[1].metric("Cobertura nacional", national)
-metric_cols[2].metric("Regional / local", regional)
+metric_cols[2].metric("Com cidades mapeadas", city_mapped)
 metric_cols[3].metric("Sem cobertura cadastrada", missing)
 st.divider()
 
-search_col, coverage_col, per_page_col = st.columns([2, 1, 0.75])
+city_options = _supplier_city_options(suppliers)
+search_col, city_col, coverage_col, per_page_col = st.columns([1.8, 1.2, 1.05, 0.7])
 with search_col:
     search = st.text_input("Buscar fornecedor", placeholder="Nome, contato, cidade, cobertura, produto ou solução...")
+with city_col:
+    selected_city = st.selectbox("Cidade", ["Todas", *city_options.keys()])
 with coverage_col:
-    coverage = st.selectbox("Cobertura", ["Todos", "Nacional", "Regional / local", "Somente base cadastrada", "Cobertura não cadastrada"])
+    coverage = st.selectbox("Cobertura macro", ["Todos", "Nacional", "Regional / local", "Somente base cadastrada", "Cobertura não cadastrada"])
 with per_page_col:
     page_size = st.selectbox("Itens por página", [25, 50, 100], index=0)
 
 tokens = [token for token in search.casefold().split() if token]
+selected_city_key = city_options.get(selected_city)
 filtered = []
 for row in suppliers:
     if coverage != "Todos" and row.get("coverage_level") != coverage:
         continue
+    if selected_city_key:
+        wanted_city, wanted_state = selected_city_key
+        presences = _supplier_city_presence(row)
+        city_match = False
+        for (city_key, state_key), _presence in presences.items():
+            if city_key != wanted_city:
+                continue
+            if wanted_state and state_key and wanted_state != state_key:
+                continue
+            city_match = True
+            break
+        if not city_match:
+            continue
     haystack = " ".join(
         str(row.get(field) or "")
         for field in (
@@ -285,7 +403,7 @@ for row in visible:
             except Exception:
                 cover = None
 
-    table_rows.append({
+    row_data = {
         "_id": supplier_id,
         "Capa": clean_cover_value(cover),
         "Fornecedor": str(row.get("name") or ""),
@@ -294,7 +412,16 @@ for row in visible:
         "Brindes": int(row.get("products_count") or 0),
         "Ativações": int(row.get("activations_count") or 0),
         "Locais relacionados": int(row.get("venues_count") or 0),
-    })
+    }
+    if selected_city_key:
+        wanted_city, wanted_state = selected_city_key
+        presence_label = ""
+        for (city_key, state_key), presence in _supplier_city_presence(row).items():
+            if city_key == wanted_city and (not wanted_state or not state_key or state_key == wanted_state):
+                presence_label = presence
+                break
+        row_data["Presença na cidade"] = presence_label
+    table_rows.append(row_data)
 
 table_df = pd.DataFrame(table_rows)
 event = st.dataframe(

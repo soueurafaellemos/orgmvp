@@ -187,7 +187,18 @@ def classify_merged_review(client: Client, review: dict) -> dict:
         == normalize_match_name(target.get("name"))
         and bool(normalize_match_name(source.get("name")))
     )
+    evidence = set(analysis.get("evidence") or [])
+    strong_name_identity = bool(
+        exact_name
+        or evidence
+        & {"name_exact", "name_token_set_same", "name_semantic_alias"}
+    )
     threshold = float(MATCH_CONFIG[entity_type]["review_threshold"])
+
+    review_conflicts = evidence & {
+        "operator_conflict_review",
+        "official_domains_conflict_review",
+    }
 
     if relation.get("type") == "parent_subspace":
         classification = "hierarchy"
@@ -195,12 +206,18 @@ def classify_merged_review(client: Client, review: dict) -> dict:
     elif analysis.get("blocked"):
         classification = "incompatible"
         reason = ", ".join(analysis.get("blockers") or [])
-    elif not exact_name and float(analysis.get("score") or 0) < threshold:
+    elif strong_name_identity and review_conflicts:
+        classification = "ambiguous"
+        reason = "semantic_identity_with_real_conflict"
+    elif strong_name_identity:
+        # Uma união antiga entre nomes semanticamente equivalentes não deve ser
+        # oferecida como recuperação automática só porque faltavam endereço,
+        # domínio ou taxonomia consistente no arquivo original.
+        classification = "likely_correct"
+        reason = "semantic_identity_confirmed"
+    elif float(analysis.get("score") or 0) < threshold:
         classification = "incompatible"
         reason = "insufficient_identity_evidence"
-    elif analysis.get("auto_safe") and exact_name:
-        classification = "likely_correct"
-        reason = "exact_identity_confirmed"
     else:
         classification = "ambiguous"
         reason = "human_review_required"

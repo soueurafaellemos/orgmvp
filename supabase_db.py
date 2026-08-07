@@ -1345,6 +1345,12 @@ def revalidate_pending_duplicate_candidates(
             == normalize_match_name(candidate.get("name"))
             and bool(normalize_match_name(source.get("name")))
         )
+        evidence = set(analysis.get("evidence") or [])
+        strong_name_identity = bool(
+            exact_name
+            or evidence
+            & {"name_exact", "name_token_set_same", "name_semantic_alias"}
+        )
         review_threshold = float(config["review_threshold"])
         old_score = float(review.get("similarity_score") or 0)
         blocked = bool(analysis.get("blocked"))
@@ -1353,7 +1359,7 @@ def revalidate_pending_duplicate_candidates(
         if (
             blocked
             or (
-                not exact_name
+                not strong_name_identity
                 and corrected_score < review_threshold
                 and relation.get("type") != "parent_subspace"
             )
@@ -1381,15 +1387,16 @@ def revalidate_pending_duplicate_candidates(
             dismissed += 1
             continue
 
-        corrected_method = (
-            "normalized_name"
-            if exact_name
-            else (
-                "parent_subspace_relation"
-                if relation.get("type") == "parent_subspace"
-                else "revalidated_distinctive_taxonomy_identifier"
-            )
-        )
+        if exact_name:
+            corrected_method = "normalized_name"
+        elif "name_semantic_alias" in evidence:
+            corrected_method = "semantic_alias_or_naming_rights"
+        elif "name_token_set_same" in evidence:
+            corrected_method = "same_name_tokens"
+        elif relation.get("type") == "parent_subspace":
+            corrected_method = "parent_subspace_relation"
+        else:
+            corrected_method = "revalidated_distinctive_taxonomy_identifier"
         (
             client.table("knowledge_duplicate_candidates")
             .update(
@@ -1535,6 +1542,59 @@ def resolve_duplicate_as_hierarchy(
     return resolution_data
 
 
+def _learn_identity_aliases_after_merge(
+    client: Client,
+    *,
+    entity_type: str,
+    target_entity_id: str,
+    source: dict,
+) -> list[str]:
+    """Persiste nomes confirmados pelo usuário como aliases da entidade.
+
+    O aprendizado fica no ``raw_data`` do cadastro canônico para continuar
+    funcionando com o schema atual e acompanhar o próprio registro.
+    """
+    current = _entity_record(
+        client,
+        entity_type=entity_type,
+        entity_id=target_entity_id,
+    )
+    if not current:
+        return []
+
+    raw = _as_json_dict(current.get("raw_data"))
+    existing = raw.get("identity_aliases")
+    aliases = list(existing) if isinstance(existing, list) else []
+
+    source_raw = _as_json_dict(source.get("raw_data"))
+    source_aliases = source_raw.get("identity_aliases")
+    candidates: list[Any] = [source.get("name")]
+    if isinstance(source_aliases, list):
+        candidates.extend(source_aliases)
+
+    canonical = normalize_match_name(current.get("name"))
+    known = {normalize_match_name(item) for item in aliases if normalize_match_name(item)}
+    learned: list[str] = []
+    for value in candidates:
+        text = str(value or "").strip()
+        normalized = normalize_match_name(text)
+        if not text or not normalized or normalized == canonical or normalized in known:
+            continue
+        aliases.append(text)
+        known.add(normalized)
+        learned.append(text)
+
+    if learned:
+        raw["identity_aliases"] = aliases
+        (
+            client.table(DUPLICATE_ENTITY_TABLES[entity_type])
+            .update({"raw_data": _json_safe(raw)})
+            .eq("id", target_entity_id)
+            .execute()
+        )
+    return learned
+
+
 def resolve_duplicate_merge(
     client: Client,
     *,
@@ -1606,6 +1666,8 @@ def resolve_duplicate_merge(
     identity_evidence = {
         "sku_exact",
         "name_exact",
+        "name_token_set_same",
+        "name_semantic_alias",
         "distinctive_words_exact",
         "website_domain_same",
         "address_same",
@@ -1637,6 +1699,13 @@ def resolve_duplicate_merge(
             .eq("id", target_entity_id)
             .execute()
         )
+
+    identity_aliases_learned = _learn_identity_aliases_after_merge(
+        client,
+        entity_type=entity_type,
+        target_entity_id=target_entity_id,
+        source=source,
+    )
 
     media_result = _move_media_to_target(
         client,
@@ -1686,6 +1755,7 @@ def resolve_duplicate_merge(
             "merged_fields"
         ],
         "conflicts": merge_result["conflicts"],
+        "identity_aliases_learned": identity_aliases_learned,
         **media_result,
         **cost_result,
     }

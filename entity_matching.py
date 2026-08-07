@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -72,6 +73,94 @@ def name_tokens(value: Any) -> list[str]:
         token for token in normalize_match_name(value).split()
         if token and token not in STOP_WORDS and token not in LEGAL_SUFFIXES
     ]
+
+
+def _json_dict(value: Any) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            loaded = json.loads(value)
+        except Exception:
+            return {}
+        return dict(loaded) if isinstance(loaded, dict) else {}
+    return {}
+
+
+def _raw_identity_aliases(record: dict) -> set[str]:
+    """Aliases aprendidos em decisões humanas anteriores.
+
+    A NAVE grava estes nomes em ``raw_data.identity_aliases`` ao consolidar
+    cadastros. Isso permite que uma decisão humana passe a fazer parte da
+    identidade da entidade sem exigir uma tabela paralela ou um formato de
+    entrada rígido.
+    """
+    raw = _json_dict(record.get("raw_data"))
+    values: list[Any] = []
+    for field in ("identity_aliases", "known_aliases", "aliases"):
+        current = raw.get(field)
+        if isinstance(current, (list, tuple, set)):
+            values.extend(current)
+        elif current not in (None, ""):
+            values.append(current)
+    direct = record.get("identity_aliases")
+    if isinstance(direct, (list, tuple, set)):
+        values.extend(direct)
+    elif direct not in (None, ""):
+        values.append(direct)
+    return {
+        normalize_match_name(value)
+        for value in values
+        if normalize_match_name(value)
+    }
+
+
+def _parenthetical_parts(value: Any) -> list[str]:
+    return [
+        normalize_match_name(item)
+        for item in re.findall(r"\(([^()]*)\)", str(value or ""))
+        if normalize_match_name(item)
+    ]
+
+
+def _venue_base_variant(value: Any) -> str:
+    """Remove complemento parentético quando ele parece alias, não subespaço.
+
+    Ex.: ``Allianz Parque (Nubank Parque)`` -> ``allianz parque``.
+    Já ``Centro X (Sala 2)`` não recebe esta variante para não confundir
+    subespaços com aliases/naming rights.
+    """
+    text = str(value or "").strip()
+    if not text or "(" not in text:
+        return ""
+    parts = _parenthetical_parts(text)
+    if not parts:
+        return ""
+    for part in parts:
+        tokens = set(name_tokens(part))
+        if any(token.isdigit() for token in tokens):
+            return ""
+        if tokens & SUBSPACE_TOKENS:
+            return ""
+    return normalize_match_name(re.sub(r"\([^()]*\)", " ", text))
+
+
+def _identity_variants(record: dict, entity_type: str) -> set[str]:
+    variants = set(_raw_identity_aliases(record))
+    name = record.get("name")
+    normalized = normalize_match_name(name)
+    if normalized:
+        variants.add(normalized)
+    if entity_type == "venue":
+        base = _venue_base_variant(name)
+        if base:
+            variants.add(base)
+        # Os próprios aliases aprendidos podem ter naming rights parentéticos.
+        for alias in list(variants):
+            alias_base = _venue_base_variant(alias)
+            if alias_base:
+                variants.add(alias_base)
+    return variants
 
 
 @lru_cache(maxsize=8)
@@ -193,10 +282,23 @@ def _name_features(incoming: dict, candidate: dict, entity_type: str) -> dict:
     incoming_distinctive = distinctive_tokens(incoming_name, entity_type)
     candidate_distinctive = distinctive_tokens(candidate_name, entity_type)
     common_distinctive = incoming_distinctive & candidate_distinctive
+    incoming_variants = _identity_variants(incoming, entity_type)
+    candidate_variants = _identity_variants(candidate, entity_type)
+    exact_name = bool(incoming_name and incoming_name == candidate_name)
+    token_set_equal = bool(
+        incoming_all and candidate_all and incoming_all == candidate_all
+    )
+    alias_overlap = incoming_variants & candidate_variants
+    semantic_alias_match = bool(alias_overlap and not exact_name)
     return {
         "incoming_name": incoming_name,
         "candidate_name": candidate_name,
-        "exact_name": bool(incoming_name and incoming_name == candidate_name),
+        "exact_name": exact_name,
+        "token_set_equal": token_set_equal,
+        "semantic_alias_match": semantic_alias_match,
+        "identity_alias_overlap": sorted(alias_overlap),
+        "incoming_identity_variants": sorted(incoming_variants),
+        "candidate_identity_variants": sorted(candidate_variants),
         "all_common": sorted(incoming_all & candidate_all),
         "incoming_distinctive": sorted(incoming_distinctive),
         "candidate_distinctive": sorted(candidate_distinctive),
@@ -470,10 +572,18 @@ def venue_candidate_analysis(incoming: dict, candidate: dict) -> dict:
     evidence: list[str] = []
     score = 0.0
 
+    # Ausência de localização não é conflito. Só bloqueamos quando os dois
+    # registros possuem o dado e ele é realmente incompatível.
     if not _same_or_blank(incoming.get("city"), candidate.get("city")):
         blockers.append("city_different")
     if not _same_or_blank(incoming.get("state"), candidate.get("state")):
         blockers.append("state_different")
+
+    strong_name_identity = bool(
+        features["exact_name"]
+        or features["token_set_equal"]
+        or features["semantic_alias_match"]
+    )
 
     incoming_domain = _domain(incoming.get("website_url"))
     candidate_domain = _domain(candidate.get("website_url"))
@@ -498,25 +608,43 @@ def venue_candidate_analysis(incoming: dict, candidate: dict) -> dict:
 
     incoming_operator = str(incoming.get("operator_id") or "").strip()
     candidate_operator = str(candidate.get("operator_id") or "").strip()
+    operator_exact = bool(
+        incoming_operator and candidate_operator and incoming_operator == candidate_operator
+    )
     if incoming_operator and candidate_operator:
-        if incoming_operator == candidate_operator:
+        if operator_exact:
             evidence.append("operator_same")
             score += 0.10
+        elif strong_name_identity:
+            # Operador pode mudar com o tempo; em identidade nominal forte isso
+            # pede revisão, mas não transforma a união em incompatível.
+            evidence.append("operator_conflict_review")
         elif not (domain_exact or address_exact):
             blockers.append("operator_different")
 
     taxonomy_state, tax_first, tax_second = _taxonomy_state(
         incoming, candidate, "venue"
     )
-    if taxonomy_state == "different" and not (domain_exact or address_exact):
-        blockers.append("taxonomy_incompatible")
+    if taxonomy_state == "different":
+        if strong_name_identity:
+            # Planilhas imperfeitas podem classificar a mesma entidade com
+            # tipologias diferentes. Taxonomia é contexto, não identidade.
+            evidence.append("taxonomy_conflict_review")
+        elif not (domain_exact or address_exact):
+            blockers.append("taxonomy_incompatible")
     elif taxonomy_state == "same":
         evidence.append("taxonomy_same")
         score += 0.10
 
     if features["exact_name"]:
         evidence.append("name_exact")
-        score += 0.58
+        score = max(score, 0.99)
+    elif features["token_set_equal"]:
+        evidence.append("name_token_set_same")
+        score = max(score, 0.98)
+    elif features["semantic_alias_match"]:
+        evidence.append("name_semantic_alias")
+        score = max(score, 0.97)
     elif features["common_distinctive"]:
         evidence.append("distinctive_words_exact")
         score += 0.44 * features["distinctive_containment"]
@@ -526,23 +654,35 @@ def venue_candidate_analysis(incoming: dict, candidate: dict) -> dict:
         blockers.append("no_distinctive_word_or_identifier_in_common")
 
     if features["generic_only_overlap"] and not (
-        domain_exact or address_exact or postal_exact
+        strong_name_identity or domain_exact or address_exact or postal_exact
     ):
         blockers.append("only_generic_words_in_common")
 
-    # Two different official domains are a strong contradiction unless name
-    # and physical address both confirm the same entity.
-    if (
-        incoming_domain and candidate_domain and incoming_domain != candidate_domain
-        and not (features["exact_name"] and address_exact)
-    ):
-        blockers.append("official_domains_different")
+    # Domínios oficiais divergentes são conflito forte apenas quando o nome
+    # também não oferece identidade semântica. Rebranding/naming rights pode
+    # trocar domínio sem criar uma nova entidade física.
+    if incoming_domain and candidate_domain and incoming_domain != candidate_domain:
+        if strong_name_identity:
+            evidence.append("official_domains_conflict_review")
+        elif not (features["exact_name"] and address_exact):
+            blockers.append("official_domains_different")
 
     score += 0.05 * features["full_sequence"]
+    strong_identifier = bool(
+        domain_exact or address_exact or postal_exact or operator_exact
+    )
     auto_safe = bool(
-        features["exact_name"]
+        strong_name_identity
+        and strong_identifier
         and not blockers
-        and (domain_exact or address_exact or postal_exact or incoming_operator == candidate_operator)
+        and not any(
+            item in evidence
+            for item in (
+                "operator_conflict_review",
+                "taxonomy_conflict_review",
+                "official_domains_conflict_review",
+            )
+        )
     )
     return _analysis_result(
         score=score,

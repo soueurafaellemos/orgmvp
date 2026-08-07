@@ -2050,15 +2050,20 @@ def _project_list_table(dataframe: pd.DataFrame):
         )
         if column in dataframe.columns
     ]
+    # O UUID acompanha a tabela, mas fica oculto pelo guard transversal em
+    # branding.py. Sem ele a exclusão segura nunca consegue identificar o
+    # projeto real por trás da posição visual da linha.
+    table_columns = ["project_id", *display_columns]
 
     return st.dataframe(
-        dataframe[display_columns],
+        dataframe[table_columns],
         hide_index=True,
         width="stretch",
         height=min(620, 95 + max(len(dataframe), 1) * 38),
         on_select="rerun",
         selection_mode="single-row",
         key="nave_projects_workspace_table",
+        column_config={"project_id": None},
     )
 
 
@@ -2143,9 +2148,32 @@ def render_projects_page(client: Client) -> None:
         selected_rows = []
 
     if selected_rows:
-        selected_index = int(selected_rows[0])
-        selected_row = filtered.reset_index(drop=True).iloc[selected_index]
-        st.session_state["nave_workspace_project_id"] = str(
-            selected_row["project_id"]
-        )
-        st.rerun()
+        valid_rows = [
+            int(position)
+            for position in selected_rows
+            if isinstance(position, int)
+            and 0 <= int(position) < len(filtered)
+        ]
+        if len(valid_rows) == 1:
+            selected_row = filtered.reset_index(drop=True).iloc[valid_rows[0]]
+            action_col, hint_col = st.columns([1.2, 3.8])
+            with action_col:
+                if st.button(
+                    "Abrir projeto selecionado",
+                    width="stretch",
+                    key="open_selected_workspace_project",
+                ):
+                    st.session_state["nave_workspace_project_id"] = str(
+                        selected_row["project_id"]
+                    )
+                    st.rerun()
+            with hint_col:
+                st.caption(
+                    "A seleção permanece ativa para permitir excluir um projeto "
+                    "incorreto com confirmação antes de abri-lo."
+                )
+        elif len(valid_rows) > 1:
+            st.caption(
+                f"{len(valid_rows)} projetos selecionados. Use a ação de exclusão "
+                "acima somente se esses registros realmente entraram duplicados ou errados."
+            )

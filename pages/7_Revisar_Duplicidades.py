@@ -166,7 +166,7 @@ if not url or not key:
 
 try:
     client = get_supabase_client(url, key)
-    cleanup_key = "duplicate_revalidation_v27_8_9"
+    cleanup_key = "duplicate_revalidation_v28_1_2"
     cleanup_result = None
     if not st.session_state.get(cleanup_key):
         cleanup_result = revalidate_pending_duplicate_candidates(client)
@@ -200,9 +200,10 @@ if cleanup_result and cleanup_result.get("dismissed"):
 st.divider()
 st.subheader("Recuperar uniões já realizadas")
 st.caption(
-    "Esta área reconstrói cadastros apagados por uma união incorreta usando "
-    "o payload original da importação ou o snapshot gravado no momento da "
-    "consolidação. A recuperação não apaga o cadastro que ficou na direita."
+    "Esta área reconstrói cadastros apagados somente quando a análise atual "
+    "encontra conflito real de identidade ou relação de local/subespaço. "
+    "Variações de escrita, aliases, naming rights e campos ausentes não são "
+    "tratados como incompatibilidade por si só."
 )
 
 if recovery_candidates.empty:
