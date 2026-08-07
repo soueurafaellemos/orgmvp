@@ -83,6 +83,7 @@ class DocumentClassification(BaseModel):
         "Orçamento de ativação",
         "Catálogo / proposta de local",
         "Briefing de projeto",
+        "Base cadastral de fornecedores",
         "Documento misto",
         "Outro",
     ]
@@ -91,6 +92,7 @@ class DocumentClassification(BaseModel):
         "activation",
         "venue",
         "briefing",
+        "supplier",
         "manual_review",
     ]
     destination_base: Literal[
@@ -98,6 +100,7 @@ class DocumentClassification(BaseModel):
         "Base de soluções e ativações",
         "Base de locais e espaços",
         "Base de projetos e briefings",
+        "Base de fornecedores",
         "Revisão manual",
     ]
     document_title: str | None = None

@@ -19,6 +19,11 @@ Classifique o conjunto de arquivos pela natureza predominante:
   disponibilidade, contato e/ou preço de locação.
 - Briefing de projeto: cliente, evento, público, objetivos, budget, conceito,
   necessidades, restrições e decisões.
+- Base cadastral de fornecedores: planilha ou base tabular em que cada linha
+  representa uma empresa/parceiro, com sinais como razão social, nome fantasia,
+  CNPJ, contato, tipo de fornecedor, especialidades, serviços, estrutura,
+  capacidade produtiva, cobertura, qualidade ou condições comerciais.
+  Não exija cabeçalhos exatos nem uma planilha-modelo.
 - Documento misto: mais de uma natureza relevante sem predominância clara.
 - Outro: não corresponde aos tipos anteriores.
 
@@ -26,8 +31,11 @@ Produtos físicos vão para a Base de brindes.
 Serviços e soluções vão para a Base de soluções e ativações.
 Locais, espaços e venues vão para a Base de locais e espaços.
 Briefings vão para a Base de projetos e briefings.
+Bases cadastrais de empresas/parceiros vão para a Base de fornecedores.
 
 Não classifique um simulador, software ou sistema como brinde físico.
+Não classifique uma base de fornecedores como catálogo só porque algumas
+colunas descrevem materiais, serviços ou capacidades produtivas.
 Use somente sinais presentes nos arquivos.
 """
 

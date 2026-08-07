@@ -232,7 +232,9 @@ def _load_suppliers(client: Any) -> list[dict]:
         # Regra definitiva: existir tecnicamente em suppliers ou operar um local não basta.
         # O cadastro precisa ter sido reconhecido como fornecedor em um upload, ou aparecer
         # vinculado a produto/ativação extraídos do repertório.
-        if not supplier_id or supplier_id not in recognized_ids:
+        if not supplier_id:
+            continue
+        if supplier_id not in recognized_ids and supplier.get("recognized_as_supplier") is not True:
             continue
 
         linked_names = venue_names.get(supplier_id, [])
@@ -266,18 +268,26 @@ except Exception as exc:
 
 global_scope = sum(1 for row in suppliers if row.get("coverage_level") == "Global")
 city_mapped = sum(1 for row in suppliers if _supplier_city_presence(row))
-missing = sum(1 for row in suppliers if row.get("coverage_level") == "Cobertura não cadastrada")
+category_mapped = sum(1 for row in suppliers if _list_values(row.get("supplier_categories")))
 metric_cols = st.columns(4)
 metric_cols[0].metric("Fornecedores", len(suppliers))
 metric_cols[1].metric("Cobertura global", global_scope)
 metric_cols[2].metric("Com cidades mapeadas", city_mapped)
-metric_cols[3].metric("Sem cobertura cadastrada", missing)
+metric_cols[3].metric("Com categoria mapeada", category_mapped)
 st.divider()
 
 city_options = _supplier_city_options(suppliers)
-search_col, city_col, coverage_col, per_page_col = st.columns([1.8, 1.2, 1.05, 0.7])
+category_options = sorted({
+    category
+    for row in suppliers
+    for category in _list_values(row.get("supplier_categories"))
+    if category
+}, key=_normalized)
+search_col, category_col, city_col, coverage_col, per_page_col = st.columns([1.65, 1.25, 1.15, 1.05, 0.65])
 with search_col:
-    search = st.text_input("Buscar fornecedor", placeholder="Nome, contato, cidade, cobertura, produto ou solução...")
+    search = st.text_input("Buscar fornecedor", placeholder="Nome, categoria, especialidade, serviço, marca ou cidade...")
+with category_col:
+    selected_category = st.selectbox("Categoria", ["Todas", *category_options])
 with city_col:
     selected_city = st.selectbox("Cidade", ["Todas", *city_options.keys()])
 with coverage_col:
@@ -290,6 +300,8 @@ selected_city_key = city_options.get(selected_city)
 filtered = []
 for row in suppliers:
     if coverage != "Todos" and row.get("coverage_level") != coverage:
+        continue
+    if selected_category != "Todas" and selected_category not in _list_values(row.get("supplier_categories")):
         continue
     if selected_city_key:
         wanted_city, wanted_state = selected_city_key
@@ -309,6 +321,8 @@ for row in suppliers:
         for field in (
             "name", "contact_name", "email", "phone", "base_city", "base_state",
             "served_states", "served_cities", "coverage_notes", "linked_venue_names",
+            "supplier_categories", "specialties", "services_offered", "client_brands",
+            "market_segments", "differentiators",
         )
     ).casefold()
     if tokens and not all(token in haystack for token in tokens):
@@ -383,6 +397,7 @@ for row in visible:
         "_id": supplier_id,
         "Capa": clean_cover_value(cover),
         "Fornecedor": str(row.get("name") or ""),
+        "Categoria": " · ".join(_list_values(row.get("supplier_categories"))[:2]),
         "Cobertura": str(row.get("coverage_level") or ""),
         "Base": _base_label(row),
         "Brindes": int(row.get("products_count") or 0),

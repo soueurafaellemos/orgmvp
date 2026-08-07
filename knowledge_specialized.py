@@ -58,6 +58,9 @@ LIST_FIELDS = {
     "tags", "included_items", "excluded_items", "missing_fields",
     "infrastructure_requirements", "restrictions", "rooms_or_areas",
     "served_states", "served_cities", "local_team_locations",
+    "supplier_categories", "specialties", "services_offered", "client_brands",
+    "market_segments", "certifications", "direct_states", "partner_states",
+    "technical_structure",
 }
 NON_EDITABLE_FIELDS = INTERNAL_FIELDS | {
     "supplier_name", "media_count", "image_count", "document_count",

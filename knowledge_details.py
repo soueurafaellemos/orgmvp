@@ -46,20 +46,23 @@ VENUE_SECTIONS = [
 ]
 
 SUPPLIER_SECTIONS = [
-    ("Identificação e contato", [("name", "Nome"), ("website_url", "Site"), ("contact_name", "Contato"), ("contact_role", "Função do contato"), ("email", "E-mail"), ("phone", "Telefone"), ("whatsapp", "WhatsApp"), ("instagram_url", "Instagram"), ("linkedin_url", "LinkedIn"), ("address", "Endereço"), ("notes", "Observações")]),
-    ("Base e cobertura", [("base_city", "Cidade-base"), ("base_state", "Estado-base"), ("base_country", "País-base"), ("serves_nationally", "Atende nacionalmente"), ("served_states", "Estados atendidos"), ("served_cities", "Cidades atendidas"), ("has_local_teams", "Possui equipes locais"), ("local_team_locations", "Onde possui equipes locais")]),
+    ("Identificação e contato", [("name", "Nome"), ("legal_name", "Razão social"), ("cnpj_normalized", "CNPJ"), ("company_type", "Tipo de empresa"), ("founded_year", "Ano de fundação"), ("website_url", "Site"), ("contact_name", "Contato"), ("contact_role", "Função do contato"), ("email", "E-mail"), ("phone", "Telefone"), ("whatsapp", "WhatsApp"), ("instagram_url", "Instagram"), ("linkedin_url", "LinkedIn"), ("address", "Endereço"), ("notes", "Observações")]),
+    ("Classificação e repertório", [("supplier_categories", "Categorias"), ("specialties", "Especialidades"), ("services_offered", "Serviços oferecidos"), ("market_segments", "Segmentos atendidos"), ("client_brands", "Clientes / marcas"), ("differentiators", "Diferenciais"), ("certifications", "Certificações"), ("agency_experience", "Experiência com agências")]),
+    ("Base e cobertura", [("base_city", "Cidade-base"), ("base_state", "Estado-base"), ("base_country", "País-base"), ("serves_nationally", "Atende nacionalmente"), ("direct_states", "Estados atendidos diretamente"), ("partner_states", "Estados via parceiros"), ("served_states", "Cobertura estadual consolidada"), ("served_cities", "Cidades atendidas"), ("has_local_teams", "Possui equipes locais"), ("local_team_locations", "Onde possui equipes locais"), ("own_installation_team", "Equipe própria de instalação"), ("rollout_capacity", "Capacidade de rollout simultâneo")]),
+    ("Capacidade produtiva", [("production_internal_pct", "Produção interna"), ("production_outsourced_pct", "Produção terceirizada"), ("lead_time", "Lead time"), ("production_bottlenecks", "Gargalos produtivos"), ("facility_total_area", "Área total"), ("facility_ceiling_height", "Pé-direito"), ("team_total", "Colaboradores"), ("technical_structure", "Estrutura técnica")]),
+    ("Qualidade, ESG e comercial", [("quality_control", "Controle de qualidade"), ("accepts_technical_visit", "Aceita visita técnica"), ("sustainability_practices", "Práticas de sustentabilidade"), ("has_warranty", "Possui garantia"), ("warranty_terms", "Garantia"), ("emits_invoice", "Emite NF"), ("tax_regime", "Regime tributário"), ("payment_method", "Forma de pagamento"), ("payment_terms", "Prazo de pagamento"), ("large_volume_flexibility", "Flexibilidade para grandes volumes"), ("works_with_contract", "Trabalha com contrato")]),
     ("Logística", [("travel_pricing_mode", "Modelo de deslocamento"), ("default_travel_cost_brl", "Custo padrão de deslocamento"), ("freight_pricing_mode", "Modelo de frete"), ("default_freight_cost_brl", "Custo padrão de frete"), ("travel_lead_days", "Antecedência para deslocamento"), ("equipment_transport_required", "Exige transporte de equipamento"), ("accommodation_required", "Exige hospedagem"), ("coverage_notes", "Observações de cobertura")]),
     ("Repertório associado", [("products_count", "Brindes / produtos"), ("activations_count", "Ativações / soluções"), ("venues_count", "Locais / espaços")]),
 ]
 
 DETAIL_SCHEMAS = {"product": PRODUCT_SECTIONS, "activation": ACTIVATION_SECTIONS, "venue": VENUE_SECTIONS, "supplier": SUPPLIER_SECTIONS}
 
-INTERNAL_FIELDS = {"id", "supplier_id", "operator_id", "project_id", "import_id", "source_file_id", "normalized_name", "created_at", "updated_at", "raw_data"}
-WIDE_FIELDS = {"description", "price_notes", "licensing_notes", "staff_description", "included_items", "excluded_items", "infrastructure_requirements", "infrastructure", "restrictions", "rooms_or_areas", "missing_fields", "evidence", "notes", "coverage_notes"}
+INTERNAL_FIELDS = {"id", "supplier_id", "operator_id", "project_id", "import_id", "source_file_id", "normalized_name", "created_at", "updated_at", "raw_data", "profile_data", "recognized_as_supplier"}
+WIDE_FIELDS = {"description", "price_notes", "licensing_notes", "staff_description", "included_items", "excluded_items", "infrastructure_requirements", "infrastructure", "restrictions", "rooms_or_areas", "missing_fields", "evidence", "notes", "coverage_notes", "differentiators", "services_offered", "specialties", "client_brands", "market_segments", "certifications", "technical_structure", "production_bottlenecks", "sustainability_practices", "warranty_terms"}
 MONEY_FIELDS = {"unit_price", "price_min", "price_max", "base_price", "default_travel_cost_brl", "default_freight_cost_brl"}
-INTEGER_FIELDS = {"document_year", "price_reference_qty", "min_order_qty", "lead_time_days", "standing_capacity", "seated_capacity", "auditorium_capacity", "travel_lead_days", "products_count", "activations_count", "venues_count"}
-DECIMAL_SUFFIXES = {"capacity_ml": " ml", "total_area_sqm": " m²", "indoor_area_sqm": " m²", "outdoor_area_sqm": " m²", "ceiling_height_m": " m", "discount_percent": "%"}
-BOOLEAN_FIELDS = {"customizable", "staff_included", "serves_nationally", "has_local_teams", "equipment_transport_required", "accommodation_required"}
+INTEGER_FIELDS = {"document_year", "price_reference_qty", "min_order_qty", "lead_time_days", "standing_capacity", "seated_capacity", "auditorium_capacity", "travel_lead_days", "products_count", "activations_count", "venues_count", "founded_year", "team_total"}
+DECIMAL_SUFFIXES = {"capacity_ml": " ml", "total_area_sqm": " m²", "indoor_area_sqm": " m²", "outdoor_area_sqm": " m²", "ceiling_height_m": " m", "discount_percent": "%", "production_internal_pct": "%", "production_outsourced_pct": "%"}
+BOOLEAN_FIELDS = {"customizable", "staff_included", "serves_nationally", "has_local_teams", "equipment_transport_required", "accommodation_required", "own_installation_team", "quality_control", "accepts_technical_visit", "emits_invoice", "has_warranty", "large_volume_flexibility", "works_with_contract"}
 URL_FIELDS = {"source_image_url", "map_url", "website_url", "instagram_url", "linkedin_url"}
 ADDRESS_FIELDS = {"address"}
 
@@ -135,6 +138,10 @@ def _format_value(field: str, value: Any, record: dict) -> tuple[str, bool, bool
         return "", True, False
     if field in BOOLEAN_FIELDS or isinstance(value, bool):
         return ("Sim" if bool(value) else "Não"), False, False
+    if field == "cnpj_normalized":
+        digits = "".join(ch for ch in str(value) if ch.isdigit())
+        if len(digits) == 14:
+            return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}", False, False
     if field in MONEY_FIELDS:
         return f"{_currency_prefix(record)}{_format_number(value)}", False, False
     if field in INTEGER_FIELDS:

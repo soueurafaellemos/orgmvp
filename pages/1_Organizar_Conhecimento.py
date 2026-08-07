@@ -49,6 +49,14 @@ from gemini_extractor import (
     extract_catalog,
     extract_venues,
 )
+from models import DocumentClassification
+from supplier_ingestion import (
+    extract_supplier_registry,
+    looks_like_supplier_registry,
+    normalize_supplier_editor,
+    prepare_supplier_editor,
+    supplier_registry_score,
+)
 from supabase_db import (
     fetch_duplicate_candidates,
     get_supabase_client,
@@ -57,6 +65,7 @@ from supabase_db import (
     save_activations,
     save_briefing,
     save_catalog,
+    save_suppliers,
     save_venues,
 )
 
@@ -74,7 +83,7 @@ if not require_app_access():
 apply_nave_branding()
 page_header(
     "Upload de Conhecimento",
-    "Envie documentos para estruturar brindes, soluções, locais "
+    "Envie documentos para estruturar brindes, soluções, locais, fornecedores "
     "e projetos na base da NAVE.",
 )
 
@@ -147,6 +156,7 @@ mode_label = st.radio(
         "Brindes / produtos",
         "Soluções / ativações",
         "Locais / espaços",
+        "Fornecedores",
         "Briefing / projeto",
     ],
     horizontal=True,
@@ -157,6 +167,7 @@ mode_map = {
     "Brindes / produtos": "catalog",
     "Soluções / ativações": "activation",
     "Locais / espaços": "venue",
+    "Fornecedores": "supplier",
     "Briefing / projeto": "briefing",
 }
 selected_mode = mode_map[mode_label]
@@ -857,13 +868,6 @@ if run:
     if not uploaded_files and not pasted_text.strip():
         st.error("Envie um arquivo ou cole um texto.")
         st.stop()
-    if not api_key:
-        st.error(
-            "O serviço de leitura não está disponível. "
-            "Consulte a área de Administração."
-        )
-        st.stop()
-
     raw = [
         (file.name, file.getvalue(), file.type or None)
         for file in uploaded_files
@@ -885,12 +889,35 @@ if run:
         classification = None
 
         if route == "auto":
-            with st.spinner("Identificando o documento..."):
-                classification = classify_documents(
-                    docs,
-                    api_key=api_key,
-                    model=model,
+            if looks_like_supplier_registry(docs):
+                classification = DocumentClassification(
+                    source_files=[doc.name for doc in docs],
+                    document_type="Base cadastral de fornecedores",
+                    suggested_mode="supplier",
+                    destination_base="Base de fornecedores",
+                    document_title=docs[0].name if docs else None,
+                    summary=(
+                        "Base tabular de fornecedores reconhecida por identidade empresarial, "
+                        "contato, classificação, capacidades e cobertura."
+                    ),
+                    classification_signals=[
+                        "estrutura tabular", "campos de fornecedor", "múltiplas empresas por linha"
+                    ],
+                    confidence=supplier_registry_score(docs),
                 )
+            else:
+                if not api_key:
+                    st.error(
+                        "O serviço de leitura não está disponível. "
+                        "Consulte a área de Administração."
+                    )
+                    st.stop()
+                with st.spinner("Identificando o documento..."):
+                    classification = classify_documents(
+                        docs,
+                        api_key=api_key,
+                        model=model,
+                    )
             st.session_state["classification"] = classification
             route = classification.suggested_mode
 
@@ -914,7 +941,49 @@ if run:
             else int(end_page_value)
         )
 
-        if route == "catalog":
+        if route != "supplier" and route != "briefing" and not api_key:
+            st.error(
+                "O serviço de leitura não está disponível. "
+                "Consulte a área de Administração."
+            )
+            st.stop()
+
+        if route == "supplier":
+            if classification is None:
+                classification = DocumentClassification(
+                    source_files=[doc.name for doc in docs],
+                    document_type="Base cadastral de fornecedores",
+                    suggested_mode="supplier",
+                    destination_base="Base de fornecedores",
+                    document_title=docs[0].name if docs else None,
+                    summary="Base cadastral de fornecedores selecionada para ingestão semântica.",
+                    classification_signals=["seleção manual de fornecedores"],
+                    confidence=supplier_registry_score(docs),
+                )
+                st.session_state["classification"] = classification
+            with st.spinner("Estruturando fornecedores e normalizando a base..."):
+                supplier_result = extract_supplier_registry(docs)
+            if supplier_result.records.empty:
+                st.warning(
+                    "A NAVE reconheceu a intenção de cadastrar fornecedores, mas não encontrou linhas com identidade suficiente. "
+                    "Você não precisa adaptar a planilha a um modelo; revise apenas se o arquivo realmente contém uma empresa por linha ou coluna identificável."
+                )
+                st.stop()
+            st.session_state["result_type"] = "supplier"
+            st.session_state["result_suppliers"] = supplier_result.records
+            st.session_state["result_supplier_editor"] = prepare_supplier_editor(
+                supplier_result.records
+            )
+            st.session_state["result_supplier_diagnostics"] = supplier_result.diagnostics
+            st.session_state["result_supplier_metrics"] = {
+                "rows_detected": supplier_result.rows_detected,
+                "rows_valid": supplier_result.rows_valid,
+                "rows_skipped": supplier_result.rows_skipped,
+                "rows_merged": supplier_result.rows_merged,
+                "unique_suppliers": len(supplier_result.records),
+            }
+
+        elif route == "catalog":
             batches = extract_catalog(
                 docs,
                 api_key=api_key,
@@ -1013,6 +1082,12 @@ if run:
             )
 
         elif route == "briefing":
+            if not api_key:
+                st.error(
+                    "O serviço de leitura não está disponível. "
+                    "Consulte a área de Administração."
+                )
+                st.stop()
             briefing = extract_briefing(
                 docs,
                 pasted_text=(
@@ -1064,6 +1139,67 @@ if result_type and diagnostic:
         expanded=True,
         download_key=f"upload_{result_type}",
     )
+
+if result_type == "supplier":
+    st.divider()
+    st.header("Base de fornecedores")
+    st.caption(
+        "A NAVE interpreta bases cadastrais mesmo quando cabeçalhos, respostas e formatos variam. "
+        "Duplicidades são consolidadas por identidade e todos os campos originais permanecem preservados nos bastidores."
+    )
+
+    metrics = st.session_state.get("result_supplier_metrics") or {}
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Linhas encontradas", metrics.get("rows_detected", 0))
+    metric_cols[1].metric("Linhas aproveitadas", metrics.get("rows_valid", 0))
+    metric_cols[2].metric("Fornecedores únicos", metrics.get("unique_suppliers", 0))
+    metric_cols[3].metric("Duplicidades consolidadas", metrics.get("rows_merged", 0))
+    metric_cols[4].metric("Linhas ignoradas", metrics.get("rows_skipped", 0))
+
+    supplier_tabs = st.tabs(["Fornecedores estruturados", "Diagnóstico da ingestão"])
+    with supplier_tabs[0]:
+        supplier_editor = st.data_editor(
+            st.session_state.get("result_supplier_editor", pd.DataFrame()),
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            key="supplier_registry_editor_v2814",
+            column_config={
+                "profile_data": None,
+                "raw_data": None,
+                "recognized_as_supplier": None,
+                "supplier_name": None,
+                "website_url": st.column_config.LinkColumn("Site"),
+            },
+        )
+        st.session_state["result_supplier_editor"] = supplier_editor
+        suppliers_structured = normalize_supplier_editor(supplier_editor)
+
+    with supplier_tabs[1]:
+        diagnostics = st.session_state.get("result_supplier_diagnostics", pd.DataFrame())
+        if diagnostics is None or diagnostics.empty:
+            st.success("Nenhuma observação de ingestão.")
+        else:
+            st.dataframe(diagnostics, use_container_width=True, hide_index=True)
+        st.caption(
+            "Linhas imperfeitas não bloqueiam a importação. A NAVE normaliza percentuais, CNPJ, estados, listas, respostas booleanas e campos equivalentes; somente linhas sem identidade mínima são descartadas."
+        )
+
+    if database_client is not None:
+        _database_save_controls(
+            key="supplier",
+            label="Adicionar / enriquecer fornecedores na base",
+            save_action=lambda strategy, _auto_visuals: save_suppliers(
+                database_client,
+                suppliers_df=suppliers_structured,
+                diagnostics_df=st.session_state.get("result_supplier_diagnostics", pd.DataFrame()),
+                classification=_classification_dict(),
+                source_documents=docs,
+                existing_strategy=strategy,
+            ),
+            allow_visuals=False,
+        )
+
 
 if result_type == "catalog":
     st.divider()

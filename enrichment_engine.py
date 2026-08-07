@@ -43,7 +43,18 @@ ARRAY_FIELDS = {
     "served_states",
     "served_cities",
     "local_team_locations",
+    "supplier_categories",
+    "specialties",
+    "services_offered",
+    "client_brands",
+    "market_segments",
+    "certifications",
+    "direct_states",
+    "partner_states",
+    "technical_structure",
 }
+
+DICT_FIELDS = {"raw_data", "profile_data"}
 
 SOURCE_FIELDS = {
     "id",
@@ -336,7 +347,7 @@ def merge_record(
 
         current_value = existing.get(field)
 
-        if field == "raw_data":
+        if field in DICT_FIELDS:
             merged = _merge_dicts(
                 current_value
                 if isinstance(current_value, dict)

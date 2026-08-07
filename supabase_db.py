@@ -393,13 +393,10 @@ def _prepare_record(
     return payload
 
 
-def upsert_supplier(
-    client: Client,
-    supplier: dict,
-) -> str | None:
+def _supplier_payload(supplier: dict) -> dict:
     name = supplier.get("supplier_name") or supplier.get("name")
     if _is_missing(name):
-        return None
+        return {}
 
     normalized = normalize_name(str(name))
     payload = {
@@ -416,57 +413,108 @@ def upsert_supplier(
         "address": _json_safe(supplier.get("address")),
         "notes": _json_safe(supplier.get("notes")),
         "confidence": _json_safe(supplier.get("confidence")),
-        "raw_data": _json_safe(supplier),
+        "raw_data": _json_safe(supplier.get("raw_data") or supplier),
     }
 
-    scalar_coverage_fields = (
-        "base_city",
-        "base_state",
-        "base_country",
-        "travel_pricing_mode",
-        "default_travel_cost_brl",
-        "freight_pricing_mode",
-        "default_freight_cost_brl",
-        "travel_lead_days",
-        "coverage_notes",
+    scalar_fields = (
+        "base_city", "base_state", "base_country",
+        "travel_pricing_mode", "default_travel_cost_brl",
+        "freight_pricing_mode", "default_freight_cost_brl",
+        "travel_lead_days", "coverage_notes",
+        "legal_name", "cnpj_normalized", "company_type", "founded_year",
+        "rollout_capacity", "differentiators", "agency_experience",
+        "production_internal_pct", "production_outsourced_pct", "lead_time",
+        "production_bottlenecks", "facility_total_area", "facility_ceiling_height",
+        "team_total", "tax_regime", "sustainability_practices",
+        "warranty_terms", "payment_method", "payment_terms",
     )
-    boolean_coverage_fields = (
-        "serves_nationally",
-        "has_local_teams",
-        "equipment_transport_required",
-        "accommodation_required",
+    boolean_fields = (
+        "serves_nationally", "has_local_teams",
+        "equipment_transport_required", "accommodation_required",
+        "own_installation_team", "recognized_as_supplier",
+        "quality_control", "accepts_technical_visit", "emits_invoice",
+        "has_warranty", "large_volume_flexibility", "works_with_contract",
     )
-    array_coverage_fields = (
-        "served_states",
-        "served_cities",
-        "local_team_locations",
+    array_fields = (
+        "served_states", "served_cities", "local_team_locations",
+        "supplier_categories", "specialties", "services_offered",
+        "client_brands", "market_segments", "certifications",
+        "direct_states", "partner_states", "technical_structure",
     )
 
-    for field in scalar_coverage_fields:
+    for field in scalar_fields:
         value = supplier.get(field)
         if not _is_missing(value):
             payload[field] = _json_safe(value)
 
-    for field in boolean_coverage_fields:
+    for field in boolean_fields:
         value = supplier.get(field)
         if value is not None and not _is_missing(value):
             payload[field] = bool(value)
 
-    for field in array_coverage_fields:
-        value = split_pipe(supplier.get(field))
-        if value:
-            payload[field] = value
+    for field in array_fields:
+        value = supplier.get(field)
+        if isinstance(value, (list, tuple, set)):
+            items = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            items = split_pipe(value)
+        if items:
+            payload[field] = items
 
-    lookup = (
-        client.table("suppliers")
-        .select("*")
-        .eq("normalized_name", normalized)
-        .limit(1)
-        .execute()
+    profile_data = supplier.get("profile_data")
+    if isinstance(profile_data, dict) and profile_data:
+        payload["profile_data"] = _json_safe(profile_data)
+
+    return payload
+
+
+def _find_existing_supplier(client: Client, supplier: dict) -> dict | None:
+    cnpj = str(supplier.get("cnpj_normalized") or "").strip()
+    if cnpj:
+        try:
+            response = (
+                client.table("suppliers").select("*")
+                .eq("cnpj_normalized", cnpj).limit(1).execute()
+            )
+            if response.data:
+                return response.data[0]
+        except Exception:
+            # Compatibilidade durante rollout caso a migração ainda não tenha sido executada.
+            pass
+
+    email = str(supplier.get("email") or "").strip()
+    if email and "@" in email:
+        try:
+            response = (
+                client.table("suppliers").select("*")
+                .ilike("email", email).limit(1).execute()
+            )
+            if response.data:
+                return response.data[0]
+        except Exception:
+            pass
+
+    name = supplier.get("supplier_name") or supplier.get("name")
+    normalized = normalize_name(str(name or ""))
+    if not normalized:
+        return None
+    response = (
+        client.table("suppliers").select("*")
+        .eq("normalized_name", normalized).limit(1).execute()
     )
+    return response.data[0] if response.data else None
 
-    if lookup.data:
-        existing = lookup.data[0]
+
+def upsert_supplier(
+    client: Client,
+    supplier: dict,
+) -> str | None:
+    payload = _supplier_payload(supplier)
+    if not payload:
+        return None
+
+    existing = _find_existing_supplier(client, supplier)
+    if existing:
         result = merge_record(
             existing,
             payload,
@@ -474,7 +522,6 @@ def upsert_supplier(
             strategy="enrich_safe",
         )
         changes = result["applied_changes"]
-
         if changes:
             (
                 client.table("suppliers")
@@ -482,21 +529,129 @@ def upsert_supplier(
                 .eq("id", existing["id"])
                 .execute()
             )
-
         return existing["id"]
 
-    response = (
-        client.table("suppliers")
-        .insert(payload)
-        .execute()
+    response = client.table("suppliers").insert(payload).execute()
+    return response.data[0]["id"] if response.data else None
+
+
+def save_suppliers(
+    client: Client,
+    *,
+    suppliers_df: pd.DataFrame,
+    diagnostics_df: pd.DataFrame | None,
+    classification: dict | None,
+    source_documents: list[InputDocument],
+    existing_strategy: str = "enrich_safe",
+    skip_duplicates: bool | None = None,
+) -> dict:
+    strategy = _strategy_or_legacy(existing_strategy, skip_duplicates)
+    suppliers = dataframe_records(suppliers_df)
+    diagnostics = dataframe_records(diagnostics_df) if diagnostics_df is not None else []
+
+    import_id, file_map = create_import(
+        client,
+        classification=classification,
+        destination_base="Base de fornecedores",
+        source_documents=source_documents,
+        supplier_id=None,
+        project_id=None,
+        original_payload={"suppliers": suppliers},
+        warnings=diagnostics,
     )
 
-    return (
-        response.data[0]["id"]
-        if response.data
-        else None
-    )
+    inserted = enriched = skipped = conflict_records = 0
+    fields_filled = fields_updated = 0
+    conflicts: list[dict] = []
+    saved_ids: list[str] = []
+    default_source_file = source_documents[0].name if source_documents else None
 
+    for supplier in suppliers:
+        supplier_raw = supplier.get("raw_data") if isinstance(supplier.get("raw_data"), dict) else {}
+        source_file = supplier_raw.get("source_file") or default_source_file
+        source_file_id = file_map.get(str(source_file or "")) if source_file else None
+        payload = _supplier_payload(supplier)
+        if not payload:
+            skipped += 1
+            continue
+        payload["recognized_as_supplier"] = True
+        existing = _find_existing_supplier(client, supplier)
+        if existing:
+            if strategy == "new_only":
+                skipped += 1
+                saved_ids.append(str(existing.get("id") or ""))
+                continue
+            result = merge_record(
+                existing, payload,
+                allowed_fields=set(payload),
+                strategy=strategy,
+            )
+            changes = result.get("applied_changes") or {}
+            if changes:
+                client.table("suppliers").update(changes).eq("id", existing["id"]).execute()
+                enriched += 1
+                fields_filled += len(result.get("filled_fields") or [])
+                fields_updated += len(result.get("updated_fields") or [])
+            else:
+                skipped += 1
+            if result.get("conflicts"):
+                conflict_records += 1
+                for conflict in result.get("conflicts") or []:
+                    conflicts.append({
+                        "item_name": payload.get("name"),
+                        **conflict,
+                    })
+            _record_enrichment_event(
+                client,
+                entity_type="supplier",
+                entity_id=str(existing["id"]),
+                import_id=import_id,
+                source_file_id=source_file_id,
+                source_file=source_file,
+                source_page=None,
+                match_method=("cnpj" if supplier.get("cnpj_normalized") else "identity"),
+                strategy=strategy,
+                existing=existing,
+                incoming=payload,
+                result=result,
+            )
+            saved_ids.append(str(existing["id"]))
+            continue
+
+        response = client.table("suppliers").insert(payload).execute()
+        if response.data:
+            inserted += 1
+            saved_ids.append(str(response.data[0]["id"]))
+        else:
+            skipped += 1
+
+    first_id = next((item for item in saved_ids if item), None)
+    if first_id:
+        try:
+            client.table("imports").update({"supplier_id": first_id}).eq("id", import_id).execute()
+        except Exception:
+            pass
+
+    _update_import_result(
+        client,
+        import_id=import_id,
+        inserted=inserted,
+        enriched=enriched,
+        conflict_records=conflict_records,
+        skipped=skipped,
+    )
+    return {
+        "import_id": import_id,
+        "records_inserted": inserted,
+        "records_enriched": enriched,
+        "records_with_conflicts": conflict_records,
+        "duplicates_skipped": skipped,
+        "possible_duplicate_records": 0,
+        "fields_filled": fields_filled,
+        "fields_updated": fields_updated,
+        "conflicts": conflicts,
+        "suppliers_saved": len(saved_ids),
+    }
 
 def _supplier_maps(
     client: Client,
