@@ -7,7 +7,6 @@ import hashlib
 import streamlit as st
 from nave_table_utils import COVER_COLUMN_NAMES, sanitize_cover_dataframe
 from runtime_ui import app_logout_button
-from PIL import Image
 
 ROOT_DIR = Path(__file__).resolve().parent
 ASSET_DIR = ROOT_DIR / "assets"
@@ -15,7 +14,7 @@ NAVE_LOCKUP_PATH = ASSET_DIR / "nave_lockup.svg"
 NAVE_LOCKUP_WHITE_PATH = ASSET_DIR / "nave_lockup_white.svg"
 NAVE_SYMBOL_PATH = ASSET_DIR / "nave_symbol.svg"
 NAVE_APP_ICON_PATH = ASSET_DIR / "nave_app_icon.png"
-NAVE_APP_ICON = Image.open(NAVE_APP_ICON_PATH)
+NAVE_APP_ICON = str(NAVE_APP_ICON_PATH)
 
 BRAND_CSS = """
 <style>
