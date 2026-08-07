@@ -2,13 +2,16 @@ from __future__ import annotations
 
 """PDF visual de selecao/recomendacao da NAVE by VOE.
 
-V28.0.3.6
+V28.0.3.7
 - independente de knowledge_details.py para nao bloquear a Base de Conhecimento;
 - identifica a area de origem da exportacao;
 - enriquece os itens com a ficha completa quando o banco estiver disponivel;
 - usa capa e galeria validada do acervo, sem transformar slide/pagina de origem em foto;
 - redimensiona/comprime imagens grandes antes de inclui-las no PDF;
-- gera um caderno visual em A4 vertical, com logo oficial na abertura, uma ficha por item e rodape.
+- gera um caderno visual em A4 vertical, com o lockup oficial fornecido pelo usuario;
+- remove blocos de imagem quando nenhuma foto esta disponivel;
+- simplifica a hierarquia das fichas e aumenta o respiro entre informacoes;
+- posiciona a identificacao de exportacao no canto superior direito;
 - remove Tags da exportacao para manter o documento mais editorial.
 """
 
@@ -24,7 +27,7 @@ from urllib.request import Request, urlopen
 
 from PIL import Image as PILImage, ImageOps
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -777,17 +780,17 @@ def _pdf_value_markup(field: str, value: str) -> str:
 def _styles() -> dict[str, ParagraphStyle]:
     styles = getSampleStyleSheet()
     return {
-        "brand": ParagraphStyle("brand", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=8.5, leading=10.5, textColor=CYAN, spaceAfter=3 * mm),
+        "brand": ParagraphStyle("brand", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=8.5, leading=10.5, textColor=CYAN, alignment=TA_RIGHT),
         "cover_title": ParagraphStyle("cover_title", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=27, leading=30, textColor=NAVY, spaceAfter=4 * mm),
         "cover_area": ParagraphStyle("cover_area", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=16, leading=20, textColor=NAVY, spaceAfter=3 * mm),
         "cover_body": ParagraphStyle("cover_body", parent=styles["BodyText"], fontName="Helvetica", fontSize=10.5, leading=15, textColor=TEXT),
         "eyebrow": ParagraphStyle("eyebrow", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=8.5, leading=10, textColor=CYAN, spaceAfter=1.5 * mm),
-        "item_title": ParagraphStyle("item_title", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=18, leading=21, textColor=NAVY, spaceAfter=2 * mm),
-        "description": ParagraphStyle("description", parent=styles["BodyText"], fontName="Helvetica", fontSize=9.3, leading=13.2, textColor=TEXT),
-        "section": ParagraphStyle("section", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=NAVY, spaceBefore=3 * mm, spaceAfter=2 * mm),
+        "item_title": ParagraphStyle("item_title", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=18, leading=23, textColor=NAVY, spaceAfter=2.8 * mm),
+        "description": ParagraphStyle("description", parent=styles["BodyText"], fontName="Helvetica", fontSize=9.3, leading=14.4, textColor=TEXT),
+        "section": ParagraphStyle("section", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13.5, textColor=NAVY, spaceBefore=5 * mm, spaceAfter=2.5 * mm),
         "label": ParagraphStyle("label", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=7.7, leading=9, textColor=MUTED, spaceAfter=0.7 * mm),
-        "value": ParagraphStyle("value", parent=styles["BodyText"], fontName="Helvetica", fontSize=9.1, leading=11.5, textColor=TEXT),
-        "value_bold": ParagraphStyle("value_bold", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=9.3, leading=11.7, textColor=NAVY),
+        "value": ParagraphStyle("value", parent=styles["BodyText"], fontName="Helvetica", fontSize=9.1, leading=13.0, textColor=TEXT),
+        "value_bold": ParagraphStyle("value_bold", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=9.3, leading=13.2, textColor=NAVY),
         "small": ParagraphStyle("small", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.8, leading=10.5, textColor=MUTED),
         "metric": ParagraphStyle("metric", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=18, leading=20, textColor=NAVY, alignment=TA_CENTER),
         "metric_label": ParagraphStyle("metric_label", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.8, leading=10, textColor=MUTED, alignment=TA_CENTER),
@@ -880,22 +883,22 @@ def _image_flowable(data: bytes, max_w: float, max_h: float) -> Image | None:
         return None
 
 
-def _gallery_block(urls: list[str], styles: dict[str, ParagraphStyle], full_width: float) -> Table:
-    """Galeria editorial para A4 vertical, sempre respeitando a largura útil."""
+def _gallery_block(urls: list[str], styles: dict[str, ParagraphStyle], full_width: float) -> Table | None:
+    """Galeria editorial para A4 vertical. Sem foto valida, nao cria placeholder."""
     hero_w = min(full_width, 168 * mm)
     hero_h = 82 * mm
     gutter = 4 * mm
-    thumb_w = (hero_w - gutter) / 2
-    thumb_h = 31 * mm
     loaded: list[bytes] = []
     for url in urls[:3]:
         data = _download_image(url)
         if data:
             loaded.append(data)
-    if loaded:
-        hero = _image_flowable(loaded[0], hero_w - 4, hero_h - 4) or ImagePlaceholder(hero_w, hero_h)
-    else:
-        hero = ImagePlaceholder(hero_w, hero_h)
+    if not loaded:
+        return None
+
+    hero = _image_flowable(loaded[0], hero_w - 4, hero_h - 4)
+    if hero is None:
+        return None
     hero_cell = Table([[hero]], colWidths=[hero_w], rowHeights=[hero_h])
     hero_cell.setStyle(TableStyle([
         ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -904,19 +907,37 @@ def _gallery_block(urls: list[str], styles: dict[str, ParagraphStyle], full_widt
         ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     content: list[list[Any]] = [[hero_cell]]
-    if len(loaded) > 1:
-        thumbs = []
-        for data in loaded[1:3]:
-            thumbs.append(_image_flowable(data, thumb_w - 3, thumb_h - 3) or ImagePlaceholder(thumb_w, thumb_h, ""))
-        while len(thumbs) < 2:
-            thumbs.append(Spacer(thumb_w, thumb_h))
-        thumb_table = Table([thumbs], colWidths=[thumb_w, thumb_w], rowHeights=[thumb_h])
-        thumb_table.setStyle(TableStyle([
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), gutter),
-            ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ]))
-        content.append([thumb_table])
+
+    extras = loaded[1:3]
+    if extras:
+        if len(extras) == 1:
+            thumb_w = hero_w
+            thumb_h = 35 * mm
+            thumb = _image_flowable(extras[0], thumb_w - 3, thumb_h - 3)
+            if thumb is not None:
+                thumb_table = Table([[thumb]], colWidths=[thumb_w], rowHeights=[thumb_h])
+                thumb_table.setStyle(TableStyle([
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ]))
+                content.append([thumb_table])
+        else:
+            thumb_w = (hero_w - gutter) / 2
+            thumb_h = 31 * mm
+            thumbs = [
+                _image_flowable(data, thumb_w - 3, thumb_h - 3)
+                for data in extras
+            ]
+            if all(thumb is not None for thumb in thumbs):
+                thumb_table = Table([thumbs], colWidths=[thumb_w, thumb_w], rowHeights=[thumb_h])
+                thumb_table.setStyle(TableStyle([
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), gutter),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]))
+                content.append([thumb_table])
+
     outer = Table(content, colWidths=[hero_w], hAlign="LEFT")
     outer.setStyle(TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
@@ -934,7 +955,7 @@ def _field_card(label: str, value: str, styles: dict[str, ParagraphStyle], width
         ("BACKGROUND", (0, 0), (-1, -1), SURFACE),
         ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
         ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
     ]))
     return table
 
@@ -957,7 +978,7 @@ def _key_fields_table(entity_type: str, record: dict, styles: dict[str, Paragrap
     table.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
     return table
 
@@ -982,7 +1003,7 @@ def _detail_section(title: str, fields: list[tuple[str, str]], record: dict, sty
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LINEBELOW", (0, 0), (-1, -1), 0.35, BORDER),
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
     ]))
     elements.append(table)
     return elements
@@ -1010,7 +1031,7 @@ def _projects_section(projects: list[dict], styles: dict[str, ParagraphStyle], f
         ("BACKGROUND", (0, 0), (-1, -1), SURFACE),
         ("LINEBELOW", (0, 0), (-1, -1), 0.35, BORDER),
         ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
     ]))
     elements.append(table)
     return elements
@@ -1055,6 +1076,23 @@ def _logo_cover_block(styles: dict[str, ParagraphStyle], content_w: float) -> Ta
     return block
 
 
+def _cover_header(styles: dict[str, ParagraphStyle], content_w: float) -> Table:
+    logo = _logo_flowable(max_w=58 * mm, max_h=18 * mm)
+    left: Any = logo if logo is not None else Paragraph("<b>NAVE by VOE</b>", styles["cover_area"])
+    right = Paragraph("EXPORTAÇÃO DE REPERTÓRIO", styles["brand"])
+    table = Table([[left, right]], colWidths=[content_w * 0.62, content_w * 0.38], hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (0, 0), (0, 0), "LEFT"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return table
+
+
 def _footer(canvas: Any, doc: Any) -> None:
     page_w, _ = A4
     canvas.saveState()
@@ -1062,9 +1100,14 @@ def _footer(canvas: Any, doc: Any) -> None:
     canvas.setLineWidth(0.5)
     canvas.line(16 * mm, 10.5 * mm, page_w - 16 * mm, 10.5 * mm)
     canvas.setFillColor(MUTED)
-    canvas.setFont("Helvetica", 7.3)
-    canvas.drawString(16 * mm, 6.2 * mm, "NAVE by VOE | Conectando briefing, repertório e decisão.")
-    canvas.drawRightString(page_w - 16 * mm, 6.2 * mm, f"Página {doc.page}")
+    canvas.setFont("Helvetica", 6.3)
+    footer = (
+        "NAVE by VOE | Conectando briefing, repertório e decisão. | "
+        "Documento de uso interno. © 2026 VOE. Todos os direitos reservados."
+    )
+    canvas.drawString(16 * mm, 6.2 * mm, footer)
+    canvas.setFont("Helvetica", 6.5)
+    canvas.drawRightString(page_w - 16 * mm, 3.8 * mm, f"Página {doc.page}")
     canvas.restoreState()
 
 
@@ -1088,10 +1131,9 @@ def _cover_story(
     }
     cover_title = title_map.get(source_context, f"Seleção - {source_context}")
     story: list[Any] = [
-        Spacer(1, 5 * mm),
-        _logo_cover_block(styles, content_w),
-        Spacer(1, 7 * mm),
-        Paragraph("EXPORTAÇÃO DE REPERTÓRIO", styles["brand"]),
+        Spacer(1, 3 * mm),
+        _cover_header(styles, content_w),
+        Spacer(1, 12 * mm),
         Paragraph(_paragraph_text(cover_title), styles["cover_title"]),
         AccentRule(48 * mm),
         Spacer(1, 6 * mm),
@@ -1164,16 +1206,19 @@ def _item_story(index: int, entity_type: str, record: dict, image_urls: list[str
     description = _formatted(record, "description") or _formatted(record, "notes")
 
     elements: list[Any] = [
-        Paragraph(_paragraph_text(f"{source_context.upper()} / {index:02d} / {type_label.upper()}"), styles["eyebrow"]),
+        Paragraph(_paragraph_text(type_label.upper()), styles["eyebrow"]),
         Paragraph(_paragraph_text(name), styles["item_title"]),
         AccentRule(38 * mm, 1.7),
-        Spacer(1, 5 * mm),
+        Spacer(1, 7 * mm),
     ]
 
     gallery = _gallery_block(image_urls, styles, content_w)
-    elements.append(gallery)
-    elements.append(Spacer(1, 5 * mm))
-    elements.append(_key_fields_table(entity_type, record, styles, content_w))
+    if gallery is not None:
+        elements.append(gallery)
+        elements.append(Spacer(1, 7 * mm))
+
+    key_table = _key_fields_table(entity_type, record, styles, content_w)
+    elements.extend([Paragraph("Informações principais", styles["section"]), key_table])
 
     if description:
         elements.extend([
