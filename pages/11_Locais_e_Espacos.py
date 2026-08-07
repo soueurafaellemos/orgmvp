@@ -538,14 +538,53 @@ def _usable_photo_url(value: Any) -> bool:
     return not any(token in lowered for token in blocked)
 
 
-def _has_photo(record: dict[str, Any], media: dict[str, Any]) -> bool:
-    """Conta somente foto realmente utilizável pela NAVE.
+PHOTO_STATUS_KEYS = (
+    "FOTO_STATUS",
+    "foto_status",
+    "photo_status",
+    "status_foto",
+    "photo_validation_status",
+)
 
-    ``source_image_url`` não é prova de foto: historicamente ele pode apontar
-    para imagem de página/slide/origem do documento. Também não basta existir
-    uma chave genérica com ``image`` no raw_data.
+
+def _has_explicit_validated_photo(record: dict[str, Any]) -> bool:
+    """Reconhece a curadoria visual histórica sem transformar qualquer imagem em foto.
+
+    Os volumes de Locais gravaram explicitamente ``FOTO VALIDADA`` /
+    ``FOTO PENDENTE`` nos dados de origem. Esse status é uma evidência de
+    curadoria e deve ser respeitado mesmo quando a foto está incorporada a um
+    volume visual e ainda não foi espelhada em ``media_assets``.
+    """
+    raw_data = _json_dict(record.get("raw_data"))
+    for source in (record, raw_data):
+        for key in PHOTO_STATUS_KEYS:
+            value = str(source.get(key) or "").strip().casefold()
+            if not value:
+                continue
+            if any(token in value for token in (
+                "pendente", "rejeitad", "não valid", "nao valid",
+                "sem foto", "não possui", "nao possui",
+            )):
+                continue
+            if any(token in value for token in (
+                "foto validada", "validada", "validado", "aprovada",
+                "aprovado", "approved",
+            )):
+                return True
+    return False
+
+
+def _has_photo(record: dict[str, Any], media: dict[str, Any]) -> bool:
+    """Conta somente foto validada ou explicitamente incorporada ao acervo.
+
+    ``source_image_url`` continua não sendo prova de foto: historicamente pode
+    apontar para página/slide/origem. O status explícito da curadoria visual
+    (``FOTO VALIDADA``) é aceito porque representa uma decisão humana já
+    registrada nos volumes canônicos.
     """
     if media.get("has_photo"):
+        return True
+    if _has_explicit_validated_photo(record):
         return True
 
     raw_data = _json_dict(record.get("raw_data"))
@@ -1057,7 +1096,7 @@ metric_cols = st.columns(4)
 metric_cols[0].metric("Locais", total)
 metric_cols[1].metric("Com tipo definido", typed)
 metric_cols[2].metric("Tipo não definido", undefined)
-metric_cols[3].metric("Locais com foto", with_photo)
+metric_cols[3].metric("Locais com foto validada", with_photo)
 
 classification_plan = _classification_plan(venues)
 if undefined and classification_plan:
