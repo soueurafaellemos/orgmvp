@@ -160,7 +160,13 @@ def _hydrate_missing_covers(data):
             entity_id = str(result.iloc[position].get(id_column) or "").strip()
             if not entity_id:
                 continue
-            record = full_rows.get(entity_id) or {"id": entity_id}
+            # A linha visível pode carregar pistas de mídia que não fazem parte
+            # do SELECT enxuto da página. O registro completo continua tendo
+            # prioridade, mas os dois contextos são combinados antes da busca.
+            visible = {str(key): value for key, value in result.iloc[position].to_dict().items()}
+            record = dict(visible)
+            record.update(full_rows.get(entity_id) or {})
+            record["id"] = entity_id
             cover = primary_image_url(
                 client,
                 entity_type,

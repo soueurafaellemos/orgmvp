@@ -2,13 +2,14 @@ from __future__ import annotations
 
 """PDF visual de selecao/recomendacao da NAVE by VOE.
 
-V28.0.3.4
+V28.0.3.6
 - independente de knowledge_details.py para nao bloquear a Base de Conhecimento;
 - identifica a area de origem da exportacao;
 - enriquece os itens com a ficha completa quando o banco estiver disponivel;
 - usa capa e galeria validada do acervo, sem transformar slide/pagina de origem em foto;
 - redimensiona/comprime imagens grandes antes de inclui-las no PDF;
-- gera um caderno visual em A4 horizontal, com capa, uma ficha por item e rodape.
+- gera um caderno visual em A4 vertical, com logo oficial na abertura, uma ficha por item e rodape.
+- remove Tags da exportacao para manter o documento mais editorial.
 """
 
 from datetime import datetime
@@ -24,7 +25,7 @@ from urllib.request import Request, urlopen
 from PIL import Image as PILImage, ImageOps
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
@@ -110,7 +111,7 @@ SECTIONS: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {
             ("capacity", "Capacidade"), ("capacity_ml", "Capacidade em ml"),
             ("dimensions_raw", "Dimensoes"), ("finish", "Acabamento"),
             ("decoration", "Personalizacao / decoracao"), ("customizable", "Personalizavel"),
-            ("licensing_notes", "Licenciamento"), ("tags", "Tags"),
+            ("licensing_notes", "Licenciamento"),
         ]),
         ("Valores e condicoes", [
             ("unit_price", "Valor unitario"), ("price_min", "Valor minimo"),
@@ -145,7 +146,7 @@ SECTIONS: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {
             ("payment_terms", "Condicoes de pagamento"), ("price_notes", "Observacoes de valor"),
         ]),
         ("Classificacao e origem", [
-            ("tags", "Tags"), ("document_year", "Ano"),
+            ("document_year", "Ano"),
             ("source_file", "Arquivo de origem"), ("source_page", "Pagina de origem"),
             ("evidence", "Evidencias encontradas"),
         ]),
@@ -176,7 +177,7 @@ SECTIONS: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {
             ("base_price", "Valor base"), ("price_min", "Valor minimo"),
             ("price_max", "Valor maximo"), ("pricing_period", "Periodo de cobranca"),
             ("price_notes", "Observacoes de valor"), ("document_name", "Documento de origem"),
-            ("document_year", "Ano"), ("tags", "Tags"),
+            ("document_year", "Ano"),
         ]),
     ],
     "supplier": [
@@ -776,12 +777,12 @@ def _pdf_value_markup(field: str, value: str) -> str:
 def _styles() -> dict[str, ParagraphStyle]:
     styles = getSampleStyleSheet()
     return {
-        "brand": ParagraphStyle("brand", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=CYAN, spaceAfter=4 * mm),
-        "cover_title": ParagraphStyle("cover_title", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=31, leading=34, textColor=NAVY, spaceAfter=4 * mm),
-        "cover_area": ParagraphStyle("cover_area", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=18, leading=22, textColor=NAVY, spaceAfter=3 * mm),
+        "brand": ParagraphStyle("brand", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=8.5, leading=10.5, textColor=CYAN, spaceAfter=3 * mm),
+        "cover_title": ParagraphStyle("cover_title", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=27, leading=30, textColor=NAVY, spaceAfter=4 * mm),
+        "cover_area": ParagraphStyle("cover_area", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=16, leading=20, textColor=NAVY, spaceAfter=3 * mm),
         "cover_body": ParagraphStyle("cover_body", parent=styles["BodyText"], fontName="Helvetica", fontSize=10.5, leading=15, textColor=TEXT),
         "eyebrow": ParagraphStyle("eyebrow", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=8.5, leading=10, textColor=CYAN, spaceAfter=1.5 * mm),
-        "item_title": ParagraphStyle("item_title", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=20, leading=23, textColor=NAVY, spaceAfter=2 * mm),
+        "item_title": ParagraphStyle("item_title", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=18, leading=21, textColor=NAVY, spaceAfter=2 * mm),
         "description": ParagraphStyle("description", parent=styles["BodyText"], fontName="Helvetica", fontSize=9.3, leading=13.2, textColor=TEXT),
         "section": ParagraphStyle("section", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=NAVY, spaceBefore=3 * mm, spaceAfter=2 * mm),
         "label": ParagraphStyle("label", parent=styles["BodyText"], fontName="Helvetica-Bold", fontSize=7.7, leading=9, textColor=MUTED, spaceAfter=0.7 * mm),
@@ -879,16 +880,20 @@ def _image_flowable(data: bytes, max_w: float, max_h: float) -> Image | None:
         return None
 
 
-def _gallery_block(urls: list[str], styles: dict[str, ParagraphStyle]) -> Table:
-    hero_w, hero_h = 91 * mm, 58 * mm
-    thumb_w, thumb_h = 43.8 * mm, 18 * mm
+def _gallery_block(urls: list[str], styles: dict[str, ParagraphStyle], full_width: float) -> Table:
+    """Galeria editorial para A4 vertical, sempre respeitando a largura útil."""
+    hero_w = min(full_width, 168 * mm)
+    hero_h = 82 * mm
+    gutter = 4 * mm
+    thumb_w = (hero_w - gutter) / 2
+    thumb_h = 31 * mm
     loaded: list[bytes] = []
     for url in urls[:3]:
         data = _download_image(url)
         if data:
             loaded.append(data)
     if loaded:
-        hero = _image_flowable(loaded[0], hero_w, hero_h) or ImagePlaceholder(hero_w, hero_h)
+        hero = _image_flowable(loaded[0], hero_w - 4, hero_h - 4) or ImagePlaceholder(hero_w, hero_h)
     else:
         hero = ImagePlaceholder(hero_w, hero_h)
     hero_cell = Table([[hero]], colWidths=[hero_w], rowHeights=[hero_h])
@@ -902,17 +907,17 @@ def _gallery_block(urls: list[str], styles: dict[str, ParagraphStyle]) -> Table:
     if len(loaded) > 1:
         thumbs = []
         for data in loaded[1:3]:
-            thumbs.append(_image_flowable(data, thumb_w, thumb_h) or ImagePlaceholder(thumb_w, thumb_h, ""))
+            thumbs.append(_image_flowable(data, thumb_w - 3, thumb_h - 3) or ImagePlaceholder(thumb_w, thumb_h, ""))
         while len(thumbs) < 2:
             thumbs.append(Spacer(thumb_w, thumb_h))
         thumb_table = Table([thumbs], colWidths=[thumb_w, thumb_w], rowHeights=[thumb_h])
         thumb_table.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), gutter),
             ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
         ]))
         content.append([thumb_table])
-    outer = Table(content, colWidths=[hero_w])
+    outer = Table(content, colWidths=[hero_w], hAlign="LEFT")
     outer.setStyle(TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
@@ -1011,8 +1016,47 @@ def _projects_section(projects: list[dict], styles: dict[str, ParagraphStyle], f
     return elements
 
 
+def _logo_flowable(max_w: float = 54 * mm, max_h: float = 20 * mm) -> Image | None:
+    """Renderiza o lockup oficial já existente em assets/nave_lockup.svg.
+
+    PyMuPDF já faz parte do ambiente da NAVE. Se o SVG não estiver disponível
+    ou não puder ser rasterizado, a capa mantém um fallback tipográfico.
+    """
+    logo_path = Path(__file__).resolve().parent / "assets" / "nave_lockup.svg"
+    if not logo_path.exists():
+        return None
+    try:
+        import pymupdf
+
+        svg_doc = pymupdf.open(str(logo_path))
+        page = svg_doc[0]
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(2.4, 2.4), alpha=True)
+        png = pix.tobytes("png")
+        return _image_flowable(png, max_w, max_h)
+    except Exception:
+        return None
+
+
+def _logo_cover_block(styles: dict[str, ParagraphStyle], content_w: float) -> Table:
+    logo = _logo_flowable()
+    if logo is not None:
+        content: Any = logo
+    else:
+        content = Paragraph("<b>NAVE</b> by VOE", styles["cover_area"])
+    block = Table([[content]], colWidths=[content_w], hAlign="LEFT")
+    block.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return block
+
+
 def _footer(canvas: Any, doc: Any) -> None:
-    page_w, _ = landscape(A4)
+    page_w, _ = A4
     canvas.saveState()
     canvas.setStrokeColor(BORDER)
     canvas.setLineWidth(0.5)
@@ -1044,10 +1088,12 @@ def _cover_story(
     }
     cover_title = title_map.get(source_context, f"Seleção - {source_context}")
     story: list[Any] = [
-        Spacer(1, 8 * mm),
-        Paragraph("NAVE BY VOE / EXPORTAÇÃO DE REPERTÓRIO", styles["brand"]),
+        Spacer(1, 5 * mm),
+        _logo_cover_block(styles, content_w),
+        Spacer(1, 7 * mm),
+        Paragraph("EXPORTAÇÃO DE REPERTÓRIO", styles["brand"]),
         Paragraph(_paragraph_text(cover_title), styles["cover_title"]),
-        AccentRule(56 * mm),
+        AccentRule(48 * mm),
         Spacer(1, 6 * mm),
         Paragraph("Caderno de possibilidades e referências", styles["cover_area"]),
         Paragraph(
@@ -1124,23 +1170,15 @@ def _item_story(index: int, entity_type: str, record: dict, image_urls: list[str
         Spacer(1, 5 * mm),
     ]
 
-    left_w = 94 * mm
-    gap = 8 * mm
-    right_w = content_w - left_w - gap
-    gallery = _gallery_block(image_urls, styles)
-    key_table = _key_fields_table(entity_type, record, styles, right_w)
-    hero = Table([[gallery, key_table]], colWidths=[left_w, right_w], hAlign="LEFT")
-    hero.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    elements.append(hero)
+    gallery = _gallery_block(image_urls, styles, content_w)
+    elements.append(gallery)
+    elements.append(Spacer(1, 5 * mm))
+    elements.append(_key_fields_table(entity_type, record, styles, content_w))
 
     if description:
         elements.extend([
             Spacer(1, 4 * mm),
-            Paragraph("Visao geral", styles["section"]),
+            Paragraph("Visão geral", styles["section"]),
             Table([[Paragraph(_paragraph_text(description), styles["description"]) ]], colWidths=[content_w], style=TableStyle([
                 ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAFBFC")),
                 ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
@@ -1175,7 +1213,7 @@ def build_selection_pdf(*args: Any, **kwargs: Any) -> bytes:
         projects = _project_links(client, entity_type, record) if entity_type != "item" else []
         enriched.append((entity_type, record, images, projects))
 
-    page_size = landscape(A4)
+    page_size = A4
     buffer = BytesIO()
     left_margin = 16 * mm
     right_margin = 16 * mm

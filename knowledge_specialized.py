@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from html import escape
 from typing import Any
 from urllib.parse import urlparse
@@ -192,7 +193,12 @@ def _valid_http_url(value: Any) -> str | None:
 
 
 def _looks_like_external_photo(url: str) -> bool:
-    """Aceita foto pública de local, mas evita páginas renderizadas do acervo técnico."""
+    """Reconhece URLs que podem ser exibidas diretamente como imagem de Local.
+
+    URLs de storage do Supabase são aceitas quando apontam para um arquivo de
+    imagem. O bloqueio passa a mirar apenas renders de página/slide, evitando
+    rejeitar fotos válidas só por estarem armazenadas pela própria NAVE.
+    """
     try:
         parsed = urlparse(url)
     except Exception:
@@ -202,18 +208,42 @@ def _looks_like_external_photo(url: str) -> bool:
     query = (parsed.query or "").casefold()
     if not host:
         return False
-    if "supabase" in host or "streamlit" in host:
-        return False
-    blocked = ("rendered_page", "rendered-pages", "/pages/", "slide_render", "page_render")
+    blocked = (
+        "rendered_page", "rendered-pages", "rendered_pages",
+        "slide_render", "page_render", "slide-render", "page-render",
+        "/pages/", "/slides/",
+    )
     if any(token in path or token in query for token in blocked):
+        return False
+    if path.endswith((".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx")):
         return False
     photo_hosts = (
         "wikimedia.org", "squarespace-cdn.com", "cloudfront.net",
         "googleusercontent.com", "wp-content", "images.", "imagekit", "cdn",
     )
+    storage_hosts = ("supabase.co", "supabase.in")
     image_ext = path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"))
     image_query = any(token in query for token in ("image", "img", "webp", "jpg", "jpeg", "png"))
+    if any(token in host for token in storage_hosts):
+        return image_ext or image_query
     return image_ext or image_query or any(token in host or token in path for token in photo_hosts)
+
+
+def _wikimedia_direct_url(url: str) -> str:
+    """Converte páginas File: do Wikimedia Commons em URL redirecionável da imagem."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    host = (parsed.netloc or "").casefold()
+    marker = "/wiki/File:"
+    if "commons.wikimedia.org" not in host or marker not in parsed.path:
+        return url
+    from urllib.parse import quote, unquote
+    filename = unquote(parsed.path.split(marker, 1)[1]).strip()
+    if not filename:
+        return url
+    return "https://commons.wikimedia.org/wiki/Special:Redirect/file/" + quote(filename, safe="()_,.-")
 
 
 def _iter_visual_urls(value: Any, *, parent_key: str = ""):
@@ -239,6 +269,31 @@ def _iter_visual_urls(value: Any, *, parent_key: str = ""):
             yield url
 
 
+_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
+
+def _iter_all_http_urls(value: Any):
+    """Percorre dados estruturados e textos de evidência atrás de URLs reais.
+
+    Em Locais isso ajuda a recuperar a foto aprovada registrada no PDF visual
+    mesmo quando o extrator guardou a URL dentro de evidência/raw_data em vez
+    de um campo de imagem dedicado. Apenas URLs que passam pela validação de
+    imagem são usadas como capa.
+    """
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_all_http_urls(item)
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_all_http_urls(item)
+    elif isinstance(value, str):
+        clean = _valid_http_url(value)
+        if clean:
+            yield clean.rstrip(".,;)]}")
+        else:
+            for match in _URL_PATTERN.findall(value):
+                yield match.rstrip(".,;)]}")
+
+
 def _fallback_image(record: dict, entity_type: str | None = None) -> str | None:
     """Prioriza recortes validados; para locais aceita foto pública explicitamente visual."""
     raw = record.get("raw_data")
@@ -248,21 +303,46 @@ def _fallback_image(record: dict, entity_type: str | None = None) -> str | None:
             "product_crop_url", "activation_crop_url", "venue_crop_url",
             "cover_url", "main_image_url", "gallery_image_url", "photo_url",
             "foto_url", "official_photo_url", "imagem_url",
+            "approved_photo_url", "foto_url_aprovada", "FOTO_URL_APROVADA",
+            "cover_image_url", "venue_photo_url", "venue_image_url",
         ):
             url = _valid_http_url(raw.get(key))
             if url:
-                return url
+                if entity_type == "venue":
+                    url = _wikimedia_direct_url(url)
+                    if _looks_like_external_photo(url):
+                        return url
+                else:
+                    return url
         if entity_type in {"venue", "supplier"}:
             for url in _iter_visual_urls(raw):
-                if entity_type != "venue" or _looks_like_external_photo(url):
+                if entity_type == "venue":
+                    url = _wikimedia_direct_url(url)
+                    if _looks_like_external_photo(url):
+                        return url
+                else:
+                    return url
+
+    # Alguns volumes visuais guardam a URL da foto dentro de raw_data/evidence
+    # sem um nome de campo padronizado. Para Locais, percorremos essas URLs e
+    # aceitamos somente links que realmente pareçam imagens (ou File: Commons).
+    if entity_type == "venue":
+        for value in (raw, record.get("evidence"), record.get("notes")):
+            for candidate in _iter_all_http_urls(value):
+                url = _wikimedia_direct_url(candidate)
+                if _looks_like_external_photo(url):
                     return url
 
     # Em Locais, source_image_url pode ser a foto oficial pública importada
     # pelo catálogo visual. Esse fallback não é aplicado a Brindes/Ativações.
     if entity_type == "venue":
-        url = _valid_http_url(record.get("source_image_url"))
-        if url and _looks_like_external_photo(url):
-            return url
+        for key in ("source_image_url", "photo_url", "foto_url", "official_photo_url", "approved_photo_url"):
+            url = _valid_http_url(record.get(key))
+            if not url:
+                continue
+            url = _wikimedia_direct_url(url)
+            if _looks_like_external_photo(url):
+                return url
     return None
 
 
