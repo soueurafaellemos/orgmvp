@@ -163,6 +163,48 @@ def supplier_city_presence(row: dict) -> dict[tuple[str, str], str]:
     return result
 
 
+
+def supplier_country_values(row: dict) -> list[str]:
+    """Países explicitamente encontrados no cadastro, sem convertê-los em cidades."""
+    values: list[str] = []
+    candidates = [row.get("base_country"), row.get("country")]
+    for field in ("base_city", "served_cities", "local_team_locations"):
+        candidates.extend(list_values(row.get(field)))
+    seen: set[str] = set()
+    for value in candidates:
+        text = str(value or "").strip()
+        if not text or not is_country_name(text, [row.get("base_country"), row.get("country")]):
+            continue
+        key = normalize_geo(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(text)
+    return values
+
+
+def supplier_country_only_geography(row: dict) -> bool:
+    """Retorna True quando a única granularidade territorial real é país.
+
+    País não é convertido em cidade. Também não usamos essa classificação quando
+    há declaração explícita de cobertura nacional, estado ou presença municipal.
+    Nesses casos existe informação territorial mais específica do que apenas país.
+    """
+    if row.get("serves_nationally") is True:
+        return False
+    if supplier_city_presence(row):
+        return False
+    base_state = str(row.get("base_state") or "").strip()
+    if base_state:
+        return False
+    served_states = [
+        item for item in list_values(row.get("served_states"))
+        if len(item.strip()) == 2 and item.strip().isalpha()
+    ]
+    if served_states:
+        return False
+    return bool(supplier_country_values(row))
+
 def city_label(city: str, state: str = "") -> str:
     city = str(city or "").strip()
     state = str(state or "").strip().upper()

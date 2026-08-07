@@ -21,6 +21,8 @@ from nave_table_utils import clean_cover_value
 from supplier_geography import (
     supplier_city_options as _geo_supplier_city_options,
     supplier_city_presence as _geo_supplier_city_presence,
+    supplier_country_only_geography as _geo_country_only,
+    supplier_country_values as _geo_country_values,
 )
 
 
@@ -95,6 +97,10 @@ def _recognized_supplier_ids(
 
 
 def _coverage_level(row: dict) -> str:
+    # Quando a única granularidade territorial informada é país, mantemos o
+    # cadastro em nível Global. Não inferimos nenhuma cidade a partir disso.
+    if _geo_country_only(row):
+        return "Global"
     if row.get("serves_nationally") is True:
         return "Nacional"
     # Só considera cobertura municipal quando a geografia foi validada como
@@ -108,11 +114,17 @@ def _coverage_level(row: dict) -> str:
 
 
 def _base_label(row: dict) -> str:
-    return ", ".join(
+    base = ", ".join(
         str(row.get(field) or "").strip()
         for field in ("base_city", "base_state")
         if str(row.get(field) or "").strip()
     )
+    if base and not _geo_country_only(row):
+        return base
+    countries = _geo_country_values(row)
+    if _geo_country_only(row) and countries:
+        return " / ".join(countries)
+    return base
 
 
 def _list_values(value: Any) -> list[str]:
@@ -252,12 +264,12 @@ except Exception as exc:
     st.error(f"A NAVE não conseguiu carregar os fornecedores: {exc}")
     st.stop()
 
-national = sum(1 for row in suppliers if row.get("coverage_level") == "Nacional")
+global_scope = sum(1 for row in suppliers if row.get("coverage_level") == "Global")
 city_mapped = sum(1 for row in suppliers if _supplier_city_presence(row))
 missing = sum(1 for row in suppliers if row.get("coverage_level") == "Cobertura não cadastrada")
 metric_cols = st.columns(4)
 metric_cols[0].metric("Fornecedores", len(suppliers))
-metric_cols[1].metric("Cobertura nacional", national)
+metric_cols[1].metric("Cobertura global", global_scope)
 metric_cols[2].metric("Com cidades mapeadas", city_mapped)
 metric_cols[3].metric("Sem cobertura cadastrada", missing)
 st.divider()
@@ -269,7 +281,7 @@ with search_col:
 with city_col:
     selected_city = st.selectbox("Cidade", ["Todas", *city_options.keys()])
 with coverage_col:
-    coverage = st.selectbox("Cobertura macro", ["Todos", "Nacional", "Regional / local", "Somente base cadastrada", "Cobertura não cadastrada"])
+    coverage = st.selectbox("Cobertura macro", ["Todos", "Global", "Nacional", "Regional / local", "Somente base cadastrada", "Cobertura não cadastrada"])
 with per_page_col:
     page_size = st.selectbox("Itens por página", [25, 50, 100], index=0)
 

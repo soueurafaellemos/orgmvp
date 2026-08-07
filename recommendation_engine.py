@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from supplier_geography import is_country_name, real_city_values
+from supplier_geography import is_country_name, real_city_values, supplier_country_only_geography
 
 
 STOPWORDS = {
@@ -213,6 +213,16 @@ def _coverage_score(
     has_local_teams = _boolean(
         row.get("supplier_has_local_teams")
     )
+    country_only = supplier_country_only_geography({
+        "base_country": row.get("supplier_base_country"),
+        "country": row.get("supplier_country"),
+        "base_city": row.get("supplier_base_city"),
+        "base_state": row.get("supplier_base_state"),
+        "served_cities": row.get("supplier_served_cities"),
+        "served_states": row.get("supplier_served_states"),
+        "local_team_locations": row.get("supplier_local_team_locations"),
+        "serves_nationally": _boolean(row.get("supplier_serves_nationally")),
+    })
 
     has_coverage_data = any(
         (
@@ -279,6 +289,17 @@ def _coverage_score(
             "Cobertura estadual confirmada",
             ["Atendimento confirmado no estado."],
             warnings,
+        )
+
+    if country_only:
+        return (
+            5.0 if city else 6.0,
+            "Cobertura global — cidade não especificada",
+            ["Fornecedor cadastrado apenas em nível de país/global."],
+            [
+                *warnings,
+                "Não há cidade operacional confirmada; a NAVE não infere presença municipal a partir do país.",
+            ],
         )
 
     if national:
