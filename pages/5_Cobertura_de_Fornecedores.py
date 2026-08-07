@@ -5,6 +5,7 @@ import json
 import math
 import re
 import unicodedata
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -266,14 +267,17 @@ except Exception as exc:
     st.error(f"A NAVE não conseguiu carregar os fornecedores: {exc}")
     st.stop()
 
+active_count = sum(1 for row in suppliers if row.get("is_active") is not False)
+inactive_count = len(suppliers) - active_count
 global_scope = sum(1 for row in suppliers if row.get("coverage_level") == "Global")
 city_mapped = sum(1 for row in suppliers if _supplier_city_presence(row))
 category_mapped = sum(1 for row in suppliers if _list_values(row.get("supplier_categories")))
-metric_cols = st.columns(4)
-metric_cols[0].metric("Fornecedores", len(suppliers))
-metric_cols[1].metric("Cobertura global", global_scope)
-metric_cols[2].metric("Com cidades mapeadas", city_mapped)
-metric_cols[3].metric("Com categoria mapeada", category_mapped)
+metric_cols = st.columns(5)
+metric_cols[0].metric("Ativos", active_count)
+metric_cols[1].metric("Inativos", inactive_count)
+metric_cols[2].metric("Cobertura global", global_scope)
+metric_cols[3].metric("Com cidades mapeadas", city_mapped)
+metric_cols[4].metric("Com categoria mapeada", category_mapped)
 st.divider()
 
 city_options = _supplier_city_options(suppliers)
@@ -283,9 +287,11 @@ category_options = sorted({
     for category in _list_values(row.get("supplier_categories"))
     if category
 }, key=_normalized)
-search_col, category_col, city_col, coverage_col, per_page_col = st.columns([1.65, 1.25, 1.15, 1.05, 0.65])
+search_col, status_col, category_col, city_col, coverage_col, per_page_col = st.columns([1.55, 0.8, 1.15, 1.05, 1.0, 0.6])
 with search_col:
     search = st.text_input("Buscar fornecedor", placeholder="Nome, categoria, especialidade, serviço, marca ou cidade...")
+with status_col:
+    selected_status = st.selectbox("Status", ["Ativos", "Inativos", "Todos"], index=0)
 with category_col:
     selected_category = st.selectbox("Categoria", ["Todas", *category_options])
 with city_col:
@@ -299,6 +305,11 @@ tokens = [token for token in search.casefold().split() if token]
 selected_city_key = city_options.get(selected_city)
 filtered = []
 for row in suppliers:
+    is_active = row.get("is_active") is not False
+    if selected_status == "Ativos" and not is_active:
+        continue
+    if selected_status == "Inativos" and is_active:
+        continue
     if coverage != "Todos" and row.get("coverage_level") != coverage:
         continue
     if selected_category != "Todas" and selected_category not in _list_values(row.get("supplier_categories")):
@@ -397,6 +408,7 @@ for row in visible:
         "_id": supplier_id,
         "Capa": clean_cover_value(cover),
         "Fornecedor": str(row.get("name") or ""),
+        "Status": "Ativo" if row.get("is_active") is not False else "Inativo",
         "Categoria": " · ".join(_list_values(row.get("supplier_categories"))[:2]),
         "Cobertura": str(row.get("coverage_level") or ""),
         "Base": _base_label(row),
@@ -429,10 +441,65 @@ event = st.dataframe(
     },
 )
 selected_rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
-if not selected_rows:
+valid_selected = [
+    position for position in selected_rows
+    if isinstance(position, int) and 0 <= position < len(visible)
+]
+
+if valid_selected:
+    selected_suppliers = [visible[position] for position in valid_selected]
+    active_selected = [row for row in selected_suppliers if row.get("is_active") is not False]
+    inactive_selected = [row for row in selected_suppliers if row.get("is_active") is False]
+
+    with st.expander("Disponibilidade do fornecedor", expanded=False):
+        st.caption(
+            "Fornecedores inativos permanecem integralmente na base e podem ser "
+            "consultados ou reativados, mas não entram nas recomendações de Brindes "
+            "e Ativações enquanto estiverem inativos."
+        )
+        reason = st.text_input(
+            "Motivo da inativação (opcional)",
+            key=f"supplier_inactive_reason_{_table_key(page, visible)}",
+            placeholder="Ex.: bloqueado pelo grupo, problema comercial, não homologado...",
+        )
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            if st.button(
+                f"Inativar selecionado(s) ({len(active_selected)})",
+                disabled=not active_selected,
+                width="stretch",
+                key=f"supplier_inactivate_{_table_key(page, visible)}",
+            ):
+                now = datetime.now(timezone.utc).isoformat()
+                for supplier in active_selected:
+                    client.table("suppliers").update({
+                        "is_active": False,
+                        "inactive_reason": reason.strip() or None,
+                        "status_updated_at": now,
+                    }).eq("id", str(supplier.get("id") or "")).execute()
+                st.success(f"{len(active_selected)} fornecedor(es) inativado(s).")
+                st.rerun()
+        with action_cols[1]:
+            if st.button(
+                f"Reativar selecionado(s) ({len(inactive_selected)})",
+                disabled=not inactive_selected,
+                width="stretch",
+                key=f"supplier_reactivate_{_table_key(page, visible)}",
+            ):
+                now = datetime.now(timezone.utc).isoformat()
+                for supplier in inactive_selected:
+                    client.table("suppliers").update({
+                        "is_active": True,
+                        "inactive_reason": None,
+                        "status_updated_at": now,
+                    }).eq("id", str(supplier.get("id") or "")).execute()
+                st.success(f"{len(inactive_selected)} fornecedor(es) reativado(s).")
+                st.rerun()
+
+if not valid_selected:
     st.caption("Selecione uma linha para abrir os dados completos, acervo, edição e projetos relacionados.")
     st.stop()
-position = selected_rows[0]
+position = valid_selected[0]
 if not isinstance(position, int) or position < 0 or position >= len(visible):
     st.stop()
 selected = visible[position]

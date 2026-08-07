@@ -623,6 +623,18 @@ def score_candidates(
         ):
             continue
 
+        # Fornecedor inativo permanece no repertório histórico, mas os seus
+        # Brindes e Ativações não podem ser sugeridos para novos projetos.
+        # Locais continuam independentes do status comercial do operador.
+        supplier_active = raw.get("supplier_is_active")
+        if (
+            raw.get("item_type") in {"product", "activation"}
+            and raw.get("supplier_id")
+            and supplier_active is not None
+            and not _boolean(supplier_active)
+        ):
+            continue
+
         relevance, relevance_reasons = _relevance_score(
             raw,
             query_tokens,

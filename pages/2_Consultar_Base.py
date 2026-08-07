@@ -1211,14 +1211,22 @@ if (
 if selected_records:
     st.divider()
 
-    if len(selected_records) > 1:
-        st.subheader(
-            f"{len(selected_records)} possibilidades selecionadas"
-        )
-        st.caption(
-            "A seleção múltipla pode ser exportada em um PDF "
-            "para apresentação interna ou compartilhamento."
-        )
+    if len(selected_records) >= 1:
+        selection_count = len(selected_records)
+        if selection_count == 1:
+            st.subheader("1 possibilidade selecionada")
+            st.caption(
+                "O item selecionado pode ser exportado em um PDF "
+                "para apresentação interna ou compartilhamento."
+            )
+        else:
+            st.subheader(
+                f"{selection_count} possibilidades selecionadas"
+            )
+            st.caption(
+                "A seleção pode ser exportada em um PDF "
+                "para apresentação interna ou compartilhamento."
+            )
 
         selection_preview = pd.DataFrame(
             [
@@ -1384,7 +1392,7 @@ if selected_records:
                     use_container_width=True,
                 )
 
-    else:
+    if len(selected_records) == 1:
         selected = selected_records[0]
 
         entity_type = str(

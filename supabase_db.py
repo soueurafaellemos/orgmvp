@@ -5088,6 +5088,39 @@ def fetch_recommendation_candidates(
     if frame.empty:
         return frame
 
+    # V28.1.4.2: o status do fornecedor é uma propriedade do fornecedor,
+    # não do item de repertório. Anotamos os candidatos sem removê-los aqui
+    # porque a Base de Conhecimento também usa esta view e deve continuar
+    # exibindo produtos/ativações históricos de fornecedores inativos.
+    frame["supplier_is_active"] = True
+    if "supplier_id" in frame.columns:
+        supplier_ids = [
+            str(value)
+            for value in frame["supplier_id"].dropna().astype(str).unique().tolist()
+            if str(value).strip()
+        ]
+        if supplier_ids:
+            try:
+                supplier_status_rows = (
+                    client.table("suppliers")
+                    .select("id,is_active")
+                    .in_("id", supplier_ids)
+                    .execute()
+                ).data or []
+                supplier_status = {
+                    str(row.get("id")): row.get("is_active") is not False
+                    for row in supplier_status_rows
+                    if isinstance(row, dict) and row.get("id")
+                }
+                frame["supplier_is_active"] = frame["supplier_id"].map(
+                    lambda value: supplier_status.get(str(value), True)
+                    if value not in (None, "")
+                    else True
+                )
+            except Exception:
+                # Compatibilidade durante rollout antes do SQL desta versão.
+                frame["supplier_is_active"] = True
+
     try:
         custom_taxonomy_aliases = (
             fetch_custom_taxonomy_aliases(

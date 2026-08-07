@@ -333,8 +333,10 @@ def _install_cover_table_guard() -> None:
             if isinstance(position, int) and hasattr(cleaned, "iloc") and 0 <= position < len(cleaned)
         ]
 
-        # Duas ou mais linhas das áreas visuais mantêm o PDF de possibilidades.
-        if promote_to_multi and cover_column and hasattr(cleaned, "iloc") and len(valid_rows) >= 2:
+        # Uma ou mais linhas das áreas visuais podem gerar o PDF de repertório.
+        # A seleção múltipla continua disponível, mas um único item também deve
+        # poder ser exportado sem obrigar o usuário a marcar um segundo registro.
+        if promote_to_multi and cover_column and hasattr(cleaned, "iloc") and len(valid_rows) >= 1:
             from selection_pdf import build_selection_pdf
 
             selected_records = cleaned.iloc[valid_rows].to_dict(orient="records")
@@ -365,8 +367,9 @@ def _install_cover_table_guard() -> None:
                     key=f"nave_selection_pdf_{kwargs.get('key', 'table')}",
                 )
             with info_col:
+                item_label = "item selecionado" if len(valid_rows) == 1 else "itens selecionados"
                 st.caption(
-                    f"{len(valid_rows)} itens selecionados. "
+                    f"{len(valid_rows)} {item_label}. "
                     "A ficha abaixo continua usando o primeiro item selecionado."
                 )
 
