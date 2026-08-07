@@ -847,6 +847,42 @@ def _normalized_location_value(value: Any) -> str:
     return normalize_match_name(value)
 
 
+_BRAZIL_STATE_ALIASES = {
+    "acre": "ac",
+    "alagoas": "al",
+    "amapa": "ap",
+    "amazonas": "am",
+    "bahia": "ba",
+    "ceara": "ce",
+    "distrito federal": "df",
+    "espirito santo": "es",
+    "goias": "go",
+    "maranhao": "ma",
+    "mato grosso": "mt",
+    "mato grosso do sul": "ms",
+    "minas gerais": "mg",
+    "para": "pa",
+    "paraiba": "pb",
+    "parana": "pr",
+    "pernambuco": "pe",
+    "piaui": "pi",
+    "rio de janeiro": "rj",
+    "rio grande do norte": "rn",
+    "rio grande do sul": "rs",
+    "rondonia": "ro",
+    "roraima": "rr",
+    "santa catarina": "sc",
+    "sao paulo": "sp",
+    "sergipe": "se",
+    "tocantins": "to",
+}
+
+
+def _normalized_state_value(value: Any) -> str:
+    normalized = normalize_match_name(value)
+    return _BRAZIL_STATE_ALIASES.get(normalized, normalized)
+
+
 def _venue_values_conflict(first: Any, second: Any) -> bool:
     first_value = _normalized_location_value(first)
     second_value = _normalized_location_value(second)
@@ -3259,9 +3295,9 @@ def _exact_venue_duplicate_groups(
             if _normalized_location_value(item.get("city"))
         }
         states = {
-            _normalized_location_value(item.get("state"))
+            _normalized_state_value(item.get("state"))
             for item in group
-            if _normalized_location_value(item.get("state"))
+            if _normalized_state_value(item.get("state"))
         }
 
         if len(cities) > 1 or len(states) > 1:
@@ -3429,6 +3465,61 @@ def _move_venue_references(
             )
     except Exception as exc:
         warnings.append(f"knowledge_curation_states: {exc}")
+
+    # Vínculos transversais que usam identidade genérica não possuem FK para
+    # venues. Eles precisam acompanhar o cadastro preservado explicitamente.
+    try:
+        source_links = (
+            client.table("knowledge_project_links")
+            .select("*")
+            .eq("entity_type", "venue")
+            .eq("entity_id", source_entity_id)
+            .execute()
+        )
+        for link in source_links.data or []:
+            project_id = str(link.get("project_id") or "")
+            relationship_type = str(link.get("relationship_type") or "")
+            if not project_id or not relationship_type:
+                continue
+            duplicate = (
+                client.table("knowledge_project_links")
+                .select("id")
+                .eq("entity_type", "venue")
+                .eq("entity_id", target_entity_id)
+                .eq("project_id", project_id)
+                .eq("relationship_type", relationship_type)
+                .limit(1)
+                .execute()
+            )
+            if duplicate.data:
+                (
+                    client.table("knowledge_project_links")
+                    .delete()
+                    .eq("id", link.get("id"))
+                    .execute()
+                )
+            else:
+                (
+                    client.table("knowledge_project_links")
+                    .update({"entity_id": target_entity_id})
+                    .eq("id", link.get("id"))
+                    .execute()
+                )
+    except Exception as exc:
+        warnings.append(f"knowledge_project_links: {exc}")
+
+    # Ambientes já relacionados ao cadastro duplicado devem continuar
+    # pertencendo ao mesmo empreendimento após a consolidação.
+    try:
+        (
+            client.table("venues")
+            .update({"parent_venue_id": target_entity_id})
+            .eq("parent_venue_id", source_entity_id)
+            .neq("id", target_entity_id)
+            .execute()
+        )
+    except Exception as exc:
+        warnings.append(f"venues.parent_venue_id: {exc}")
 
     try:
         (
