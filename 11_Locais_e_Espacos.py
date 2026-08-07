@@ -477,9 +477,27 @@ def _media_index(
         summary["has_image"] = summary["has_image"] or is_image
         # Foto válida para o indicador precisa estar explicitamente no acervo
         # visual do local. Um PNG de mapa/planta ou imagem técnica não conta.
+        # Crops generated automatically from PDFs/slides are visual candidates,
+        # not validated venue photos. They may still be used elsewhere for review,
+        # but must not inflate the "Locais com foto" metric.
+        auto_generated = bool(asset.get("auto_generated"))
+        metadata = _json_dict(asset.get("metadata"))
+        explicitly_validated = bool(
+            metadata.get("validated")
+            or metadata.get("approved")
+            or metadata.get("photo_validated")
+        )
         is_photo = bool(
-            asset_type in {"main_image", "gallery_image"}
-            or (bool(asset.get("is_primary")) and is_image and not is_plan)
+            is_image
+            and not is_plan
+            and (
+                not auto_generated
+                or explicitly_validated
+            )
+            and (
+                asset_type in {"main_image", "gallery_image"}
+                or bool(asset.get("is_primary"))
+            )
         )
         summary["has_photo"] = summary["has_photo"] or is_photo
         summary["has_plan"] = summary["has_plan"] or is_plan
@@ -666,15 +684,17 @@ def _save_manual_type(
 
 
 def _unresolved_type_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
-    """Gera a fila dos casos que realmente exigem pesquisa externa."""
+    """Gera a fila completa dos Locais que continuam sem tipo definido.
+
+    A exportação precisa refletir exatamente o indicador "Tipo não definido".
+    Sugestões internas podem continuar disponíveis para backfill, mas não escondem
+    uma linha do CSV enquanto o tipo ainda não foi efetivamente gravado.
+    """
     rows: list[dict[str, Any]] = []
     for record in records:
         if normalize_venue_type(record.get("venue_type")):
             continue
         raw = _json_dict(record.get("raw_data"))
-        suggestion = venue_type_suggestion(record)
-        if suggestion and float(suggestion.get("confidence") or 0) >= 0.9:
-            continue
 
         def first(*keys: str) -> str:
             for key in keys:
@@ -685,6 +705,7 @@ def _unresolved_type_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
                     return str(value).strip()
             return ""
 
+        suggestion = venue_type_suggestion(record)
         rows.append({
             "ID": str(record.get("id") or ""),
             "Local": first("name", "LOCAL", "local"),
@@ -695,6 +716,8 @@ def _unresolved_type_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
             "Categoria original": first("category", "CATEGORIA", "TIPO_LOCAL_PADRONIZADO", "GRUPO_LOCAL"),
             "Arquivo / origem": first("source_file", "document_name", "ARQUIVO_VISUAL", "ARQUIVO_VISUAL_PREVISTO"),
             "Tipo atual": str(record.get("venue_type") or "").strip(),
+            "Sugestão interna": str((suggestion or {}).get("label") or ""),
+            "Confiança interna": (suggestion or {}).get("confidence"),
         })
     return pd.DataFrame(rows)
 
@@ -1071,25 +1094,31 @@ if undefined and classification_plan:
                     st.code(str(exc))
 
 # O que sobra após o backfill seguro é a fila real de pesquisa externa.
+# A ação fica sempre visível: ela não deve depender de o usuário descobrir
+# um expander escondido abaixo das métricas.
 residual_df = _unresolved_type_dataframe(venues)
-if not residual_df.empty:
-    with st.expander(
-        f"{len(residual_df)} local(is) ainda precisam de pesquisa complementar",
-        expanded=False,
-    ):
-        st.caption(
-            "A NAVE não encontrou evidência local suficiente para classificar "
-            "esses registros sem risco de erro. Baixe a lista para pesquisa "
-            "externa e enriquecimento em lote."
+if undefined > 0:
+    st.markdown("#### Tipologias ainda pendentes")
+    st.caption(
+        f"{undefined} local(is) continuam sem tipo definido. "
+        "Baixe a lista completa para pesquisa e enriquecimento externo."
+    )
+    if residual_df.empty:
+        st.warning(
+            "Há locais sem tipo, mas a fila não pôde ser montada. "
+            "Recarregue a página; se persistir, consulte os detalhes técnicos."
         )
-        st.dataframe(residual_df, hide_index=True, width="stretch")
+    else:
         st.download_button(
-            "Baixar pendentes de tipologia (CSV)",
+            f"Baixar {len(residual_df)} pendente(s) de tipologia (CSV)",
             data=residual_df.to_csv(index=False).encode("utf-8-sig"),
             file_name="NAVE_LOCAIS_PENDENTES_TIPOLOGIA.csv",
             mime="text/csv",
             width="stretch",
+            key="nave_download_venue_type_pending",
         )
+        with st.expander("Ver quais locais estão no arquivo", expanded=False):
+            st.dataframe(residual_df, hide_index=True, width="stretch")
 
 st.markdown("### Encontrar um local")
 filter_cols = st.columns([2.2, 1.8, 1.2, 1.2])
