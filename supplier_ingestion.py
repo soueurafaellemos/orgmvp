@@ -439,14 +439,20 @@ def _read_frames(doc: InputDocument) -> list[tuple[str, pd.DataFrame]]:
 
 
 def supplier_registry_score(docs: list[InputDocument]) -> float:
-    score = 0.0
+    """Pontua uma base cadastral sem exigir cabeçalhos literais.
+
+    O detector combina sinais textuais e o mapeamento semântico usado pelo
+    próprio parser. Assim, pequenas mudanças no formulário/Excel não obrigam
+    a pessoa a adaptar a planilha para a NAVE.
+    """
     best = 0.0
     for doc in docs:
         for _sheet, df in _read_frames(doc):
             headers = {_header_key(col) for col in df.columns}
             if not headers:
                 continue
-            signals = {
+
+            literal_signals = {
                 "razao social": 0.15,
                 "nome fantasia": 0.12,
                 "cnpj": 0.22,
@@ -456,9 +462,31 @@ def supplier_registry_score(docs: list[InputDocument]) -> float:
                 "marque as especialidades que sao atendidas pela sua empresa": 0.12,
                 "marque os servicos que sao oferecidos pela sua empresa": 0.12,
             }
-            score = sum(weight for signal, weight in signals.items() if signal in headers)
+            score = sum(
+                weight for signal, weight in literal_signals.items()
+                if signal in headers
+            )
+
+            mapped = {map_header(col) for col in df.columns}
+            mapped.discard(None)
+            identity_fields = {
+                "legal_name", "trade_name", "cnpj", "email", "phone",
+            }
+            supplier_fields = {
+                "supplier_types", "specialties", "services_offered",
+                "direct_states", "partner_states", "serves_nationally",
+                "market_segments", "client_brands",
+            }
+            identity_count = len(mapped & identity_fields)
+            supplier_count = len(mapped & supplier_fields)
+            score += min(0.30, identity_count * 0.07)
+            score += min(0.25, supplier_count * 0.045)
+
             if len(df) >= 2:
                 score += 0.05
+            if len(df) >= 5 and identity_count >= 1 and supplier_count >= 1:
+                score += 0.10
+
             best = max(best, min(score, 1.0))
     return best
 

@@ -889,6 +889,12 @@ if run:
         classification = None
 
         if route == "auto":
+            supplier_score = supplier_registry_score(docs)
+            supplier_preflight = None
+
+            # Bases tabulares de fornecedores são resolvidas localmente antes da
+            # classificação geral. Isso evita que uma planilha claramente cadastral
+            # seja tratada como documento misto só porque contém muitos temas.
             if looks_like_supplier_registry(docs):
                 classification = DocumentClassification(
                     source_files=[doc.name for doc in docs],
@@ -903,7 +909,7 @@ if run:
                     classification_signals=[
                         "estrutura tabular", "campos de fornecedor", "múltiplas empresas por linha"
                     ],
-                    confidence=supplier_registry_score(docs),
+                    confidence=max(0.90, supplier_score),
                 )
             else:
                 if not api_key:
@@ -918,13 +924,47 @@ if run:
                         api_key=api_key,
                         model=model,
                     )
+
+                # Segunda rede de segurança: se a classificação geral ficar
+                # inconclusiva em uma planilha, tentamos estruturar as linhas.
+                # Duas ou mais empresas válidas são evidência suficiente de uma
+                # base cadastral, sem exigir template nem intervenção manual.
+                if classification.suggested_mode == "manual_review":
+                    try:
+                        supplier_preflight = extract_supplier_registry(docs)
+                    except Exception:
+                        supplier_preflight = None
+                    if (
+                        supplier_preflight is not None
+                        and supplier_preflight.rows_valid >= 2
+                        and len(supplier_preflight.records) >= 2
+                    ):
+                        classification = DocumentClassification(
+                            source_files=[doc.name for doc in docs],
+                            document_type="Base cadastral de fornecedores",
+                            suggested_mode="supplier",
+                            destination_base="Base de fornecedores",
+                            document_title=docs[0].name if docs else None,
+                            summary=(
+                                "Base de fornecedores reconhecida pela estrutura real das linhas, "
+                                "mesmo com cabeçalhos ou respostas fora de um padrão rígido."
+                            ),
+                            classification_signals=[
+                                "múltiplas empresas identificáveis",
+                                "estrutura tabular",
+                                "normalização semântica de campos",
+                            ],
+                            confidence=max(0.78, supplier_score),
+                        )
+                        st.session_state["supplier_preflight_result"] = supplier_preflight
+
             st.session_state["classification"] = classification
             route = classification.suggested_mode
 
             if route == "manual_review":
                 st.warning(
-                    "Documento misto ou inconclusivo. "
-                    "Escolha manualmente um modo."
+                    "A NAVE ainda não encontrou uma estrutura predominante com segurança. "
+                    "Escolha manualmente um modo somente se o material realmente misturar bases diferentes."
                 )
                 st.stop()
 
@@ -961,8 +1001,12 @@ if run:
                     confidence=supplier_registry_score(docs),
                 )
                 st.session_state["classification"] = classification
-            with st.spinner("Estruturando fornecedores e normalizando a base..."):
-                supplier_result = extract_supplier_registry(docs)
+            supplier_result = st.session_state.pop("supplier_preflight_result", None)
+            if supplier_result is None:
+                with st.spinner("Estruturando fornecedores e normalizando a base..."):
+                    supplier_result = extract_supplier_registry(docs)
+            else:
+                st.success("Base cadastral de fornecedores detectada automaticamente.")
             if supplier_result.records.empty:
                 st.warning(
                     "A NAVE reconheceu a intenção de cadastrar fornecedores, mas não encontrou linhas com identidade suficiente. "
