@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
-from supabase import Client
+if TYPE_CHECKING:
+    from supabase import Client
+else:
+    Client = Any
 
 from project_identity import (
     AUTO_LINK_THRESHOLD,
@@ -17,6 +20,131 @@ from project_identity import (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _first_non_blank(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if value in ([], {}, ()):
+            continue
+        return value
+    return None
+
+
+def _json_mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _raw_project_value(
+    row: Mapping[str, Any],
+    *keys: str,
+) -> Any:
+    raw_data = _json_mapping(row.get("raw_data"))
+    for key in keys:
+        value = raw_data.get(key)
+        if value not in (None, "", [], {}, ()):
+            return value
+    return None
+
+
+def _project_row_for_matching(
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Adapta a estrutura real de ``projects`` ao motor de identidade.
+
+    A tabela atual usa:
+
+    - event_date
+    - location_city / location_state
+    - audience_quantity
+    - budget_total_brl
+
+    Campos complementares ainda podem existir dentro de ``raw_data``.
+    """
+    item = dict(row)
+    item["project_id"] = item.get("id")
+
+    item["event_start"] = _first_non_blank(
+        item.get("event_date"),
+        _raw_project_value(
+            item,
+            "event_start",
+            "event_date_start",
+            "start_date",
+        ),
+    )
+    item["event_end"] = _first_non_blank(
+        _raw_project_value(
+            item,
+            "event_end",
+            "event_date_end",
+            "end_date",
+            "check_out",
+            "checkout",
+        ),
+        item.get("event_date"),
+    )
+
+    item["city"] = _first_non_blank(
+        item.get("location_city"),
+        _raw_project_value(item, "city", "location_city"),
+    )
+    item["state"] = _first_non_blank(
+        item.get("location_state"),
+        _raw_project_value(item, "state", "location_state"),
+    )
+    item["audience_size"] = _first_non_blank(
+        item.get("audience_quantity"),
+        _raw_project_value(
+            item,
+            "audience_size",
+            "audience_quantity",
+            "participants",
+            "pax",
+        ),
+    )
+    item["budget_amount"] = _first_non_blank(
+        item.get("budget_total_brl"),
+        _raw_project_value(
+            item,
+            "budget_amount",
+            "budget_total_brl",
+            "budget",
+            "estimated_budget",
+        ),
+    )
+    item["venue_name"] = _first_non_blank(
+        _raw_project_value(
+            item,
+            "venue_name",
+            "venue",
+            "location_name",
+            "local",
+            "hotel",
+        ),
+    )
+    item["edition"] = _first_non_blank(
+        item.get("edition"),
+        _raw_project_value(item, "edition", "event_edition"),
+    )
+    item["reference_year"] = _first_non_blank(
+        item.get("reference_year"),
+        _raw_project_value(
+            item,
+            "reference_year",
+            "event_year",
+            "document_year",
+        ),
+    )
+    item["keywords"] = _first_non_blank(
+        item.get("keywords"),
+        _raw_project_value(item, "keywords", "tags"),
+        [],
+    )
+    return item
 
 
 def fetch_project_signature_rows(
@@ -39,32 +167,30 @@ def fetch_projects_for_matching(
     *,
     limit: int = 5000,
 ) -> list[dict[str, Any]]:
-    signature_rows = fetch_project_signature_rows(
-        client,
-        limit=limit,
-    )
+    # Durante uma implantação incompleta, a tabela de assinaturas pode ainda
+    # não existir. Nesse caso, o motor continua funcional usando projects.
+    try:
+        signature_rows = fetch_project_signature_rows(
+            client,
+            limit=limit,
+        )
+    except Exception:
+        signature_rows = []
+
     if signature_rows:
         return signature_rows
 
     response = (
         client.table("projects")
-        .select(
-            "id,project_name,client_brand,event_name,event_type,"
-            "event_date_start,event_date_end,city,state,"
-            "audience_size,budget_amount,keywords,raw_data"
-        )
+        .select("*")
         .order("updated_at", desc=True)
         .limit(limit)
         .execute()
     )
-    rows = []
-    for row in response.data or []:
-        item = dict(row)
-        item["project_id"] = item.get("id")
-        item["event_start"] = item.get("event_date_start")
-        item["event_end"] = item.get("event_date_end")
-        rows.append(item)
-    return rows
+    return [
+        _project_row_for_matching(row)
+        for row in (response.data or [])
+    ]
 
 
 def project_signature_payload(
@@ -134,11 +260,7 @@ def upsert_project_signature(
         .upsert(payload, on_conflict="project_id")
         .execute()
     )
-    return (
-        dict(response.data[0])
-        if response.data
-        else payload
-    )
+    return dict(response.data[0]) if response.data else payload
 
 
 def match_document_to_projects(
@@ -398,11 +520,7 @@ def decide_project_association(
         signals=signals,
     )
     best = matches[0] if matches else None
-
-    if not best:
-        decision = "unmatched"
-    else:
-        decision = best.decision
+    decision = best.decision if best else "unmatched"
 
     result = {
         "decision": decision,
