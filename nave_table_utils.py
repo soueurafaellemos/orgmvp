@@ -4,8 +4,16 @@ from typing import Any
 
 import pandas as pd
 
+from nave_runtime_fixes import apply_runtime_fixes
+
+
+# ``branding`` importa este módulo antes dos extratores nas páginas da NAVE.
+# Aplicar aqui mantém o hotfix transversal sem duplicar código em cada página.
+apply_runtime_fixes()
+
 
 COVER_COLUMN_NAMES = ("Capa", "capa")
+
 _MISSING_COVER_TEXT = {"none", "nan", "null", "<na>"}
 
 
@@ -28,7 +36,9 @@ def sanitize_cover_dataframe(data: Any) -> Any:
     """Copia DataFrames e limpa apenas colunas chamadas Capa/capa."""
     if not isinstance(data, pd.DataFrame):
         return data
-    cover_columns = [name for name in COVER_COLUMN_NAMES if name in data.columns]
+    cover_columns = [
+        name for name in COVER_COLUMN_NAMES if name in data.columns
+    ]
     if not cover_columns:
         return data
     result = data.copy()
