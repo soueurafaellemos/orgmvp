@@ -476,29 +476,15 @@ def _media_index(
             "technical_sheet",
         }
         summary["has_image"] = summary["has_image"] or is_image
-        # Foto válida para o indicador precisa estar explicitamente no acervo
-        # visual do local. Um PNG de mapa/planta ou imagem técnica não conta.
-        # Crops generated automatically from PDFs/slides are visual candidates,
-        # not validated venue photos. They may still be used elsewhere for review,
-        # but must not inflate the "Locais com foto" metric.
-        auto_generated = bool(asset.get("auto_generated"))
-        metadata = _json_dict(asset.get("metadata"))
-        explicitly_validated = bool(
-            metadata.get("validated")
-            or metadata.get("approved")
-            or metadata.get("photo_validated")
-        )
+        # Aqui medimos presença REAL no acervo, não status de validação.
+        # O snapshot operacional mostrou que os PDFs visuais já geraram crops
+        # armazenados em media_assets. Esses arquivos são fotos existentes na
+        # NAVE e devem contar como "foto no acervo", mesmo quando auto_generated.
+        # Plantas, mapas e fichas técnicas continuam excluídos.
         is_photo = bool(
             is_image
             and not is_plan
-            and (
-                not auto_generated
-                or explicitly_validated
-            )
-            and (
-                asset_type in {"main_image", "gallery_image"}
-                or bool(asset.get("is_primary"))
-            )
+            and asset_type in {"main_image", "gallery_image"}
         )
         summary["has_photo"] = summary["has_photo"] or is_photo
         summary["has_plan"] = summary["has_plan"] or is_plan
@@ -576,16 +562,15 @@ def _has_explicit_validated_photo(record: dict[str, Any]) -> bool:
 
 
 def _has_photo(record: dict[str, Any], media: dict[str, Any]) -> bool:
-    """Conta somente foto validada ou explicitamente incorporada ao acervo.
+    """Indica se o Local possui foto utilizável de fato na NAVE.
 
-    ``source_image_url`` continua não sendo prova de foto: historicamente pode
-    apontar para página/slide/origem. O status explícito da curadoria visual
-    (``FOTO VALIDADA``) é aceito porque representa uma decisão humana já
-    registrada nos volumes canônicos.
+    A fonte de verdade operacional é o acervo materializado: main_image ou
+    gallery_image em media_assets. Também aceitamos URL de foto explicitamente
+    aprovada preservada no cadastro. Um simples status "FOTO VALIDADA" sem
+    arquivo/URL NÃO entra nesse contador, pois não existe imagem utilizável ainda.
+    ``source_image_url`` também não conta porque pode ser página/slide de origem.
     """
     if media.get("has_photo"):
-        return True
-    if _has_explicit_validated_photo(record):
         return True
 
     raw_data = _json_dict(record.get("raw_data"))
@@ -595,6 +580,42 @@ def _has_photo(record: dict[str, Any], media: dict[str, Any]) -> bool:
         if _usable_photo_url(raw_data.get(key)):
             return True
     return False
+
+
+def _cover_url_from_media(record: dict[str, Any], media_rows: list[dict[str, Any]]) -> str | None:
+    """Resolve a melhor foto realmente armazenada para a coluna Capa.
+
+    Prioriza arquivos manuais, depois imagem principal, depois galeria. Crops
+    automáticos são aceitos porque são arquivos de imagem existentes no acervo;
+    plantas/mapas nunca entram como capa.
+    """
+    raw_data = _json_dict(record.get("raw_data"))
+    for key in PHOTO_RAW_KEYS:
+        value = record.get(key) or raw_data.get(key)
+        if _usable_photo_url(value):
+            return str(value).strip()
+
+    candidates = []
+    for asset in _media_for_record(record, media_rows):
+        asset_type = str(asset.get("asset_type") or "").strip()
+        mime_type = str(asset.get("mime_type") or "").strip().casefold()
+        if asset_type not in {"main_image", "gallery_image"}:
+            continue
+        if mime_type and not mime_type.startswith("image/"):
+            continue
+        candidates.append(asset)
+
+    def _cover_sort(asset: dict[str, Any]) -> tuple[int, int, int, str]:
+        manual = 0 if not bool(asset.get("auto_generated")) else 1
+        main = 0 if str(asset.get("asset_type") or "") == "main_image" else 1
+        primary = 0 if bool(asset.get("is_primary")) else 1
+        return (manual, main, primary, str(asset.get("created_at") or ""))
+
+    for asset in sorted(candidates, key=_cover_sort):
+        url = _resolve_asset_url(_database_client(), asset)
+        if url:
+            return url
+    return None
 
 
 def _has_plan(record: dict[str, Any], media: dict[str, Any]) -> bool:
@@ -1260,7 +1281,7 @@ metric_cols = st.columns(4)
 metric_cols[0].metric("Locais", total)
 metric_cols[1].metric("Com tipo definido", typed)
 metric_cols[2].metric("Tipo não definido", undefined)
-metric_cols[3].metric("Locais com foto validada", with_photo)
+metric_cols[3].metric("Locais com foto no acervo", with_photo)
 
 
 st.caption(
@@ -1423,11 +1444,7 @@ table_rows = []
 for row in filtered:
     venue_id = str(row.get("id") or "")
     media = media_by_venue.get(venue_id, {})
-    cover = (
-        media.get("cover_url")
-        or str(row.get("source_image_url") or "").strip()
-        or None
-    )
+    cover = _cover_url_from_media(row, media_rows)
     label = display_venue_type(row.get("venue_type"))
     table_rows.append(
         {
