@@ -195,10 +195,12 @@ def classify_merged_review(client: Client, review: dict) -> dict:
     )
     threshold = float(MATCH_CONFIG[entity_type]["review_threshold"])
 
-    review_conflicts = evidence & {
-        "operator_conflict_review",
-        "official_domains_conflict_review",
-    }
+    # Divergências históricas de operador, domínio ou taxonomia são sinais
+    # contextuais, não prova de que dois cadastros semanticamente idênticos
+    # representam locais diferentes. Rebranding, naming rights e planilhas
+    # incompletas são comuns. Conflito real continua sendo representado pelos
+    # blockers (cidade/UF incompatíveis, identificadores fortes conflitantes,
+    # ausência de identidade distintiva etc.).
 
     if relation.get("type") == "parent_subspace":
         classification = "hierarchy"
@@ -206,13 +208,10 @@ def classify_merged_review(client: Client, review: dict) -> dict:
     elif analysis.get("blocked"):
         classification = "incompatible"
         reason = ", ".join(analysis.get("blockers") or [])
-    elif strong_name_identity and review_conflicts:
-        classification = "ambiguous"
-        reason = "semantic_identity_with_real_conflict"
     elif strong_name_identity:
-        # Uma união antiga entre nomes semanticamente equivalentes não deve ser
-        # oferecida como recuperação automática só porque faltavam endereço,
-        # domínio ou taxonomia consistente no arquivo original.
+        # União antiga entre nomes semanticamente equivalentes deve ser tratada
+        # como correta quando não existe trava real. Isso cobre, por exemplo,
+        # sigla + nome expandido, ordem de tokens, aliases e naming rights.
         classification = "likely_correct"
         reason = "semantic_identity_confirmed"
     elif float(analysis.get("score") or 0) < threshold:
@@ -670,7 +669,7 @@ def recover_merged_review(
     old_resolution["recovery"] = recovery_data
 
     strategy = (
-        "merge_reverted_as_hierarchy"
+        "merge_restructured_as_internal_subspace"
         if classification == "hierarchy"
         else "merge_reverted_as_distinct"
     )

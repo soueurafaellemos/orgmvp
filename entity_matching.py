@@ -792,8 +792,14 @@ def best_candidate_match(entity_type: str, incoming: dict, candidates: list[dict
         }
 
     strong_evidence = {
-        "sku_exact", "name_exact", "distinctive_words_exact",
-        "website_domain_same", "address_same", "postal_code_same",
+        "sku_exact",
+        "name_exact",
+        "name_token_set_same",
+        "name_semantic_alias",
+        "distinctive_words_exact",
+        "website_domain_same",
+        "address_same",
+        "postal_code_same",
     } & set(analysis.get("evidence") or [])
     if score >= config["review_threshold"] and strong_evidence:
         return {

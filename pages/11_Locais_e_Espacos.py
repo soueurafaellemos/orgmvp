@@ -382,7 +382,7 @@ def _load_venues() -> list[dict[str, Any]]:
         record["parent_venue_name"] = names_by_id.get(parent_id) if parent_id else None
         scope = str(record.get("venue_scope") or "venue").strip().casefold()
         record["venue_scope_label"] = (
-            "Subespaço" if scope == "subspace" else "Local principal"
+            "Ambiente interno" if scope == "subspace" else "Local principal"
         )
 
     # Some historical schemas do not have archived_at. Filter only when the
@@ -393,8 +393,33 @@ def _load_venues() -> list[dict[str, Any]]:
         for record in records
         if not record.get("archived_at")
     ]
+
+    by_id = {str(record.get("id") or ""): record for record in records}
+    children_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        scope = str(record.get("venue_scope") or "venue").strip().casefold()
+        parent_id = str(record.get("parent_venue_id") or "").strip()
+        if scope == "subspace" and parent_id and parent_id in by_id:
+            children_by_parent.setdefault(parent_id, []).append(record)
+
+    visible_records: list[dict[str, Any]] = []
+    for record in records:
+        venue_id = str(record.get("id") or "")
+        scope = str(record.get("venue_scope") or "venue").strip().casefold()
+        parent_id = str(record.get("parent_venue_id") or "").strip()
+        # Ambientes internos fazem parte da ficha do local principal e não
+        # aparecem como um segundo local na lista. Se o vínculo estiver órfão,
+        # o registro continua visível para não esconder informação da base.
+        if scope == "subspace" and parent_id and parent_id in by_id:
+            continue
+        record["_subspaces"] = sorted(
+            children_by_parent.get(venue_id, []),
+            key=lambda item: str(item.get("name") or "").casefold(),
+        )
+        visible_records.append(record)
+
     return sorted(
-        records,
+        visible_records,
         key=lambda record: str(record.get("name") or "").casefold(),
     )
 
@@ -529,7 +554,7 @@ def _city_filter_label(row: dict[str, Any]) -> str:
 
 
 def _record_search_text(record: dict[str, Any]) -> str:
-    fields = (
+    fields = [
         record.get("name"),
         record.get("venue_type"),
         record.get("description"),
@@ -538,7 +563,20 @@ def _record_search_text(record: dict[str, Any]) -> str:
         record.get("neighborhood"),
         record.get("address"),
         record.get("tags"),
-    )
+    ]
+    # Pesquisar pelo nome de um pavilhão/sala também deve encontrar o
+    # empreendimento principal que o contém.
+    for subspace in record.get("_subspaces") or []:
+        fields.extend(
+            [
+                subspace.get("name"),
+                subspace.get("subspace_name"),
+                subspace.get("venue_type"),
+                subspace.get("description"),
+                subspace.get("rooms_or_areas"),
+                subspace.get("tags"),
+            ]
+        )
     return " ".join(str(value or "") for value in fields).casefold()
 
 
@@ -994,8 +1032,7 @@ for row in filtered:
             "Local": str(row.get("name") or "Sem nome"),
             "Tipo": label,
             "Grupo": venue_group(row.get("venue_type")),
-            "Nível": str(row.get("venue_scope_label") or "Local principal"),
-            "Local principal": str(row.get("parent_venue_name") or ""),
+            "Ambientes": len(row.get("_subspaces") or []),
             "Cidade": str(row.get("city") or "Não informado"),
             "Estado": str(row.get("state") or ""),
             "Capacidade": _format_capacity(_capacity(row)),
@@ -1012,7 +1049,7 @@ table_signature_payload = "\x1f".join(
     [
         str(search),
         str(selected_type),
-        str(selected_state),
+        str(selected_city),
         str(selected_media),
         *(
             table_df["_id"].astype(str).tolist()
@@ -1046,10 +1083,10 @@ else:
             "Local": st.column_config.TextColumn("Local", width="large"),
             "Tipo": st.column_config.TextColumn("Tipo", width="medium"),
             "Grupo": st.column_config.TextColumn("Grupo", width="medium"),
-            "Nível": st.column_config.TextColumn("Nível", width="small"),
-            "Local principal": st.column_config.TextColumn(
-                "Local principal",
-                width="medium",
+            "Ambientes": st.column_config.NumberColumn(
+                "Ambientes",
+                width="small",
+                help="Quantidade de pavilhões, salas ou outros ambientes internos vinculados ao local.",
             ),
             "Cidade": st.column_config.TextColumn("Cidade", width="medium"),
             "Estado": st.column_config.TextColumn("UF", width="small"),
@@ -1099,11 +1136,6 @@ if selected_record:
     with title_cols[0]:
         st.markdown(f"## {selected_record.get('name') or 'Local'}")
         st.markdown(_type_badge(current_label), unsafe_allow_html=True)
-        if str(selected_record.get("venue_scope") or "").casefold() == "subspace":
-            parent_name = str(
-                selected_record.get("parent_venue_name") or "Local principal"
-            )
-            st.caption(f"Subespaço vinculado a **{parent_name}**")
         location = " · ".join(
             part
             for part in (
@@ -1148,6 +1180,39 @@ if selected_record:
                 st.error("Não foi possível salvar o tipo do local.")
                 with st.expander("Detalhes técnicos"):
                     st.code(str(exc))
+
+    subspaces = list(selected_record.get("_subspaces") or [])
+    if subspaces:
+        st.markdown("### Ambientes e subespaços")
+        st.caption(
+            "Pavilhões, salas e outros ambientes pertencem a este local e "
+            "não aparecem como locais independentes na lista principal."
+        )
+        for index, subspace in enumerate(subspaces, start=1):
+            subspace_name = str(
+                subspace.get("subspace_name")
+                or subspace.get("name")
+                or f"Ambiente {index}"
+            )
+            subspace_type = display_venue_type(subspace.get("venue_type"))
+            label_suffix = (
+                f" · {subspace_type}"
+                if subspace_type and subspace_type != UNDEFINED_VENUE_TYPE
+                else ""
+            )
+            with st.expander(f"{subspace_name}{label_suffix}", expanded=False):
+                render_complete_record("venue", subspace)
+                sub_gallery = _build_record_gallery(subspace, media_rows)
+                if sub_gallery["images"]:
+                    st.markdown("#### Imagens deste ambiente")
+                    cols = st.columns(min(2, len(sub_gallery["images"])))
+                    for image_index, item in enumerate(sub_gallery["images"][:4]):
+                        with cols[image_index % len(cols)]:
+                            st.image(
+                                item["url"],
+                                caption=item.get("label") or subspace_name,
+                                width="stretch",
+                            )
 
     gallery = _build_record_gallery(selected_record, media_rows)
     visual_count = len(gallery["images"])

@@ -1521,7 +1521,7 @@ def resolve_duplicate_as_hierarchy(
         .execute()
     )
     resolution_data = {
-        "decision": "kept_separate_with_hierarchy",
+        "decision": "incorporated_as_internal_subspace",
         "parent_venue_id": parent_id,
         "subspace_entity_id": source_id,
         "match_analysis": _json_safe(analysis),
@@ -1531,7 +1531,7 @@ def resolve_duplicate_as_hierarchy(
         .update(
             {
                 "status": "different",
-                "resolution_strategy": "linked_as_subspace",
+                "resolution_strategy": "incorporated_as_subspace",
                 "resolved_at": pd.Timestamp.utcnow().isoformat(),
                 "resolution_data": resolution_data,
             }
