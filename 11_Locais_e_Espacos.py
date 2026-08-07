@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+from io import BytesIO
 from datetime import datetime, timezone
 from typing import Any
 
@@ -640,6 +641,169 @@ def _format_capacity(value: int | None) -> str:
     return f"{value:,}".replace(",", ".")
 
 
+def _snapshot_scalar(value: Any) -> Any:
+    """Preserva valores simples e serializa estruturas para o snapshot XLSX."""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple, set)):
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            return str(value)
+    return value
+
+
+def _raw_visual_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expõe separadamente sinais visuais preservados em raw_data para auditoria."""
+    venue_id = str(record.get("id") or "")
+    venue_name = str(record.get("name") or "")
+    raw = _json_dict(record.get("raw_data"))
+    rows: list[dict[str, Any]] = []
+
+    def walk(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                child = f"{path}.{key}" if path else str(key)
+                walk(item, child)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for idx, item in enumerate(value):
+                walk(item, f"{path}[{idx}]")
+            return
+        key_text = path.casefold()
+        if any(token in key_text for token in (
+            "foto", "photo", "image", "imagem", "capa", "cover",
+            "planta", "floor", "mapa", "brochure", "visual",
+        )):
+            rows.append({
+                "venue_id": venue_id,
+                "local": venue_name,
+                "campo": path,
+                "valor": _snapshot_scalar(value),
+            })
+
+    walk(raw)
+    return rows
+
+
+def _photo_status_from_record(record: dict[str, Any]) -> str:
+    raw = _json_dict(record.get("raw_data"))
+    for source in (record, raw):
+        for key in PHOTO_STATUS_KEYS:
+            text = str(source.get(key) or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _approved_photo_url_from_record(record: dict[str, Any]) -> str:
+    raw = _json_dict(record.get("raw_data"))
+    for source in (record, raw):
+        for key in PHOTO_RAW_KEYS:
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _build_operational_snapshot_xlsx(
+    venues: list[dict[str, Any]],
+    media_rows: list[dict[str, Any]],
+) -> bytes:
+    """Gera um snapshot auditável do estado atual de Locais no Supabase.
+
+    Este arquivo não tenta substituir a curadoria canônica. Ele expõe tudo que
+    a NAVE tem hoje para permitir reconciliação segura: registro, raw_data,
+    mídia genérica e sinais visuais legados.
+    """
+    media_by_venue = _media_index(media_rows)
+
+    venue_rows: list[dict[str, Any]] = []
+    visual_rows: list[dict[str, Any]] = []
+    for record in venues:
+        row = {str(k): _snapshot_scalar(v) for k, v in dict(record).items()}
+        venue_id = str(record.get("id") or "")
+        media = media_by_venue.get(venue_id, {})
+        row.update({
+            "NAVE_tipo_normalizado": normalize_venue_type(record.get("venue_type")) or "",
+            "NAVE_tipo_exibicao": display_venue_type(record.get("venue_type")),
+            "NAVE_foto_detectada_na_interface": "Sim" if _has_photo(record, media) else "Não",
+            "NAVE_status_foto_preservado": _photo_status_from_record(record),
+            "NAVE_url_foto_preservada": _approved_photo_url_from_record(record),
+            "NAVE_qtd_midias": int(media.get("count") or 0),
+            "NAVE_tem_imagem_media": "Sim" if media.get("has_image") else "Não",
+            "NAVE_tem_foto_media": "Sim" if media.get("has_photo") else "Não",
+            "NAVE_tem_planta": "Sim" if _has_plan(record, media) else "Não",
+            "NAVE_capa_externa_media": str(media.get("cover_url") or ""),
+        })
+        venue_rows.append(row)
+        visual_rows.extend(_raw_visual_rows(record))
+
+    venue_df = pd.DataFrame(venue_rows)
+    media_df = pd.DataFrame([
+        {str(k): _snapshot_scalar(v) for k, v in dict(asset).items()}
+        for asset in media_rows
+    ])
+    visual_df = pd.DataFrame(visual_rows)
+
+    type_counts: dict[str, int] = {}
+    for record in venues:
+        label = display_venue_type(record.get("venue_type"))
+        type_counts[label] = type_counts.get(label, 0) + 1
+    types_df = pd.DataFrame([
+        {"Tipo": key, "Quantidade": value}
+        for key, value in sorted(type_counts.items(), key=lambda item: item[0].casefold())
+    ])
+
+    current_photo_count = sum(
+        _has_photo(record, media_by_venue.get(str(record.get("id") or ""), {}))
+        for record in venues
+    )
+    summary_df = pd.DataFrame([
+        {"Indicador": "Gerado em UTC", "Valor": datetime.now(timezone.utc).isoformat()},
+        {"Indicador": "Locais no banco", "Valor": len(venues)},
+        {"Indicador": "Locais com tipo definido", "Valor": sum(bool(normalize_venue_type(r.get("venue_type"))) for r in venues)},
+        {"Indicador": "Locais sem tipo definido", "Valor": sum(not bool(normalize_venue_type(r.get("venue_type"))) for r in venues)},
+        {"Indicador": "Mídias de Locais em media_assets", "Valor": len(media_rows)},
+        {"Indicador": "Fotos reconhecidas pela interface atual", "Valor": current_photo_count},
+        {"Indicador": "Observação", "Valor": "Snapshot operacional completo. Use Locais + Midias + Campos_visuais para reconciliar a curadoria real; o contador de fotos atual não é tratado como verdade canônica."},
+    ])
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        summary_df.to_excel(writer, index=False, sheet_name="Resumo")
+        venue_df.to_excel(writer, index=False, sheet_name="Locais")
+        media_df.to_excel(writer, index=False, sheet_name="Midias")
+        visual_df.to_excel(writer, index=False, sheet_name="Campos_visuais")
+        types_df.to_excel(writer, index=False, sheet_name="Tipos")
+
+        workbook = writer.book
+        header_fmt = workbook.add_format({
+            "bold": True, "bg_color": "#121B42", "font_color": "#FFFFFF",
+            "border": 0, "valign": "vcenter",
+        })
+        wrap_fmt = workbook.add_format({"text_wrap": True, "valign": "top"})
+        for sheet_name, df in (
+            ("Resumo", summary_df),
+            ("Locais", venue_df),
+            ("Midias", media_df),
+            ("Campos_visuais", visual_df),
+            ("Tipos", types_df),
+        ):
+            ws = writer.sheets[sheet_name]
+            ws.freeze_panes(1, 0)
+            ws.autofilter(0, 0, max(len(df), 1), max(len(df.columns) - 1, 0))
+            for col_idx, col_name in enumerate(df.columns):
+                ws.write(0, col_idx, col_name, header_fmt)
+                values = df[col_name].astype(str).head(200) if len(df) else []
+                max_len = max([len(str(col_name))] + [len(v) for v in values]) if len(df) else len(str(col_name))
+                width = min(max(max_len + 2, 12), 42)
+                ws.set_column(col_idx, col_idx, width, wrap_fmt)
+            ws.set_row(0, 24)
+
+    return output.getvalue()
+
+
 def _city_filter_label(row: dict[str, Any]) -> str:
     city = str(row.get("city") or "").strip()
     state = str(row.get("state") or "").strip().upper()
@@ -1097,6 +1261,30 @@ metric_cols[0].metric("Locais", total)
 metric_cols[1].metric("Com tipo definido", typed)
 metric_cols[2].metric("Tipo não definido", undefined)
 metric_cols[3].metric("Locais com foto validada", with_photo)
+
+
+st.caption(
+    "Para auditoria e reconciliação, você pode baixar abaixo um snapshot completo "
+    "do estado atual de Locais no Supabase. Ele inclui registros, raw_data, mídias e "
+    "campos visuais preservados."
+)
+try:
+    snapshot_bytes = _build_operational_snapshot_xlsx(venues, media_rows)
+    st.download_button(
+        "Baixar snapshot operacional completo de Locais (XLSX)",
+        data=snapshot_bytes,
+        file_name=f"NAVE_LOCAIS_SNAPSHOT_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        width="stretch",
+        key="nave_download_venues_operational_snapshot",
+    )
+except Exception as exc:
+    st.warning(
+        "O snapshot de auditoria não pôde ser gerado nesta sessão. "
+        "A consulta normal de Locais continua disponível."
+    )
+    with st.expander("Detalhes técnicos do snapshot", expanded=False):
+        st.code(f"{type(exc).__name__}: {exc}")
 
 classification_plan = _classification_plan(venues)
 if undefined and classification_plan:
