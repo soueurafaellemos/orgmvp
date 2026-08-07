@@ -18,6 +18,10 @@ from knowledge_specialized import (
 )
 from nave_data_client import enforce_existing_app_access, get_nave_client
 from nave_table_utils import clean_cover_value
+from supplier_geography import (
+    supplier_city_options as _geo_supplier_city_options,
+    supplier_city_presence as _geo_supplier_city_presence,
+)
 
 
 st.set_page_config(page_title="Fornecedores | NAVE by VOE", page_icon=NAVE_APP_ICON, layout="wide")
@@ -93,9 +97,12 @@ def _recognized_supplier_ids(
 def _coverage_level(row: dict) -> str:
     if row.get("serves_nationally") is True:
         return "Nacional"
-    if row.get("served_states") or row.get("served_cities") or row.get("local_team_locations"):
+    # Só considera cobertura municipal quando a geografia foi validada como
+    # cidade. Países gravados por uploads antigos em served_cities/base_city
+    # não transformam o cadastro em fornecedor local/regional.
+    if _geo_supplier_city_presence(row) or row.get("served_states"):
         return "Regional / local"
-    if row.get("base_city") or row.get("base_state"):
+    if row.get("base_state") or _geo_supplier_city_presence(row):
         return "Somente base cadastrada"
     return "Cobertura não cadastrada"
 
@@ -158,54 +165,11 @@ def _city_label(city: str, state: str = "") -> str:
 
 
 def _supplier_city_presence(row: dict) -> dict[tuple[str, str], str]:
-    """Retorna presença territorial explícita por cidade.
-
-    Nacional não implica presença local. Só entram cidades que aparecem como
-    base, equipe local ou atendimento declarado no cadastro.
-    """
-    result: dict[tuple[str, str], str] = {}
-    base_state = str(row.get("base_state") or "").strip().upper()
-    base_city = str(row.get("base_city") or "").strip()
-    if base_city:
-        key = (_normalized(base_city), _normalized(base_state))
-        result[key] = "Base local"
-
-    served_states = [item.upper() for item in _list_values(row.get("served_states")) if len(item.strip()) == 2]
-    fallback_served_state = served_states[0] if len(served_states) == 1 else ""
-
-    # Ordem de prioridade: base > equipe local > atendimento declarado.
-    for value in _list_values(row.get("local_team_locations")):
-        city, state = _city_state(value, fallback_served_state)
-        if city:
-            key = (_normalized(city), _normalized(state))
-            result.setdefault(key, "Equipe local")
-    for value in _list_values(row.get("served_cities")):
-        city, state = _city_state(value, fallback_served_state)
-        if city:
-            key = (_normalized(city), _normalized(state))
-            result.setdefault(key, "Atendimento declarado")
-    return result
+    return _geo_supplier_city_presence(row)
 
 
 def _supplier_city_options(rows: list[dict]) -> dict[str, tuple[str, str]]:
-    options: dict[str, tuple[str, str]] = {}
-    for row in rows:
-        base_state = str(row.get("base_state") or "").strip().upper()
-        entries: list[tuple[str, str]] = []
-        if str(row.get("base_city") or "").strip():
-            entries.append((str(row.get("base_city") or "").strip(), base_state))
-        served_states = [item.upper() for item in _list_values(row.get("served_states")) if len(item.strip()) == 2]
-        fallback = served_states[0] if len(served_states) == 1 else ""
-        for field in ("local_team_locations", "served_cities"):
-            for value in _list_values(row.get(field)):
-                entries.append(_city_state(value, fallback))
-        for city, state in entries:
-            if not city:
-                continue
-            label = _city_label(city, state)
-            options.setdefault(label, (_normalized(city), _normalized(state)))
-    return dict(sorted(options.items(), key=lambda item: _normalized(item[0])))
-
+    return _geo_supplier_city_options(rows)
 
 def _load_suppliers(client: Any) -> list[dict]:
     suppliers = _rows(client.table("suppliers").select("*").order("name").limit(4000).execute())

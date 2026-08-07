@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from supplier_geography import is_country_name, real_city_values
+
 
 STOPWORDS = {
     "a", "ao", "aos", "as", "com", "como", "da", "das", "de", "do",
@@ -190,15 +192,19 @@ def _coverage_score(
             ["Local situado fora da praça informada."],
         )
 
-    base_city = normalize_text(row.get("supplier_base_city"))
+    base_city_raw = row.get("supplier_base_city")
+    base_city = (
+        "" if is_country_name(base_city_raw)
+        else normalize_text(base_city_raw)
+    )
     base_state = normalize_text(row.get("supplier_base_state"))
-    served_cities = _normalized_list(
+    served_cities = real_city_values(
         row.get("supplier_served_cities")
     )
     served_states = _normalized_list(
         row.get("supplier_served_states")
     )
-    local_teams = _normalized_list(
+    local_teams = real_city_values(
         row.get("supplier_local_team_locations")
     )
     national = _boolean(
