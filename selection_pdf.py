@@ -1,485 +1,179 @@
 from __future__ import annotations
 
-from datetime import datetime
-from html import escape
+"""PDF de seleção da Base de Conhecimento.
+
+Compatibilidade V28.0.3.2: este módulo é deliberadamente independente de
+``knowledge_details.py``. Assim, evoluções na ficha visual não impedem a Base
+de Conhecimento de abrir.
+"""
+
 from io import BytesIO
-from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-from PIL import Image as PILImage
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import (
-    Image,
-    KeepTogether,
-    PageBreak,
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table,
-    TableStyle,
-)
-
-from knowledge_details import (
-    ENTITY_TYPE_LABELS,
-    formatted_sections_for_export,
-)
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
-NAVY = colors.HexColor("#121B42")
-CYAN = colors.HexColor("#18CDEA")
-SURFACE = colors.HexColor("#F4F6F9")
-BORDER = colors.HexColor("#E1E6EF")
-MUTED = colors.HexColor("#687188")
-WHITE = colors.white
+ENTITY_LABELS = {
+    "product": "Brinde",
+    "activation": "Ativação",
+    "venue": "Local / espaço",
+    "supplier": "Fornecedor",
+}
 
 
-def _safe_text(value: Any) -> str:
+def _as_rows(value: Any) -> list[dict]:
     if value is None:
-        return ""
-    return escape(str(value)).replace("\n", "<br/>")
-
-
-def _paragraph(
-    value: Any,
-    style: ParagraphStyle,
-) -> Paragraph:
-    return Paragraph(
-        _safe_text(value) or "-",
-        style,
-    )
-
-
-def _image_flowable(
-    image_bytes: bytes | None,
-) -> Image | None:
-    if not image_bytes:
-        return None
-
+        return []
     try:
-        pil = PILImage.open(BytesIO(image_bytes))
-        width, height = pil.size
-        if width <= 0 or height <= 0:
-            return None
-
-        max_width = 72 * mm
-        max_height = 54 * mm
-        scale = min(
-            max_width / width,
-            max_height / height,
-        )
-
-        return Image(
-            BytesIO(image_bytes),
-            width=width * scale,
-            height=height * scale,
-        )
+        import pandas as pd
+        if isinstance(value, pd.DataFrame):
+            return [dict(row) for row in value.to_dict(orient="records")]
     except Exception:
-        return None
+        pass
+    if isinstance(value, dict):
+        for key in ("items", "records", "rows", "selected_items", "selected_records"):
+            nested = value.get(key)
+            if isinstance(nested, (list, tuple)):
+                return [dict(item) for item in nested if isinstance(item, dict)]
+        return [dict(value)]
+    if isinstance(value, (list, tuple, set)):
+        return [dict(item) for item in value if isinstance(item, dict)]
+    return []
 
 
-def _summary_fields(
-    entity_type: str,
-    record: dict,
-) -> list[tuple[str, Any]]:
-    if entity_type == "product":
-        return [
-            ("Categoria", record.get("category")),
-            ("Fornecedor", record.get("supplier_name")),
-            (
-                "Valor",
-                record.get("unit_price")
-                or record.get("base_price")
-                or record.get("price_min"),
-            ),
-            ("Pedido mínimo", record.get("min_order_qty")),
-        ]
+def _first_rows(args: tuple[Any, ...], kwargs: dict[str, Any]) -> list[dict]:
+    for key in ("items", "records", "rows", "selected_items", "selected_records", "selection"):
+        if key in kwargs:
+            rows = _as_rows(kwargs.get(key))
+            if rows:
+                return rows
+    for value in args:
+        rows = _as_rows(value)
+        if rows:
+            return rows
+    return []
 
-    if entity_type == "activation":
-        return [
-            ("Categoria", record.get("category")),
-            ("Fornecedor", record.get("supplier_name")),
-            ("Valor", record.get("base_price")),
-            ("Localização", record.get("location")),
-        ]
 
-    location = " · ".join(
-        part
-        for part in (
-            str(record.get("city") or "").strip(),
-            str(record.get("state") or "").strip(),
-        )
-        if part
-    )
-    capacities = []
-    for field in (
-        "standing_capacity",
-        "seated_capacity",
-        "auditorium_capacity",
-    ):
-        value = record.get(field)
-        try:
-            if value is not None and str(value).strip():
-                capacities.append(int(float(value)))
-        except (TypeError, ValueError):
+def _value(record: dict, *keys: str) -> str:
+    for key in keys:
+        value = record.get(key)
+        if value is None:
             continue
-
-    return [
-        ("Tipo de espaço", record.get("venue_type")),
-        ("Localização", location),
-        ("Capacidade máxima", max(capacities) if capacities else None),
-        ("Área total", record.get("total_area_sqm")),
-    ]
-
-
-def _format_summary_value(
-    label: str,
-    value: Any,
-    record: dict,
-) -> str:
-    if value is None or str(value).strip() == "":
-        return "Não informado"
-
-    if label == "Capacidade máxima":
-        try:
-            return f"{int(float(value)):,}".replace(",", ".") + " pessoas"
-        except (TypeError, ValueError):
-            return str(value)
-
-    if label == "Área total":
-        try:
-            number = float(value)
-            formatted = f"{number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            return f"{formatted} m²"
-        except (TypeError, ValueError):
-            return str(value)
-
-    if label == "Valor":
-        prefix = {
-            "BRL": "R$ ",
-            "USD": "US$ ",
-            "EUR": "€ ",
-        }.get(str(record.get("currency") or ""), "")
-
-        try:
-            number = float(value)
-            formatted = f"{number:,.2f}"
-            formatted = (
-                formatted
-                .replace(",", "X")
-                .replace(".", ",")
-                .replace("X", ".")
-            )
-            return f"{prefix}{formatted}"
-        except (TypeError, ValueError):
-            return f"{prefix}{value}"
-
-    return str(value)
+        if isinstance(value, (list, tuple, set)):
+            text = ", ".join(str(item).strip() for item in value if str(item).strip())
+        else:
+            text = str(value).strip()
+        if text and text.casefold() not in {"none", "null", "nan", "nao informado", "não informado"}:
+            return text
+    return ""
 
 
-def build_selection_pdf(
-    items: list[dict],
-    *,
-    title: str = "Seleção de possibilidades",
-    introduction: str = "",
-    count_label: str = "possibilidade(s) selecionada(s)",
-) -> bytes:
+def _item_type(record: dict) -> str:
+    return _value(record, "item_type", "entity_type", "type") or "item"
+
+
+def build_selection_pdf(*args: Any, **kwargs: Any) -> bytes:
+    """Gera bytes PDF aceitando as assinaturas usadas pelas versões anteriores.
+
+    O primeiro argumento/keyword que contenha uma lista de dicionários é
+    tratado como a seleção. Argumentos extras são aceitos para manter
+    compatibilidade com chamadas legadas da Base.
+    """
+    rows = _first_rows(args, kwargs)
+    title = str(
+        kwargs.get("title")
+        or kwargs.get("document_title")
+        or kwargs.get("heading")
+        or "Seleção de possibilidades — NAVE by VOE"
+    )
+
     buffer = BytesIO()
-
-    document = SimpleDocTemplate(
+    doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        rightMargin=17 * mm,
-        leftMargin=17 * mm,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
+        rightMargin=16 * mm,
+        leftMargin=16 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
         title=title,
-        author="NAVE by VOE",
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "NaveTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=19,
+        leading=22,
+        textColor=colors.HexColor("#121B42"),
+        alignment=TA_LEFT,
+        spaceAfter=6 * mm,
+    )
+    item_style = ParagraphStyle(
+        "NaveItem",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        leading=15,
+        textColor=colors.HexColor("#121B42"),
+        spaceAfter=2 * mm,
+    )
+    body = ParagraphStyle(
+        "NaveBody",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=9.2,
+        leading=13,
+        textColor=colors.HexColor("#30384F"),
+    )
+    label = ParagraphStyle(
+        "NaveLabel",
+        parent=body,
+        fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#121B42"),
     )
 
-    styles = {
-        "brand": ParagraphStyle(
-            "brand",
-            fontName="Helvetica-Bold",
-            fontSize=10,
-            leading=12,
-            textColor=CYAN,
-            spaceAfter=4,
-        ),
-        "title": ParagraphStyle(
-            "title",
-            fontName="Helvetica-Bold",
-            fontSize=24,
-            leading=28,
-            textColor=NAVY,
-            spaceAfter=8,
-        ),
-        "intro": ParagraphStyle(
-            "intro",
-            fontName="Helvetica",
-            fontSize=10,
-            leading=15,
-            textColor=MUTED,
-            spaceAfter=10,
-        ),
-        "item_title": ParagraphStyle(
-            "item_title",
-            fontName="Helvetica-Bold",
-            fontSize=19,
-            leading=22,
-            textColor=NAVY,
-            spaceAfter=3,
-        ),
-        "type": ParagraphStyle(
-            "type",
-            fontName="Helvetica-Bold",
-            fontSize=8,
-            leading=10,
-            textColor=CYAN,
-            spaceAfter=8,
-        ),
-        "label": ParagraphStyle(
-            "label",
-            fontName="Helvetica-Bold",
-            fontSize=7,
-            leading=9,
-            textColor=CYAN,
-        ),
-        "value": ParagraphStyle(
-            "value",
-            fontName="Helvetica",
-            fontSize=9,
-            leading=12,
-            textColor=NAVY,
-        ),
-        "section": ParagraphStyle(
-            "section",
-            fontName="Helvetica-Bold",
-            fontSize=11,
-            leading=14,
-            textColor=NAVY,
-            spaceBefore=8,
-            spaceAfter=5,
-        ),
-        "body": ParagraphStyle(
-            "body",
-            fontName="Helvetica",
-            fontSize=8.5,
-            leading=12,
-            textColor=NAVY,
-        ),
-        "footer": ParagraphStyle(
-            "footer",
-            fontName="Helvetica",
-            fontSize=7,
-            leading=9,
-            alignment=TA_CENTER,
-            textColor=MUTED,
-        ),
-    }
+    story: list[Any] = [Paragraph(title, title_style)]
+    if not rows:
+        story.append(Paragraph("Nenhum item foi selecionado.", body))
+    for index, record in enumerate(rows, start=1):
+        name = _value(record, "name", "Nome", "Local", "Fornecedor") or f"Item {index}"
+        type_code = _item_type(record)
+        type_label = ENTITY_LABELS.get(type_code, _value(record, "Tipo") or "Possibilidade")
+        story.append(Paragraph(f"{index:02d} · {type_label} — {name}", item_style))
 
-    story = [
-        Paragraph("NAVE BY VOE", styles["brand"]),
-        Paragraph(_safe_text(title), styles["title"]),
-    ]
-
-    if introduction.strip():
-        story.append(
-            Paragraph(
-                _safe_text(introduction),
-                styles["intro"],
-            )
-        )
-
-    story.append(
-        Paragraph(
-            (
-                f"{len(items)} {count_label} "
-                f"em {datetime.now().strftime('%d/%m/%Y')}."
-            ),
-            styles["intro"],
-        )
-    )
-    story.append(Spacer(1, 3 * mm))
-
-    for item_index, item in enumerate(items):
-        entity_type = str(item.get("entity_type") or "")
-        record = dict(item.get("record") or {})
-        image_bytes = item.get("image_bytes")
-        item_name = (
-            record.get("name")
-            or item.get("name")
-            or "Possibilidade"
-        )
-
-        header_content = [
-            Paragraph(
-                _safe_text(item_name),
-                styles["item_title"],
-            ),
-            Paragraph(
-                _safe_text(
-                    ENTITY_TYPE_LABELS.get(
-                        entity_type,
-                        entity_type,
-                    ).upper()
-                ),
-                styles["type"],
-            ),
+        fields = [
+            ("Categoria", _value(record, "category", "record_type", "venue_type", "Categoria")),
+            ("Fornecedor", _value(record, "supplier_name", "Fornecedor")),
+            ("Marca / cliente", _value(record, "client_brand", "Marca / cliente")),
+            ("Projeto", _value(record, "project_name", "Projeto")),
+            ("Localização", _value(record, "location", "city", "Cidade")),
+            ("Material", _value(record, "material", "Material")),
+            ("Descrição", _value(record, "description", "Descrição")),
         ]
+        data = []
+        for field_label, field_value in fields:
+            if field_value:
+                data.append([
+                    Paragraph(field_label, label),
+                    Paragraph(field_value.replace("\n", "<br/>"), body),
+                ])
+        if data:
+            table = Table(data, colWidths=[34 * mm, 128 * mm], hAlign="LEFT")
+            table.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.HexColor("#E1E6EF")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.append(table)
+        story.append(Spacer(1, 7 * mm))
 
-        image = _image_flowable(image_bytes)
-
-        if image:
-            header = Table(
-                [
-                    [
-                        header_content,
-                        image,
-                    ]
-                ],
-                colWidths=[104 * mm, 72 * mm],
-            )
-            header.setStyle(
-                TableStyle(
-                    [
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                        ("TOPPADDING", (0, 0), (-1, -1), 0),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-                    ]
-                )
-            )
-            story.append(header)
-        else:
-            story.extend(header_content)
-
-        summary_data = []
-        for label, value in _summary_fields(
-            entity_type,
-            record,
-        ):
-            summary_data.append(
-                [
-                    _paragraph(label, styles["label"]),
-                    _paragraph(
-                        _format_summary_value(
-                            label,
-                            value,
-                            record,
-                        ),
-                        styles["value"],
-                    ),
-                ]
-            )
-
-        summary_table = Table(
-            summary_data,
-            colWidths=[37 * mm, 139 * mm],
-        )
-        summary_table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), SURFACE),
-                    ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.25, BORDER),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                    ("TOPPADDING", (0, 0), (-1, -1), 5),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                ]
-            )
-        )
-        story.extend(
-            [
-                Spacer(1, 4 * mm),
-                summary_table,
-                Spacer(1, 2 * mm),
-            ]
-        )
-
-        for section_title, fields in formatted_sections_for_export(
-            entity_type,
-            record,
-        ):
-            section_rows = []
-
-            for label, value in fields:
-                section_rows.append(
-                    [
-                        _paragraph(label, styles["label"]),
-                        _paragraph(value, styles["body"]),
-                    ]
-                )
-
-            if not section_rows:
-                continue
-
-            section_table = Table(
-                section_rows,
-                colWidths=[42 * mm, 134 * mm],
-                repeatRows=0,
-            )
-            section_table.setStyle(
-                TableStyle(
-                    [
-                        ("BOX", (0, 0), (-1, -1), 0.4, BORDER),
-                        ("INNERGRID", (0, 0), (-1, -1), 0.2, BORDER),
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                        ("TOPPADDING", (0, 0), (-1, -1), 4),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ]
-                )
-            )
-
-            story.extend(
-                [
-                    Paragraph(
-                        _safe_text(section_title),
-                        styles["section"],
-                    ),
-                    section_table,
-                ]
-            )
-
-        if item_index < len(items) - 1:
-            story.append(PageBreak())
-
-    def draw_footer(canvas, doc):
-        canvas.saveState()
-        canvas.setStrokeColor(BORDER)
-        canvas.setLineWidth(0.4)
-        canvas.line(
-            17 * mm,
-            12 * mm,
-            A4[0] - 17 * mm,
-            12 * mm,
-        )
-        canvas.setFont("Helvetica", 7)
-        canvas.setFillColor(MUTED)
-        canvas.drawString(
-            17 * mm,
-            7.5 * mm,
-            "NAVE by VOE - Conectando briefing, repertório e decisão.",
-        )
-        canvas.drawRightString(
-            A4[0] - 17 * mm,
-            7.5 * mm,
-            f"Página {doc.page}",
-        )
-        canvas.restoreState()
-
-    document.build(
-        story,
-        onFirstPage=draw_footer,
-        onLaterPages=draw_footer,
-    )
-
+    doc.build(story)
     return buffer.getvalue()

@@ -45,7 +45,7 @@ VENUE_SECTIONS = [
 ]
 
 SUPPLIER_SECTIONS = [
-    ("Identificação e contato", [("name", "Nome"), ("website_url", "Site"), ("contact_name", "Contato"), ("email", "E-mail"), ("phone", "Telefone"), ("whatsapp", "WhatsApp")]),
+    ("Identificação e contato", [("name", "Nome"), ("website_url", "Site"), ("contact_name", "Contato"), ("contact_role", "Função do contato"), ("email", "E-mail"), ("phone", "Telefone"), ("whatsapp", "WhatsApp"), ("instagram_url", "Instagram"), ("linkedin_url", "LinkedIn"), ("address", "Endereço"), ("notes", "Observações")]),
     ("Base e cobertura", [("base_city", "Cidade-base"), ("base_state", "Estado-base"), ("base_country", "País-base"), ("serves_nationally", "Atende nacionalmente"), ("served_states", "Estados atendidos"), ("served_cities", "Cidades atendidas"), ("has_local_teams", "Possui equipes locais"), ("local_team_locations", "Onde possui equipes locais")]),
     ("Logística", [("travel_pricing_mode", "Modelo de deslocamento"), ("default_travel_cost_brl", "Custo padrão de deslocamento"), ("freight_pricing_mode", "Modelo de frete"), ("default_freight_cost_brl", "Custo padrão de frete"), ("travel_lead_days", "Antecedência para deslocamento"), ("equipment_transport_required", "Exige transporte de equipamento"), ("accommodation_required", "Exige hospedagem"), ("coverage_notes", "Observações de cobertura")]),
     ("Repertório associado", [("products_count", "Brindes / produtos"), ("activations_count", "Ativações / soluções"), ("venues_count", "Locais / espaços")]),
@@ -54,7 +54,7 @@ SUPPLIER_SECTIONS = [
 DETAIL_SCHEMAS = {"product": PRODUCT_SECTIONS, "activation": ACTIVATION_SECTIONS, "venue": VENUE_SECTIONS, "supplier": SUPPLIER_SECTIONS}
 
 INTERNAL_FIELDS = {"id", "supplier_id", "operator_id", "project_id", "import_id", "source_file_id", "normalized_name", "created_at", "updated_at", "raw_data"}
-WIDE_FIELDS = {"description", "price_notes", "licensing_notes", "staff_description", "included_items", "excluded_items", "infrastructure_requirements", "infrastructure", "restrictions", "rooms_or_areas", "missing_fields", "evidence"}
+WIDE_FIELDS = {"description", "price_notes", "licensing_notes", "staff_description", "included_items", "excluded_items", "infrastructure_requirements", "infrastructure", "restrictions", "rooms_or_areas", "missing_fields", "evidence", "notes", "coverage_notes"}
 MONEY_FIELDS = {"unit_price", "price_min", "price_max", "base_price", "default_travel_cost_brl", "default_freight_cost_brl"}
 INTEGER_FIELDS = {"document_year", "price_reference_qty", "min_order_qty", "lead_time_days", "standing_capacity", "seated_capacity", "auditorium_capacity", "travel_lead_days", "products_count", "activations_count", "venues_count"}
 DECIMAL_SUFFIXES = {"capacity_ml": " ml", "total_area_sqm": " m²", "indoor_area_sqm": " m²", "outdoor_area_sqm": " m²", "ceiling_height_m": " m", "discount_percent": "%"}
@@ -265,3 +265,16 @@ def render_complete_record(
             render_related_projects_panel(entity_type, str(entity_id), allow_edit=False)
         except Exception:
             pass
+
+
+# Aliases públicos de compatibilidade com módulos anteriores da NAVE.
+# Mantêm a ficha evolutiva sem obrigar exportadores/PDFs legados a importar
+# helpers privados pelo nome antigo.
+is_missing = _is_missing
+format_value = _format_value
+field_card = _field_card
+render_fields = _render_fields
+known_fields = _known_fields
+additional_fields = _additional_fields
+get_visible_fields = visible_fields
+get_visible_sections = visible_sections

@@ -4,6 +4,7 @@ from html import escape
 from pathlib import Path
 
 import streamlit as st
+from nave_table_utils import COVER_COLUMN_NAMES, sanitize_cover_dataframe
 from runtime_ui import app_logout_button
 from PIL import Image
 
@@ -94,7 +95,46 @@ div[data-baseweb="input"] > div, div[data-baseweb="select"] > div, textarea, [da
 """
 
 
+def _install_cover_table_guard() -> None:
+    """Padroniza a coluna Capa sem tocar no código das páginas existentes.
+
+    A V28.0.3 não deve transformar valores ausentes em texto ``None``.
+    Também garante que uma coluna chamada Capa seja interpretada como imagem.
+    """
+    current = st.dataframe
+    if getattr(current, "_nave_cover_guard", False):
+        return
+
+    original = current
+
+    def guarded_dataframe(data=None, *args, **kwargs):
+        cleaned = sanitize_cover_dataframe(data)
+        if hasattr(cleaned, "columns"):
+            cover_column = next(
+                (name for name in COVER_COLUMN_NAMES if name in cleaned.columns),
+                None,
+            )
+            if cover_column:
+                config = dict(kwargs.get("column_config") or {})
+                config.setdefault(
+                    cover_column,
+                    st.column_config.ImageColumn(
+                        cover_column,
+                        width="small",
+                        help="Imagem principal validada no acervo.",
+                    ),
+                )
+                kwargs["column_config"] = config
+                kwargs.setdefault("row_height", 64)
+        return original(cleaned, *args, **kwargs)
+
+    guarded_dataframe._nave_cover_guard = True
+    guarded_dataframe._nave_original = original
+    st.dataframe = guarded_dataframe
+
+
 def apply_nave_branding() -> None:
+    _install_cover_table_guard()
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
     render_sidebar()
 

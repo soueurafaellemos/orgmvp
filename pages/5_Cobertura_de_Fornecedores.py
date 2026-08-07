@@ -1,885 +1,199 @@
 from __future__ import annotations
 
+import hashlib
 import math
-import os
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from branding import (
-    NAVE_APP_ICON,
-    apply_nave_branding,
-    page_header,
+from branding import NAVE_APP_ICON, apply_nave_branding, page_header
+from knowledge_specialized import (
+    fetch_media_assets_batch,
+    primary_image_url,
+    render_detail,
 )
-
-from runtime_ui import report_service_error, require_app_access
-from exporters import format_pt_br_number
-from curation_ui import render_curation_editor
-from supabase_db import (
-    fetch_curation_states,
-    fetch_supplier_by_id,
-    fetch_supplier_coverage,
-    get_supabase_client,
-    update_supplier_coverage,
-)
+from nave_data_client import enforce_existing_app_access, get_nave_client
+from nave_table_utils import clean_cover_value
+from supplier_visibility import is_visible_supplier
 
 
-st.set_page_config(
-    page_title="NAVE by VOE | Fornecedores",
-    page_icon=NAVE_APP_ICON,
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-if not require_app_access():
-    st.stop()
-
+st.set_page_config(page_title="Fornecedores | NAVE by VOE", page_icon=NAVE_APP_ICON, layout="wide")
+enforce_existing_app_access()
 apply_nave_branding()
+
+
+def _rows(response: Any) -> list[dict]:
+    return list(getattr(response, "data", None) or [])
+
+
+def _count_by(rows: list[dict], field: str) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(field) or "")
+        if value:
+            result[value] = result.get(value, 0) + 1
+    return result
+
+
+def _coverage_level(row: dict) -> str:
+    if row.get("serves_nationally") is True:
+        return "Nacional"
+    if row.get("served_states") or row.get("served_cities") or row.get("local_team_locations"):
+        return "Regional / local"
+    if row.get("base_city") or row.get("base_state"):
+        return "Somente base cadastrada"
+    return "Cobertura não cadastrada"
+
+
+def _base_label(row: dict) -> str:
+    return ", ".join(str(row.get(field) or "").strip() for field in ("base_city", "base_state") if str(row.get(field) or "").strip())
+
+
+def _load_suppliers(client: Any) -> list[dict]:
+    suppliers = _rows(client.table("suppliers").select("*").order("name").limit(4000).execute())
+    products = _rows(client.table("products").select("supplier_id").limit(10000).execute())
+    activations = _rows(client.table("activation_solutions").select("supplier_id").limit(10000).execute())
+    venues = _rows(client.table("venues").select("id,name,operator_id").limit(10000).execute())
+
+    product_counts = _count_by(products, "supplier_id")
+    activation_counts = _count_by(activations, "supplier_id")
+    venue_names: dict[str, list[str]] = {}
+    for venue in venues:
+        operator_id = str(venue.get("operator_id") or "")
+        if operator_id:
+            venue_names.setdefault(operator_id, []).append(str(venue.get("name") or ""))
+
+    result = []
+    for supplier in suppliers:
+        supplier_id = str(supplier.get("id") or "")
+        linked_names = venue_names.get(supplier_id, [])
+        products_count = product_counts.get(supplier_id, 0)
+        activations_count = activation_counts.get(supplier_id, 0)
+        if not is_visible_supplier(
+            supplier,
+            linked_venue_names=linked_names,
+            products_count=products_count,
+            activations_count=activations_count,
+        ):
+            continue
+        item = dict(supplier)
+        item["products_count"] = products_count
+        item["activations_count"] = activations_count
+        item["venues_count"] = len(linked_names)
+        item["linked_venue_names"] = linked_names
+        item["coverage_level"] = _coverage_level(item)
+        result.append(item)
+    return result
+
+
+def _table_key(page: int, rows: list[dict]) -> str:
+    ids = "|".join(str(row.get("id") or "") for row in rows)
+    return f"suppliers_table_{page}_{hashlib.sha1(ids.encode()).hexdigest()[:10]}"
+
+
 page_header(
     "Fornecedores",
-    "Selecione um fornecedor na tabela para consultar e editar "
-    "sua cobertura territorial e seus dados logísticos.",
+    "Base de parceiros da NAVE. Locais podem ter um fornecedor/operador relacionado, mas um local não se transforma em fornecedor.",
 )
-
+client = get_nave_client()
 try:
-    supabase_url = st.secrets.get("SUPABASE_URL", "")
-    supabase_key = st.secrets.get(
-        "SUPABASE_SECRET_KEY",
-        st.secrets.get(
-            "SUPABASE_SERVICE_ROLE_KEY",
-            "",
-        ),
-    )
-except Exception:
-    supabase_url = os.getenv("SUPABASE_URL", "")
-    supabase_key = (
-        os.getenv("SUPABASE_SECRET_KEY", "")
-        or os.getenv(
-            "SUPABASE_SERVICE_ROLE_KEY",
-            "",
-        )
-    )
-
-if not supabase_url or not supabase_key:
-    st.error(
-        "A base de fornecedores não está disponível. "
-        "Consulte a área de Administração."
-    )
-    st.stop()
-
-client = get_supabase_client(
-    supabase_url,
-    supabase_key,
-)
-
-
-def _pipe(value: Any) -> str:
-    if not value:
-        return ""
-    if isinstance(value, (list, tuple, set)):
-        return " | ".join(
-            str(item).strip()
-            for item in value
-            if str(item).strip()
-        )
-    return str(value)
-
-
-def _bool_index(value: Any) -> int:
-    return 1 if value is True else 0
-
-
-try:
-    coverage = fetch_supplier_coverage(client)
+    suppliers = _load_suppliers(client)
 except Exception as exc:
-    report_service_error(
-        "consulta de fornecedores",
-        user_message=(
-            "Não foi possível carregar os fornecedores."
-        ),
-        exception=exc,
-    )
+    st.error(f"A NAVE não conseguiu carregar os fornecedores: {exc}")
     st.stop()
 
-if coverage.empty:
-    st.info(
-        "Ainda não existem fornecedores cadastrados."
-    )
-    st.stop()
-
-try:
-    supplier_states = fetch_curation_states(
-        client,
-        [
-            ("supplier", str(row.get("supplier_id")))
-            for _, row in coverage.iterrows()
-        ],
-    )
-except Exception:
-    supplier_states = {}
-
-coverage["validation_status"] = coverage.apply(
-    lambda row: supplier_states.get(
-        (
-            "supplier",
-            str(row.get("supplier_id")),
-        ),
-        {},
-    ).get(
-        "validation_status",
-        "not_reviewed",
-    ),
-    axis=1,
-)
-coverage["is_archived"] = coverage.apply(
-    lambda row: bool(
-        supplier_states.get(
-            (
-                "supplier",
-                str(row.get("supplier_id")),
-            ),
-            {},
-        ).get("is_archived", False)
-    ),
-    axis=1,
-)
-
-total = len(coverage)
-national = int(
-    coverage["coverage_level"]
-    .fillna("")
-    .eq("Nacional")
-    .sum()
-)
-regional = int(
-    coverage["coverage_level"]
-    .fillna("")
-    .eq("Regional / local")
-    .sum()
-)
-missing = int(
-    coverage["coverage_level"]
-    .fillna("")
-    .eq("Cobertura não cadastrada")
-    .sum()
-)
-
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Fornecedores", total)
-m2.metric("Cobertura nacional", national)
-m3.metric("Regional / local", regional)
-m4.metric("Sem cobertura cadastrada", missing)
-
+national = sum(1 for row in suppliers if row.get("coverage_level") == "Nacional")
+regional = sum(1 for row in suppliers if row.get("coverage_level") == "Regional / local")
+missing = sum(1 for row in suppliers if row.get("coverage_level") == "Cobertura não cadastrada")
+metric_cols = st.columns(4)
+metric_cols[0].metric("Fornecedores", len(suppliers))
+metric_cols[1].metric("Cobertura nacional", national)
+metric_cols[2].metric("Regional / local", regional)
+metric_cols[3].metric("Sem cobertura cadastrada", missing)
 st.divider()
 
-filter1, filter2, filter3, filter4 = st.columns(
-    [2.2, 1.3, 1.3, 1]
-)
+search_col, coverage_col, per_page_col = st.columns([2, 1, 0.75])
+with search_col:
+    search = st.text_input("Buscar fornecedor", placeholder="Nome, contato, cidade, cobertura, produto ou solução...")
+with coverage_col:
+    coverage = st.selectbox("Cobertura", ["Todos", "Nacional", "Regional / local", "Somente base cadastrada", "Cobertura não cadastrada"])
+with per_page_col:
+    page_size = st.selectbox("Itens por página", [25, 50, 100], index=0)
 
-with filter1:
-    search = st.text_input(
-        "Buscar fornecedor",
-        placeholder=(
-            "Ex.: TechnoMotion, cenografia, brindes..."
-        ),
-    )
-
-coverage_options = sorted(
-    {
-        str(value)
-        for value in coverage[
-            "coverage_level"
-        ].dropna()
-        if str(value).strip()
-    }
-)
-
-with filter2:
-    selected_coverage = st.selectbox(
-        "Cobertura",
-        ["Todos", *coverage_options],
-    )
-
-with filter3:
-    curation_filter = st.selectbox(
-        "Situação",
-        [
-            "Ativos",
-            "Arquivados",
-            "Todos",
-        ],
-        key="supplier_curation_filter",
-    )
-
-with filter4:
-    page_size = st.selectbox(
-        "Itens por página",
-        [25, 50, 100],
-        index=0,
-        key="supplier_page_size",
-    )
-
-filtered = coverage.copy()
-
-if curation_filter == "Ativos":
-    filtered = filtered[
-        ~filtered["is_archived"].fillna(False)
-    ]
-elif curation_filter == "Arquivados":
-    filtered = filtered[
-        filtered["is_archived"].fillna(False)
-    ]
-
-if search.strip():
-    term = search.strip().lower()
-    searchable = (
-        filtered["name"].fillna("").astype(str)
-        + " "
-        + filtered["base_city"].fillna("").astype(str)
-        + " "
-        + filtered["base_state"].fillna("").astype(str)
-        + " "
-        + filtered["coverage_level"].fillna("").astype(str)
-    ).str.lower()
-
-    filtered = filtered[
-        searchable.str.contains(
-            term,
-            regex=False,
+tokens = [token for token in search.casefold().split() if token]
+filtered = []
+for row in suppliers:
+    if coverage != "Todos" and row.get("coverage_level") != coverage:
+        continue
+    haystack = " ".join(
+        str(row.get(field) or "")
+        for field in (
+            "name", "contact_name", "email", "phone", "base_city", "base_state",
+            "served_states", "served_cities", "coverage_notes", "linked_venue_names",
         )
-    ]
+    ).casefold()
+    if tokens and not all(token in haystack for token in tokens):
+        continue
+    filtered.append(row)
 
-if selected_coverage != "Todos":
-    filtered = filtered[
-        filtered[
-            "coverage_level"
-        ].fillna("").eq(selected_coverage)
-    ]
+st.caption(f"{len(filtered)} fornecedor(es) encontrado(s)")
+pages = max(1, math.ceil(len(filtered) / page_size))
+page_key = "suppliers_page_v28032"
+page = max(1, min(int(st.session_state.get(page_key, 1) or 1), pages))
+st.session_state[page_key] = page
+prev_col, info_col, next_col = st.columns([1, 4, 1])
+with prev_col:
+    if st.button("← Anterior", disabled=page <= 1, width="stretch", key="supplier_prev"):
+        st.session_state[page_key] = page - 1; st.rerun()
+with info_col:
+    st.caption(f"Página {page} de {pages}")
+with next_col:
+    if st.button("Próxima →", disabled=page >= pages, width="stretch", key="supplier_next"):
+        st.session_state[page_key] = page + 1; st.rerun()
 
-filtered = filtered.reset_index(drop=True)
-
-if filtered.empty:
-    st.warning(
-        "Nenhum fornecedor corresponde aos filtros."
-    )
+start = (page - 1) * page_size
+visible = filtered[start:start + page_size]
+if not visible:
+    st.info("Nenhum fornecedor encontrado com estes filtros.")
     st.stop()
 
-total_filtered = len(filtered)
-total_pages = max(
-    1,
-    math.ceil(total_filtered / page_size),
-)
+media = fetch_media_assets_batch(client, "supplier", [str(row.get("id") or "") for row in visible])
+table_rows = []
+for row in visible:
+    supplier_id = str(row.get("id") or "")
+    try:
+        cover = primary_image_url(client, "supplier", row, media.get(supplier_id, [])) or ""
+    except Exception:
+        cover = ""
+    table_rows.append({
+        "Capa": clean_cover_value(cover),
+        "Fornecedor": str(row.get("name") or ""),
+        "Cobertura": str(row.get("coverage_level") or ""),
+        "Base": _base_label(row),
+        "Brindes": int(row.get("products_count") or 0),
+        "Ativações": int(row.get("activations_count") or 0),
+        "Locais relacionados": int(row.get("venues_count") or 0),
+    })
 
-page_column, summary_column = st.columns(
-    [1, 4]
-)
-
-with page_column:
-    current_page = st.number_input(
-        "Página",
-        min_value=1,
-        max_value=total_pages,
-        value=1,
-        step=1,
-        key="supplier_current_page",
-    )
-
-with summary_column:
-    st.caption(
-        f"{total_filtered} fornecedor(es) encontrado(s) · "
-        f"página {int(current_page)} de {total_pages}"
-    )
-
-start_index = (
-    int(current_page) - 1
-) * page_size
-end_index = min(
-    start_index + page_size,
-    total_filtered,
-)
-
-overview = filtered.iloc[
-    start_index:end_index
-].copy().reset_index(drop=True)
-
-overview["Fornecedor"] = overview[
-    "name"
-].fillna("Fornecedor sem nome")
-overview["Cobertura"] = overview[
-    "coverage_level"
-].fillna("Cobertura não cadastrada")
-overview["Base"] = overview.apply(
-    lambda row: ", ".join(
-        value
-        for value in [
-            str(row.get("base_city") or "").strip(),
-            str(row.get("base_state") or "").strip(),
-        ]
-        if value
-    )
-    or "Não informada",
-    axis=1,
-)
-overview["Nacional"] = overview[
-    "serves_nationally"
-].apply(
-    lambda value: (
-        "Sim"
-        if value is True
-        else "Não"
-        if value is False
-        else "Não informado"
-    )
-)
-overview["Estados atendidos"] = overview[
-    "served_states"
-].apply(
-    lambda value: _pipe(value).replace(
-        " | ",
-        ", ",
-    )
-    or "Não informado"
-)
-overview["Cidades atendidas"] = overview[
-    "served_cities"
-].apply(
-    lambda value: _pipe(value).replace(
-        " | ",
-        ", ",
-    )
-    or "Não informado"
-)
-overview["Soluções"] = pd.to_numeric(
-    overview["activations_count"],
-    errors="coerce",
-).fillna(0).astype(int)
-overview["Produtos"] = pd.to_numeric(
-    overview["products_count"],
-    errors="coerce",
-).fillna(0).astype(int)
-overview["Locais"] = pd.to_numeric(
-    overview["venues_count"],
-    errors="coerce",
-).fillna(0).astype(int)
-overview["Situação"] = overview[
-    "is_archived"
-].fillna(False).apply(
-    lambda value: (
-        "Arquivado"
-        if bool(value)
-        else "Ativo"
-    )
-)
-
-st.caption(
-    "Selecione uma linha para abrir os dados completos e "
-    "editar a cobertura."
-)
-
-supplier_event = st.dataframe(
-    overview[
-        [
-            "Fornecedor",
-            "Cobertura",
-            "Base",
-            "Nacional",
-            "Estados atendidos",
-            "Cidades atendidas",
-            "Soluções",
-            "Produtos",
-            "Locais",
-            "Situação",
-        ]
-    ],
-    use_container_width=True,
+table_df = pd.DataFrame(table_rows)
+event = st.dataframe(
+    table_df,
     hide_index=True,
-    row_height=52,
-    key=(
-        f"supplier_navigation_table_"
-        f"{int(current_page)}_"
-        f"{selected_coverage}"
-    ),
+    width="stretch",
+    row_height=64,
     on_select="rerun",
     selection_mode="single-row",
-    column_config={
-        "Fornecedor": st.column_config.TextColumn(
-            "Fornecedor",
-            width="medium",
-        ),
-        "Cobertura": st.column_config.TextColumn(
-            "Cobertura",
-            width="medium",
-        ),
-        "Estados atendidos": (
-            st.column_config.TextColumn(
-                "Estados atendidos",
-                width="medium",
-            )
-        ),
-        "Cidades atendidas": (
-            st.column_config.TextColumn(
-                "Cidades atendidas",
-                width="large",
-            )
-        ),
-        "Situação": st.column_config.TextColumn(
-            "Situação",
-            width="small",
-        ),
-    },
+    key=_table_key(page, visible),
+    column_config={"Capa": st.column_config.ImageColumn("Capa", width="small")},
 )
-
-
-def _selected_rows(event) -> list[int]:
-    try:
-        return list(event.selection.rows)
-    except Exception:
-        try:
-            return list(
-                event.get(
-                    "selection",
-                    {},
-                ).get("rows", [])
-            )
-        except Exception:
-            return []
-
-
-selected_supplier_rows = _selected_rows(
-    supplier_event
-)
-
-focus = st.session_state.get(
-    "nave_curation_focus"
-)
-
-if selected_supplier_rows:
-    selected_overview = overview.iloc[
-        selected_supplier_rows[0]
-    ].to_dict()
-elif (
-    isinstance(focus, dict)
-    and focus.get("entity_type") == "supplier"
-):
-    focus_id = str(focus.get("entity_id"))
-    focused_rows = coverage[
-        coverage["supplier_id"].astype(str).eq(
-            focus_id
-        )
-    ]
-
-    if focused_rows.empty:
-        st.warning(
-            "O fornecedor direcionado não foi localizado."
-        )
-        st.stop()
-
-    selected_overview = focused_rows.iloc[
-        0
-    ].to_dict()
-    selected_overview["Fornecedor"] = (
-        selected_overview.get("name")
-        or "Fornecedor sem nome"
-    )
-    selected_overview["Cobertura"] = (
-        selected_overview.get("coverage_level")
-        or "Cobertura não cadastrada"
-    )
-    selected_overview["Base"] = ", ".join(
-        value
-        for value in [
-            str(
-                selected_overview.get("base_city")
-                or ""
-            ).strip(),
-            str(
-                selected_overview.get("base_state")
-                or ""
-            ).strip(),
-        ]
-        if value
-    ) or "Não informada"
-    selected_overview["Soluções"] = int(
-        selected_overview.get(
-            "activations_count"
-        )
-        or 0
-    )
-    selected_overview["Produtos"] = int(
-        selected_overview.get(
-            "products_count"
-        )
-        or 0
-    )
-    selected_overview["Locais"] = int(
-        selected_overview.get(
-            "venues_count"
-        )
-        or 0
-    )
-
-    st.info(
-        "Fornecedor aberto a partir do painel "
-        "de prontidão."
-    )
-
-    if st.button(
-        "Fechar fornecedor direcionado",
-        key="close_supplier_curation_focus",
-    ):
-        st.session_state.pop(
-            "nave_curation_focus",
-            None,
-        )
-        st.rerun()
-else:
-    st.info(
-        "Selecione um fornecedor na tabela para consultar "
-        "seus dados e editar a cobertura."
-    )
+selected_rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
+if not selected_rows:
+    st.caption("Selecione uma linha para abrir os dados completos, acervo, edição e projetos relacionados.")
     st.stop()
-
-supplier_id = str(
-    selected_overview.get("supplier_id") or ""
-)
-selected_label = str(
-    selected_overview.get("Fornecedor")
-    or "Fornecedor"
-)
-
-try:
-    supplier = fetch_supplier_by_id(
-        client,
-        supplier_id,
-    )
-except Exception as exc:
-    report_service_error(
-        "consulta do fornecedor selecionado",
-        user_message=(
-            "Não foi possível abrir este fornecedor."
-        ),
-        exception=exc,
-    )
+position = selected_rows[0]
+if not isinstance(position, int) or position < 0 or position >= len(visible):
     st.stop()
-
-if not supplier:
-    st.error("Fornecedor não encontrado.")
-    st.stop()
-
+selected = visible[position]
 st.divider()
-st.subheader(selected_label)
-
-detail1, detail2, detail3, detail4, detail5 = (
-    st.columns(5)
-)
-
-detail1.metric(
-    "Cobertura",
-    selected_overview.get("Cobertura")
-    or "Não cadastrada",
-)
-detail2.metric(
-    "Base",
-    selected_overview.get("Base")
-    or "Não informada",
-)
-detail3.metric(
-    "Soluções",
-    int(selected_overview.get("Soluções") or 0),
-)
-detail4.metric(
-    "Produtos",
-    int(selected_overview.get("Produtos") or 0),
-)
-detail5.metric(
-    "Locais",
-    int(selected_overview.get("Locais") or 0),
-)
-
-contact1, contact2, contact3 = st.columns(3)
-
-with contact1:
-    st.markdown("**Contato**")
-    st.write(
-        supplier.get("contact_name")
-        or supplier.get("email")
-        or "Não informado"
-    )
-
-with contact2:
-    st.markdown("**Telefone / WhatsApp**")
-    st.write(
-        supplier.get("whatsapp")
-        or supplier.get("phone")
-        or "Não informado"
-    )
-
-with contact3:
-    st.markdown("**Site**")
-    website = supplier.get("website_url")
-    if website:
-        st.link_button(
-            "Abrir site",
-            website,
-            use_container_width=True,
-        )
-    else:
-        st.write("Não informado")
-
-st.divider()
-st.subheader("Curadoria")
-
-render_curation_editor(
-    client,
-    entity_type="supplier",
-    entity_id=supplier_id,
-    record=supplier,
-    supplier_options={},
-)
-
-st.divider()
-st.subheader("Editar cobertura e logística")
-
-
-pricing_modes = [
-    "Não informado",
-    "Incluído no valor",
-    "Adicionar estimativa",
-    "Sob consulta",
-]
-
-with st.form(f"supplier_coverage_form_{supplier_id}"):
-    base1, base2, base3 = st.columns(3)
-    with base1:
-        base_city = st.text_input(
-            "Cidade-base",
-            value=supplier.get("base_city") or "",
-        )
-    with base2:
-        base_state = st.text_input(
-            "Estado-base",
-            value=supplier.get("base_state") or "",
-            placeholder="Ex.: SP",
-        )
-    with base3:
-        base_country = st.text_input(
-            "País-base",
-            value=(
-                supplier.get("base_country")
-                or "Brasil"
-            ),
-        )
-
-    scope1, scope2 = st.columns(2)
-    with scope1:
-        serves_nationally = st.checkbox(
-            "Atende nacionalmente",
-            value=bool(
-                supplier.get("serves_nationally")
-                or False
-            ),
-        )
-    with scope2:
-        has_local_teams = st.checkbox(
-            "Possui equipes locais",
-            value=bool(
-                supplier.get("has_local_teams")
-                or False
-            ),
-        )
-
-    served_states = st.text_input(
-        "Estados atendidos",
-        value=_pipe(
-            supplier.get("served_states")
-        ),
-        placeholder="SP | RJ | PE | AM",
-        help="Separe os itens com |",
-    )
-    served_cities = st.text_input(
-        "Cidades atendidas",
-        value=_pipe(
-            supplier.get("served_cities")
-        ),
-        placeholder="São Paulo | Recife | Manaus",
-        help="Separe os itens com |",
-    )
-    local_team_locations = st.text_input(
-        "Onde possui equipes locais",
-        value=_pipe(
-            supplier.get("local_team_locations")
-        ),
-        placeholder="São Paulo | Rio de Janeiro",
-        help="Separe os itens com |",
-    )
-
-    st.markdown("#### Deslocamento de equipe ou equipamento")
-
-    travel1, travel2, travel3 = st.columns(3)
-    with travel1:
-        current_travel_mode = (
-            supplier.get("travel_pricing_mode")
-            or "Não informado"
-        )
-        travel_pricing_mode = st.selectbox(
-            "Tratamento do deslocamento",
-            pricing_modes,
-            index=(
-                pricing_modes.index(current_travel_mode)
-                if current_travel_mode in pricing_modes
-                else 0
-            ),
-        )
-    with travel2:
-        default_travel_cost_brl = st.number_input(
-            "Estimativa padrão de deslocamento",
-            min_value=0.0,
-            value=float(
-                supplier.get(
-                    "default_travel_cost_brl"
-                )
-                or 0
-            ),
-            step=500.0,
-        )
-    with travel3:
-        travel_lead_days = st.number_input(
-            "Dias adicionais de logística",
-            min_value=0,
-            value=int(
-                supplier.get("travel_lead_days")
-                or 0
-            ),
-            step=1,
-        )
-
-    requirement1, requirement2 = st.columns(2)
-    with requirement1:
-        equipment_transport_required = st.checkbox(
-            "Normalmente exige transporte de equipamento",
-            value=bool(
-                supplier.get(
-                    "equipment_transport_required"
-                )
-                or False
-            ),
-        )
-    with requirement2:
-        accommodation_required = st.checkbox(
-            "Normalmente exige hospedagem fora da base",
-            value=bool(
-                supplier.get(
-                    "accommodation_required"
-                )
-                or False
-            ),
-        )
-
-    st.markdown("#### Frete de produtos")
-
-    freight1, freight2 = st.columns(2)
-    with freight1:
-        current_freight_mode = (
-            supplier.get("freight_pricing_mode")
-            or "Não informado"
-        )
-        freight_pricing_mode = st.selectbox(
-            "Tratamento do frete",
-            pricing_modes,
-            index=(
-                pricing_modes.index(current_freight_mode)
-                if current_freight_mode in pricing_modes
-                else 0
-            ),
-        )
-    with freight2:
-        default_freight_cost_brl = st.number_input(
-            "Estimativa padrão de frete",
-            min_value=0.0,
-            value=float(
-                supplier.get(
-                    "default_freight_cost_brl"
-                )
-                or 0
-            ),
-            step=500.0,
-        )
-
-    coverage_notes = st.text_area(
-        "Observações de cobertura",
-        value=(
-            supplier.get("coverage_notes")
-            or ""
-        ),
-        height=110,
-        placeholder=(
-            "Ex.: atende Nordeste por parceiro local; "
-            "valores variam conforme quantidade de operadores."
-        ),
-    )
-
-    submitted = st.form_submit_button(
-        "Salvar cobertura do fornecedor",
-        type="primary",
-        use_container_width=True,
-    )
-
-if submitted:
-    try:
-        update_supplier_coverage(
-            client,
-            supplier_id=supplier_id,
-            payload={
-                "base_city": base_city or None,
-                "base_state": base_state or None,
-                "base_country": base_country or "Brasil",
-                "serves_nationally": serves_nationally,
-                "served_states": served_states,
-                "served_cities": served_cities,
-                "has_local_teams": has_local_teams,
-                "local_team_locations": (
-                    local_team_locations
-                ),
-                "travel_pricing_mode": (
-                    travel_pricing_mode
-                ),
-                "default_travel_cost_brl": (
-                    default_travel_cost_brl
-                    if default_travel_cost_brl > 0
-                    else None
-                ),
-                "freight_pricing_mode": (
-                    freight_pricing_mode
-                ),
-                "default_freight_cost_brl": (
-                    default_freight_cost_brl
-                    if default_freight_cost_brl > 0
-                    else None
-                ),
-                "travel_lead_days": (
-                    travel_lead_days
-                    if travel_lead_days > 0
-                    else None
-                ),
-                "equipment_transport_required": (
-                    equipment_transport_required
-                ),
-                "accommodation_required": (
-                    accommodation_required
-                ),
-                "coverage_notes": (
-                    coverage_notes or None
-                ),
-            },
-        )
-        st.success("Cobertura atualizada.")
-        st.rerun()
-    except Exception as exc:
-        report_service_error(
-            "atualização do fornecedor",
-            user_message=(
-                "Não foi possível atualizar este fornecedor."
-            ),
-            exception=exc,
-        )
+render_detail(client, "supplier", str(selected.get("id") or ""), record_override=selected)

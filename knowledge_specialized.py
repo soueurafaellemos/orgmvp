@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from html import escape
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
 from knowledge_details import (
@@ -20,60 +22,50 @@ from knowledge_details import (
 )
 from knowledge_project_links import render_related_projects_panel
 from nave_data_client import get_nave_client
+from nave_table_utils import clean_cover_value
 
 
 ENTITY_CONFIG = {
     "product": {
         "table": "products",
         "title": "Brindes",
-        "subtitle": "Explore, compare, consulte a ficha completa e mantenha o repertório de brindes da NAVE atualizado.",
+        "subtitle": "Consulte e mantenha o repertório de brindes em uma lista única, com capa, ficha completa, acervo e histórico de projetos.",
         "category_field": "category",
-        "card_fields": ("category", "material", "supplier_name"),
-        "columns_per_row": 4,
-        "page_size": 16,
+        "page_size": 25,
         "list_select": "id,supplier_id,name,category,description,material,sku,tags,source_image_url,raw_data",
     },
     "activation": {
         "table": "activation_solutions",
         "title": "Ativações",
-        "subtitle": "Consulte ativações, soluções e experiências com contexto, acervo visual, ficha completa e histórico de projetos.",
+        "subtitle": "Consulte ativações, soluções e experiências em uma lista única, com capa, contexto, ficha completa, acervo e histórico de projetos.",
         "category_field": "category",
-        "card_fields": ("category", "client_brand", "project_name"),
-        "columns_per_row": 3,
-        "page_size": 12,
+        "page_size": 25,
         "list_select": "id,supplier_id,project_id,name,category,record_type,description,client_brand,project_name,event_name,tags,source_image_url,raw_data",
+    },
+    "supplier": {
+        "table": "suppliers",
+        "title": "Fornecedores",
+        "subtitle": "Consulte parceiros, contatos, cobertura, logística, repertório associado e projetos relacionados.",
+        "category_field": "",
+        "page_size": 25,
+        "list_select": "*",
     },
 }
 
 LIST_FIELDS = {
-    "tags",
-    "included_items",
-    "excluded_items",
-    "missing_fields",
-    "infrastructure_requirements",
-    "restrictions",
-    "rooms_or_areas",
+    "tags", "included_items", "excluded_items", "missing_fields",
+    "infrastructure_requirements", "restrictions", "rooms_or_areas",
+    "served_states", "served_cities", "local_team_locations",
 }
-
 NON_EDITABLE_FIELDS = INTERNAL_FIELDS | {
-    "supplier_name",
-    "media_count",
-    "image_count",
-    "document_count",
-    "has_primary",
+    "supplier_name", "media_count", "image_count", "document_count",
+    "has_primary", "products_count", "activations_count", "venues_count",
+    "coverage_level", "linked_venue_names",
 }
-
 IMAGE_ASSET_TYPES = {"main_image", "gallery_image"}
 DOCUMENT_ASSET_TYPES = {
-    "floor_plan",
-    "elevation",
-    "access_map",
-    "technical_sheet",
-    "commercial_book",
-    "presentation",
-    "video",
-    "external_link",
-    "other",
+    "floor_plan", "elevation", "access_map", "technical_sheet",
+    "commercial_book", "presentation", "video", "external_link", "other",
 }
 
 
@@ -81,10 +73,23 @@ def _rows(response: Any) -> list[dict]:
     return list(getattr(response, "data", None) or [])
 
 
+def _text(value: Any) -> str:
+    if _is_missing(value):
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item) for item in value if not _is_missing(item))
+    if isinstance(value, dict):
+        return " · ".join(
+            f"{key}: {item}" for key, item in value.items() if not _is_missing(item)
+        )
+    return str(value).strip()
+
+
 def _category_value(entity_type: str, row: dict) -> str:
     if entity_type == "activation":
         return _text(row.get("category")) or _text(row.get("record_type"))
-    return _text(row.get(ENTITY_CONFIG[entity_type]["category_field"]))
+    field = ENTITY_CONFIG[entity_type].get("category_field")
+    return _text(row.get(field)) if field else ""
 
 
 def _enrich_supplier_names(client: Any, rows: list[dict]) -> list[dict]:
@@ -106,11 +111,8 @@ def _enrich_supplier_names(client: Any, rows: list[dict]) -> list[dict]:
 def _archived_entity_ids(client: Any, entity_type: str) -> set[str]:
     try:
         response = (
-            client.table("knowledge_curation_states")
-            .select("entity_id")
-            .eq("entity_type", entity_type)
-            .eq("is_archived", True)
-            .execute()
+            client.table("knowledge_curation_states").select("entity_id")
+            .eq("entity_type", entity_type).eq("is_archived", True).execute()
         )
         return {str(row.get("entity_id")) for row in _rows(response) if row.get("entity_id")}
     except Exception:
@@ -119,26 +121,14 @@ def _archived_entity_ids(client: Any, entity_type: str) -> set[str]:
 
 def fetch_entities(client: Any, entity_type: str) -> list[dict]:
     config = ENTITY_CONFIG[entity_type]
-    response = (
-        client.table(config["table"])
-        .select(config["list_select"])
-        .order("name")
-        .limit(4000)
-        .execute()
-    )
+    response = client.table(config["table"]).select(config["list_select"]).order("name").limit(4000).execute()
     rows = _enrich_supplier_names(client, _rows(response))
     archived = _archived_entity_ids(client, entity_type)
     return [row for row in rows if str(row.get("id") or "") not in archived]
 
 
 def fetch_entity(client: Any, entity_type: str, entity_id: str) -> dict | None:
-    response = (
-        client.table(ENTITY_CONFIG[entity_type]["table"])
-        .select("*")
-        .eq("id", entity_id)
-        .limit(1)
-        .execute()
-    )
+    response = client.table(ENTITY_CONFIG[entity_type]["table"]).select("*").eq("id", entity_id).limit(1).execute()
     rows = _enrich_supplier_names(client, _rows(response))
     return rows[0] if rows else None
 
@@ -148,11 +138,7 @@ def _signed_url_value(response: Any) -> str | None:
         return response
     if isinstance(response, dict):
         return response.get("signedURL") or response.get("signedUrl") or response.get("signed_url")
-    return (
-        getattr(response, "signedURL", None)
-        or getattr(response, "signedUrl", None)
-        or getattr(response, "signed_url", None)
-    )
+    return getattr(response, "signedURL", None) or getattr(response, "signedUrl", None) or getattr(response, "signed_url", None)
 
 
 def asset_url(client: Any, asset: dict) -> str | None:
@@ -171,14 +157,9 @@ def asset_url(client: Any, asset: dict) -> str | None:
 
 def fetch_media_assets(client: Any, entity_type: str, entity_id: str) -> list[dict]:
     response = (
-        client.table("media_assets")
-        .select("*")
-        .eq("entity_type", entity_type)
-        .eq("entity_id", entity_id)
-        .order("is_primary", desc=True)
-        .order("sort_order")
-        .order("created_at")
-        .execute()
+        client.table("media_assets").select("*")
+        .eq("entity_type", entity_type).eq("entity_id", entity_id)
+        .order("is_primary", desc=True).order("sort_order").order("created_at").execute()
     )
     return _rows(response)
 
@@ -189,13 +170,9 @@ def fetch_media_assets_batch(client: Any, entity_type: str, entity_ids: list[str
         return {}
     try:
         response = (
-            client.table("media_assets")
-            .select("*")
-            .eq("entity_type", entity_type)
-            .in_("entity_id", clean_ids)
-            .order("is_primary", desc=True)
-            .order("sort_order")
-            .execute()
+            client.table("media_assets").select("*")
+            .eq("entity_type", entity_type).in_("entity_id", clean_ids)
+            .order("is_primary", desc=True).order("sort_order").execute()
         )
     except Exception:
         return {}
@@ -214,23 +191,11 @@ def _valid_http_url(value: Any) -> str | None:
 
 
 def _fallback_image(record: dict) -> str | None:
-    """Retorna somente um recorte claramente associado ao item.
-
-    source_image_url e slides/páginas inteiras NÃO são usados como capa.
-    Eles podem representar uma página de catálogo com vários itens e geraram
-    a poluição visual observada na V28.0.3.
-    """
+    """Somente recorte explicitamente associado; nunca slide/página inteira."""
     raw = record.get("raw_data")
     if not isinstance(raw, dict):
         return None
-
-    for key in (
-        "visual_crop_url",
-        "crop_url",
-        "cropped_image_url",
-        "product_crop_url",
-        "activation_crop_url",
-    ):
+    for key in ("visual_crop_url", "crop_url", "cropped_image_url", "product_crop_url", "activation_crop_url"):
         url = _valid_http_url(raw.get(key))
         if url:
             return url
@@ -238,17 +203,10 @@ def _fallback_image(record: dict) -> str | None:
 
 
 def source_preview_url(record: dict) -> str | None:
-    """Material de origem, exibido somente na ficha/galeria, nunca como capa."""
     candidates: list[Any] = [record.get("source_image_url")]
     raw = record.get("raw_data")
     if isinstance(raw, dict):
-        for key in (
-            "source_image_url",
-            "full_slide_url",
-            "slide_image_url",
-            "image_url",
-        ):
-            candidates.append(raw.get(key))
+        candidates.extend(raw.get(key) for key in ("source_image_url", "full_slide_url", "slide_image_url", "image_url"))
     for value in candidates:
         url = _valid_http_url(value)
         if url:
@@ -258,14 +216,11 @@ def source_preview_url(record: dict) -> str | None:
 
 def _image_assets_for_cover(assets: list[dict]) -> list[dict]:
     images = [
-        asset
-        for asset in assets
+        asset for asset in assets
         if asset.get("asset_type") in IMAGE_ASSET_TYPES
         or str(asset.get("mime_type") or "").startswith("image/")
     ]
-    # Uma mídia explicitamente marcada como principal sempre vence.
-    # Em seguida vêm main_image e, só depois, gallery_image.
-    def rank(asset: dict) -> tuple[int, int, int]:
+    def rank(asset: dict) -> tuple[int, int]:
         if bool(asset.get("is_primary")):
             kind = 0
         elif asset.get("asset_type") == "main_image":
@@ -274,24 +229,12 @@ def _image_assets_for_cover(assets: list[dict]) -> list[dict]:
             kind = 2
         else:
             kind = 3
-        return (kind, int(asset.get("sort_order") or 0), 0)
-
+        return kind, int(asset.get("sort_order") or 0)
     return sorted(images, key=rank)
 
 
-def primary_image_url(
-    client: Any,
-    entity_type: str,
-    record: dict,
-    assets: list[dict] | None = None,
-) -> str | None:
-    assets = (
-        assets
-        if assets is not None
-        else fetch_media_assets(
-            client, entity_type, str(record.get("id") or "")
-        )
-    )
+def primary_image_url(client: Any, entity_type: str, record: dict, assets: list[dict] | None = None) -> str | None:
+    assets = assets if assets is not None else fetch_media_assets(client, entity_type, str(record.get("id") or ""))
     for asset in _image_assets_for_cover(assets):
         url = asset_url(client, asset)
         if url:
@@ -299,189 +242,11 @@ def primary_image_url(
     return _fallback_image(record)
 
 
-SPECIALIZED_CSS = r"""
+DETAIL_CSS = r"""
 <style>
-.nave-specialized-media {
-    width: 100%;
-    height: 220px;
-    border: 1px solid #E1E5EE;
-    border-radius: 12px;
-    background: #F7F8FB;
-    overflow: hidden;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-bottom: 0.85rem;
-}
-.nave-specialized-media img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    display: block;
-}
-.nave-specialized-media--detail {
-    height: 320px;
-}
-.nave-specialized-placeholder {
-    color: #8D96AB;
-    text-align: center;
-    font-size: 0.78rem;
-    line-height: 1.35;
-    padding: 1rem;
-}
-.nave-specialized-placeholder strong {
-    display: block;
-    color: #59647E;
-    font-size: 0.83rem;
-    margin-bottom: 0.22rem;
-}
-.nave-specialized-copy {
-    min-height: 94px;
-}
-.nave-specialized-title {
-    color: #121B42;
-    font-size: 0.96rem;
-    font-weight: 760;
-    line-height: 1.28;
-    margin-bottom: 0.42rem;
-}
-.nave-specialized-meta {
-    color: #707B96;
-    font-size: 0.78rem;
-    line-height: 1.38;
-}
-.nave-origin-note {
-    color: #707B96;
-    font-size: 0.78rem;
-    margin: 0.35rem 0 0.7rem;
-}
+.nave-origin-preview { width:100%; max-height:360px; object-fit:contain; background:#F7F8FB; border:1px solid #E1E6EF; border-radius:12px; }
 </style>
 """
-
-
-def _render_specialized_css() -> None:
-    st.markdown(SPECIALIZED_CSS, unsafe_allow_html=True)
-
-
-def _render_visual_slot(url: str | None, *, detail: bool = False) -> None:
-    extra = " nave-specialized-media--detail" if detail else ""
-    if url:
-        safe_url = escape(url, quote=True)
-        st.markdown(
-            f'<div class="nave-specialized-media{extra}">'
-            f'<img src="{safe_url}" alt="">'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    st.markdown(
-        f'<div class="nave-specialized-media{extra}">'
-        '<div class="nave-specialized-placeholder">'
-        '<strong>Imagem principal não definida</strong>'
-        'Adicione ou valide uma imagem no acervo.'
-        '</div></div>',
-        unsafe_allow_html=True,
-    )
-
-
-def _render_card_copy(entity_type: str, record: dict) -> None:
-    title = escape(_text(record.get("name")) or "Sem nome")
-    meta = escape(_card_meta(entity_type, record))
-    meta_html = f'<div class="nave-specialized-meta">{meta}</div>' if meta else ""
-    st.markdown(
-        '<div class="nave-specialized-copy">'
-        f'<div class="nave-specialized-title">{title}</div>'
-        f'{meta_html}'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-
-def _text(value: Any) -> str:
-    if _is_missing(value):
-        return ""
-    if isinstance(value, (list, tuple, set)):
-        return ", ".join(str(item) for item in value if not _is_missing(item))
-    if isinstance(value, dict):
-        return " · ".join(f"{key}: {item}" for key, item in value.items() if not _is_missing(item))
-    return str(value).strip()
-
-
-def _filter_rows(entity_type: str, rows: list[dict], *, search: str, category: str) -> list[dict]:
-    query = search.casefold().strip()
-    result = []
-    for row in rows:
-        if category != "Todos" and _category_value(entity_type, row) != category:
-            continue
-        haystack = " ".join(
-            _text(row.get(field))
-            for field in ("name", "category", "record_type", "description", "client_brand", "project_name", "event_name", "supplier_name", "material", "sku", "tags")
-        ).casefold()
-        if query and query not in haystack:
-            continue
-        result.append(row)
-    return result
-
-
-def _card_meta(entity_type: str, record: dict) -> str:
-    values = []
-    for field in ENTITY_CONFIG[entity_type]["card_fields"]:
-        value = _category_value(entity_type, record) if field == "category" else _text(record.get(field))
-        if value and value not in values:
-            values.append(value)
-    return " · ".join(values[:3])
-
-
-def render_cards(
-    client: Any,
-    entity_type: str,
-    rows: list[dict],
-    *,
-    page: int,
-    page_size: int,
-) -> None:
-    start = (page - 1) * page_size
-    visible = rows[start:start + page_size]
-    if not visible:
-        st.info("Nenhum item encontrado com estes filtros.")
-        return
-
-    media_by_entity = fetch_media_assets_batch(
-        client,
-        entity_type,
-        [str(record.get("id") or "") for record in visible],
-    )
-    columns_per_row = int(ENTITY_CONFIG[entity_type].get("columns_per_row") or 3)
-
-    for start_index in range(0, len(visible), columns_per_row):
-        columns = st.columns(columns_per_row)
-        for column, record in zip(
-            columns, visible[start_index:start_index + columns_per_row]
-        ):
-            entity_id = str(record.get("id") or "")
-            with column:
-                with st.container(border=True):
-                    try:
-                        image = primary_image_url(
-                            client,
-                            entity_type,
-                            record,
-                            media_by_entity.get(entity_id, []),
-                        )
-                    except Exception:
-                        image = _fallback_image(record)
-                    _render_visual_slot(image)
-                    _render_card_copy(entity_type, record)
-                    if st.button(
-                        "Ver ficha",
-                        key=f"open_{entity_type}_{entity_id}",
-                        width="stretch",
-                    ):
-                        st.session_state[
-                            f"specialized_selected_{entity_type}"
-                        ] = entity_id
-                        st.rerun()
 
 
 def render_gallery(client: Any, entity_type: str, record: dict) -> None:
@@ -493,69 +258,44 @@ def render_gallery(client: Any, entity_type: str, record: dict) -> None:
         url = asset_url(client, asset)
         if not url:
             continue
-        is_image = (
-            asset.get("asset_type") in IMAGE_ASSET_TYPES
-            or str(asset.get("mime_type") or "").startswith("image/")
-        )
+        is_image = asset.get("asset_type") in IMAGE_ASSET_TYPES or str(asset.get("mime_type") or "").startswith("image/")
         if is_image:
             images.append((asset, url))
         elif asset.get("asset_type") in DOCUMENT_ASSET_TYPES:
             documents.append((asset, url))
-
     safe_crop = _fallback_image(record)
     if not images and safe_crop:
         images.append((None, safe_crop))
 
     st.markdown("### Galeria visual")
     if images:
-        for start_index in range(0, len(images), 3):
+        for start in range(0, len(images), 3):
             columns = st.columns(3)
-            for column, (asset, url) in zip(
-                columns, images[start_index:start_index + 3]
-            ):
+            for column, (asset, url) in zip(columns, images[start:start + 3]):
                 with column:
-                    _render_visual_slot(url)
-                    if asset:
-                        title = _text(asset.get("title"))
-                        if title:
-                            st.caption(title)
-                        if asset.get("is_primary"):
-                            st.caption("Imagem principal")
+                    st.image(url, width="stretch")
+                    if asset and asset.get("is_primary"):
+                        st.caption("Imagem principal")
+                    elif asset and _text(asset.get("title")):
+                        st.caption(_text(asset.get("title")))
     else:
-        st.caption(
-            "Ainda não há uma imagem principal validada para este cadastro."
-        )
+        st.caption("Ainda não há imagem validada no acervo para este cadastro.")
 
-    origin_preview = source_preview_url(record)
-    if origin_preview:
+    origin = source_preview_url(record)
+    if origin:
         st.markdown("### Material de origem")
-        st.markdown(
-            '<div class="nave-origin-note">'
-            'A página ou o slide de origem fica disponível para consulta, '
-            'mas não é usado automaticamente como capa do item.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        _render_visual_slot(origin_preview, detail=True)
+        st.caption("O slide/página de origem é consulta de referência e não vira capa automaticamente.")
+        safe = escape(origin, quote=True)
+        st.markdown(f'<img class="nave-origin-preview" src="{safe}" alt="Material de origem">', unsafe_allow_html=True)
 
     if documents:
         st.markdown("### Documentos e referências")
         for asset, url in documents:
-            title = (
-                _text(asset.get("title"))
-                or _text(asset.get("file_name"))
-                or "Abrir material"
-            )
+            title = _text(asset.get("title")) or _text(asset.get("file_name")) or "Abrir material"
             st.link_button(title, url, width="stretch")
 
-    st.caption(
-        "A gestão de uploads, exclusões e imagem principal continua usando "
-        "o acervo central da Base de Conhecimento."
-    )
-    st.page_link(
-        "pages/2_Consultar_Base.py",
-        label="Abrir Base de Conhecimento",
-    )
+    st.caption("Uploads, exclusões e definição da imagem principal continuam centralizados no acervo da Base de Conhecimento.")
+    st.page_link("pages/2_Consultar_Base.py", label="Abrir Base de Conhecimento")
 
 
 def _field_label(entity_type: str, field: str) -> str:
@@ -572,15 +312,11 @@ def _editor_fields(entity_type: str, record: dict) -> list[tuple[str, str]]:
     for _, fields in DETAIL_SCHEMAS.get(entity_type, []):
         for field, label in fields:
             if field in record and field not in NON_EDITABLE_FIELDS and field not in seen:
-                ordered.append((field, label))
-                seen.add(field)
+                ordered.append((field, label)); seen.add(field)
     for field in record:
-        if field in seen or field in NON_EDITABLE_FIELDS:
+        if field in seen or field in NON_EDITABLE_FIELDS or field.startswith("_"):
             continue
-        if field.startswith("_"):
-            continue
-        ordered.append((field, _field_label(entity_type, field)))
-        seen.add(field)
+        ordered.append((field, _field_label(entity_type, field))); seen.add(field)
     return ordered
 
 
@@ -634,42 +370,24 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-def _log_edit_events(
-    client: Any,
-    *,
-    entity_type: str,
-    entity_id: str,
-    changes: dict[str, tuple[Any, Any]],
-    source: str,
-    reason: str,
-) -> None:
+def _log_edit_events(client: Any, *, entity_type: str, entity_id: str, changes: dict[str, tuple[Any, Any]], source: str, reason: str) -> None:
     events = []
     for field, (old_value, new_value) in changes.items():
-        events.append(
-            {
-                "entity_type": entity_type,
-                "entity_id": entity_id,
-                "event_type": "manual_update",
-                "field_name": field,
-                "field_label": _field_label(entity_type, field),
-                "old_value": _json_safe(old_value),
-                "new_value": _json_safe(new_value),
-                "editor_name": None,
-                "edit_source": source or "pagina_especializada",
-                "edit_notes": reason,
-            }
-        )
+        events.append({
+            "entity_type": entity_type, "entity_id": entity_id,
+            "event_type": "manual_update", "field_name": field,
+            "field_label": _field_label(entity_type, field),
+            "old_value": _json_safe(old_value), "new_value": _json_safe(new_value),
+            "editor_name": None, "edit_source": source or "pagina_especializada",
+            "edit_notes": reason,
+        })
     if events:
         client.table("knowledge_edit_events").insert(events).execute()
 
 
 def render_editor(client: Any, entity_type: str, record: dict) -> None:
     st.markdown("### Editar cadastro")
-    st.caption(
-        "Aqui aparecem também os campos vazios. Ao salvar um valor, ele passa "
-        "automaticamente a aparecer na ficha visual."
-    )
-
+    st.caption("Aqui aparecem também os campos vazios. Ao salvar, a informação passa automaticamente a aparecer na ficha visual.")
     fields = _editor_fields(entity_type, record)
     values: dict[str, Any] = {}
     with st.form(f"specialized_edit_{entity_type}_{record.get('id')}"):
@@ -678,173 +396,173 @@ def render_editor(client: Any, entity_type: str, record: dict) -> None:
             key = f"edit_{entity_type}_{record.get('id')}_{field}"
             if field in BOOLEAN_FIELDS or isinstance(old_value, bool):
                 current = "Não informado" if old_value is None else ("Sim" if bool(old_value) else "Não")
-                values[field] = st.selectbox(label, ["Não informado", "Sim", "Não"], index=["Não informado", "Sim", "Não"].index(current), key=key)
+                options = ["Não informado", "Sim", "Não"]
+                values[field] = st.selectbox(label, options, index=options.index(current), key=key)
             elif field in WIDE_FIELDS or field in LIST_FIELDS or isinstance(old_value, (dict, list, tuple, set)):
                 values[field] = st.text_area(label, value=_serialize_for_editor(old_value), key=key)
             else:
                 values[field] = st.text_input(label, value=_serialize_for_editor(old_value), key=key)
-
         st.markdown("#### Rastreabilidade da alteração")
         source = st.text_input("Fonte da atualização", placeholder="Ex.: cliente, fornecedor, proposta revisada, visita técnica...")
         reason = st.text_area("Motivo da edição", placeholder="Explique brevemente o que está sendo corrigido ou completado.")
         submitted = st.form_submit_button("Salvar alterações", type="primary", width="stretch")
-
     if not submitted:
         return
-
-    changes: dict[str, tuple[Any, Any]] = {}
-    payload: dict[str, Any] = {}
+    changes: dict[str, tuple[Any, Any]] = {}; payload: dict[str, Any] = {}
     try:
         for field, _ in fields:
             old_value = record.get(field)
             new_value = _parse_editor_value(field, values[field], old_value)
             if _json_safe(old_value) != _json_safe(new_value):
-                payload[field] = new_value
-                changes[field] = (old_value, new_value)
+                payload[field] = new_value; changes[field] = (old_value, new_value)
     except Exception as exc:
-        st.error(f"Não foi possível interpretar um dos campos: {exc}")
-        return
-
+        st.error(f"Não foi possível interpretar um dos campos: {exc}"); return
     if not changes:
-        st.info("Nenhuma alteração foi identificada.")
-        return
+        st.info("Nenhuma alteração foi identificada."); return
     if not reason.strip():
-        st.error("Informe o motivo da edição para preservar a rastreabilidade.")
-        return
-
+        st.error("Informe o motivo da edição para preservar a rastreabilidade."); return
     entity_id = str(record.get("id") or "")
     try:
-        (
-            client.table(ENTITY_CONFIG[entity_type]["table"])
-            .update(payload)
-            .eq("id", entity_id)
-            .execute()
-        )
-        _log_edit_events(
-            client,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            changes=changes,
-            source=source.strip() or "pagina_especializada",
-            reason=reason.strip(),
-        )
+        client.table(ENTITY_CONFIG[entity_type]["table"]).update(payload).eq("id", entity_id).execute()
+        _log_edit_events(client, entity_type=entity_type, entity_id=entity_id, changes=changes, source=source.strip() or "pagina_especializada", reason=reason.strip())
     except Exception as exc:
-        st.error(f"A NAVE não conseguiu salvar a edição: {exc}")
-        return
-
-    st.success("Cadastro atualizado. Os novos dados já passam a aparecer na ficha.")
-    st.session_state[f"specialized_refresh_{entity_type}"] = True
-    st.rerun()
+        st.error(f"A NAVE não conseguiu salvar a edição: {exc}"); return
+    st.success("Cadastro atualizado."); st.rerun()
 
 
-def render_detail(client: Any, entity_type: str, entity_id: str) -> None:
-    record = fetch_entity(client, entity_type, entity_id)
+def render_detail(client: Any, entity_type: str, entity_id: str, *, record_override: dict | None = None) -> None:
+    record = record_override or fetch_entity(client, entity_type, entity_id)
     if not record:
-        st.warning("O cadastro selecionado não foi encontrado.")
-        st.session_state.pop(f"specialized_selected_{entity_type}", None)
-        return
-
-    top_left, top_right = st.columns([4, 1])
-    with top_left:
-        st.markdown(f"## {_text(record.get('name')) or 'Cadastro'}")
-        meta = _card_meta(entity_type, record)
-        if meta:
-            st.caption(meta)
-    with top_right:
-        if st.button("Voltar à lista", key=f"back_{entity_type}_{entity_id}", width="stretch"):
-            st.session_state.pop(f"specialized_selected_{entity_type}", None)
-            st.rerun()
-
+        st.warning("O cadastro selecionado não foi encontrado."); return
+    st.markdown(f"## {_text(record.get('name')) or 'Cadastro'}")
     tab_info, tab_gallery, tab_edit = st.tabs(["Ficha", "Galeria", "Editar"])
     with tab_info:
         render_complete_record(entity_type, dict(record), show_related_projects=False)
-        # Ficha completa já mostra o bloco em modo leitura. Nesta área especializada,
-        # repetimos apenas se for necessário editar os vínculos.
         st.divider()
-        render_related_projects_panel(
-            entity_type,
-            entity_id,
-            client=client,
-            allow_edit=True,
-            heading="Gerenciar projetos relacionados",
-        )
+        render_related_projects_panel(entity_type, entity_id, client=client, allow_edit=True, heading="Projetos relacionados")
     with tab_gallery:
         render_gallery(client, entity_type, record)
     with tab_edit:
         render_editor(client, entity_type, record)
 
 
+def _filter_rows(entity_type: str, rows: list[dict], *, search: str, category: str) -> list[dict]:
+    tokens = [token for token in search.casefold().strip().split() if token]
+    result = []
+    for row in rows:
+        if category != "Todos" and _category_value(entity_type, row) != category:
+            continue
+        haystack = " ".join(_text(row.get(field)) for field in (
+            "name", "category", "record_type", "description", "client_brand",
+            "project_name", "event_name", "supplier_name", "material", "sku", "tags",
+        )).casefold()
+        if tokens and not all(token in haystack for token in tokens):
+            continue
+        result.append(row)
+    return result
+
+
+def _table_record(entity_type: str, record: dict, cover: str) -> dict:
+    if entity_type == "product":
+        return {
+            "Capa": clean_cover_value(cover),
+            "Brinde": _text(record.get("name")),
+            "Categoria": _category_value(entity_type, record),
+            "Material": _text(record.get("material")),
+            "Fornecedor": _text(record.get("supplier_name")),
+            "Código / SKU": _text(record.get("sku")),
+        }
+    return {
+        "Capa": clean_cover_value(cover),
+        "Ativação": _text(record.get("name")),
+        "Categoria": _category_value(entity_type, record),
+        "Marca / cliente": _text(record.get("client_brand")),
+        "Projeto": _text(record.get("project_name")),
+        "Fornecedor": _text(record.get("supplier_name")),
+    }
+
+
+def _selection_key(entity_type: str, page: int, visible: list[dict]) -> str:
+    ids = "|".join(str(row.get("id") or "") for row in visible)
+    digest = hashlib.sha1(ids.encode("utf-8")).hexdigest()[:10]
+    return f"specialized_table_{entity_type}_{page}_{digest}"
+
+
 def render_specialized_page(entity_type: str) -> None:
-    if entity_type not in ENTITY_CONFIG:
+    if entity_type not in {"product", "activation"}:
         raise ValueError("Tipo de página especializada não configurado.")
     config = ENTITY_CONFIG[entity_type]
     client = get_nave_client()
-    _render_specialized_css()
-
+    st.markdown(DETAIL_CSS, unsafe_allow_html=True)
     try:
         from branding import page_header
         page_header(config["title"], config["subtitle"])
     except Exception:
-        st.title(config["title"])
-        st.caption(config["subtitle"])
-
-    selected_id = st.session_state.get(f"specialized_selected_{entity_type}")
-    if selected_id:
-        render_detail(client, entity_type, str(selected_id))
-        return
+        st.title(config["title"]); st.caption(config["subtitle"])
 
     try:
         rows = fetch_entities(client, entity_type)
     except Exception as exc:
-        st.error(f"A NAVE não conseguiu carregar {config['title'].lower()}: {exc}")
-        return
+        st.error(f"A NAVE não conseguiu carregar {config['title'].lower()}: {exc}"); return
 
     categories = sorted({_category_value(entity_type, row) for row in rows if _category_value(entity_type, row)})
-    search_col, category_col = st.columns([2, 1])
+    search_col, category_col, per_page_col = st.columns([2, 1, 0.75])
     with search_col:
-        search = st.text_input("Buscar", placeholder="Nome, categoria, descrição, marca, projeto ou tag...")
+        search = st.text_input("Buscar", placeholder="Nome, categoria, descrição, marca, projeto, fornecedor ou tag...")
     with category_col:
         category = st.selectbox("Categoria", ["Todos", *categories])
+    with per_page_col:
+        page_size = st.selectbox("Itens por página", [25, 50, 100], index=0)
 
     filtered = _filter_rows(entity_type, rows, search=search, category=category)
     st.caption(f"{len(filtered)} de {len(rows)} cadastros")
-
-    page_size = int(config.get("page_size") or 12)
     pages = max(1, math.ceil(len(filtered) / page_size))
     page_key = f"specialized_page_{entity_type}"
-    current_page = int(st.session_state.get(page_key, 1) or 1)
-    current_page = max(1, min(current_page, pages))
+    current_page = max(1, min(int(st.session_state.get(page_key, 1) or 1), pages))
     st.session_state[page_key] = current_page
 
-    previous_col, next_col, info_col = st.columns([1, 1, 5])
-    with previous_col:
-        if st.button(
-            "← Anterior",
-            key=f"specialized_prev_{entity_type}",
-            disabled=current_page <= 1,
-            width="stretch",
-        ):
-            st.session_state[page_key] = current_page - 1
-            st.rerun()
-    with next_col:
-        if st.button(
-            "Próxima →",
-            key=f"specialized_next_{entity_type}",
-            disabled=current_page >= pages,
-            width="stretch",
-        ):
-            st.session_state[page_key] = current_page + 1
-            st.rerun()
+    prev_col, info_col, next_col = st.columns([1, 4, 1])
+    with prev_col:
+        if st.button("← Anterior", key=f"prev_{entity_type}", disabled=current_page <= 1, width="stretch"):
+            st.session_state[page_key] = current_page - 1; st.rerun()
     with info_col:
-        st.caption(
-            f"Página {current_page} de {pages} · "
-            f"{page_size} itens por página"
-        )
+        st.caption(f"Página {current_page} de {pages}")
+    with next_col:
+        if st.button("Próxima →", key=f"next_{entity_type}", disabled=current_page >= pages, width="stretch"):
+            st.session_state[page_key] = current_page + 1; st.rerun()
 
-    render_cards(
-        client,
-        entity_type,
-        filtered,
-        page=current_page,
-        page_size=page_size,
+    start = (current_page - 1) * page_size
+    visible = filtered[start:start + page_size]
+    if not visible:
+        st.info("Nenhum item encontrado com estes filtros."); return
+
+    media_by_entity = fetch_media_assets_batch(client, entity_type, [str(row.get("id") or "") for row in visible])
+    table_rows = []
+    for record in visible:
+        entity_id = str(record.get("id") or "")
+        try:
+            cover = primary_image_url(client, entity_type, record, media_by_entity.get(entity_id, [])) or ""
+        except Exception:
+            cover = _fallback_image(record) or ""
+        table_rows.append(_table_record(entity_type, record, cover))
+    table_df = pd.DataFrame(table_rows)
+    event = st.dataframe(
+        table_df,
+        hide_index=True,
+        width="stretch",
+        row_height=64,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=_selection_key(entity_type, current_page, visible),
+        column_config={"Capa": st.column_config.ImageColumn("Capa", width="small")},
     )
+    selected_rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
+    if not selected_rows:
+        st.caption("Selecione uma linha para abrir a ficha completa, galeria, edição e projetos relacionados.")
+        return
+    position = selected_rows[0]
+    if not isinstance(position, int) or position < 0 or position >= len(visible):
+        return
+    selected = visible[position]
+    st.divider()
+    render_detail(client, entity_type, str(selected.get("id") or ""))
