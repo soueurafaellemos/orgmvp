@@ -370,6 +370,15 @@ def _metadata_before_header(
     return metadata
 
 
+def _category_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+    label = lines[0] if lines else re.sub(r"\s+", " ", text).strip()
+    return label[:120]
+
+
 def _status_and_estimate(
     description: str,
     *,
@@ -434,6 +443,152 @@ def _extract_total_row(
     return {}
 
 
+
+
+def _parse_preliminary_budget_matrix(
+    file_name: str,
+    sheets: list[tuple[str, list[list[Any]]]],
+) -> CostWorkbookResult | None:
+    """Lê estudos humanos de verba sem cabeçalho tabular convencional.
+
+    O padrão observado no Planeja 27 usa rótulo, valor e percentual espalhados
+    em colunas visuais. A ausência de uma linha de cabeçalho não torna esses
+    números inconclusivos: a NAVE deve reconstruir a estrutura com segurança.
+    """
+    best: tuple[str, list[tuple[int, str, float | None, float | None]]] | None = None
+    for sheet_name, matrix in sheets:
+        rows: list[tuple[int, str, float | None, float | None]] = []
+        for row_number, row in enumerate(matrix[:160], start=1):
+            populated = [(idx, value) for idx, value in enumerate(row[:12]) if value not in (None, "") and str(value).strip()]
+            if not populated:
+                continue
+            text_cells = [(idx, str(value).strip()) for idx, value in populated if not isinstance(value, (int, float))]
+            if not text_cells:
+                continue
+            label_index, label = text_cells[0]
+            normalized = normalize_text(label)
+            if not normalized:
+                continue
+            numeric_after = [
+                _number(value)
+                for idx, value in populated
+                if idx > label_index and _number(value) is not None
+            ]
+            amount = numeric_after[0] if numeric_after else None
+            pct = numeric_after[1] if len(numeric_after) > 1 else None
+            if pct is not None and abs(pct) > 1.5:
+                pct = None
+            rows.append((row_number, label, amount, pct))
+
+        normalized_labels = [normalize_text(row[1]) for row in rows]
+        budget_rows = [row for row in rows if normalize_text(row[1]) == "budget" and row[2] is not None]
+        meaningful = [
+            row for row in rows
+            if normalize_text(row[1]) not in {"budget", "sub total", "subtotal"}
+            and row[2] is not None
+        ]
+        if budget_rows and len(meaningful) >= 4 and any(
+            signal in normalized_labels
+            for signal in ("fee", "impostos", "cenografia e infraestrutura", "tecnica", "atracoes")
+        ):
+            if best is None or len(rows) > len(best[1]):
+                best = (sheet_name, rows)
+
+    if best is None:
+        return None
+
+    sheet_name, rows = best
+    budget_values = [float(amount) for _, label, amount, _ in rows if normalize_text(label) == "budget" and amount is not None]
+    budget_amount = max(budget_values) if budget_values else None
+    items: list[CostItem] = []
+    percentage_total = 0.0
+    allocation_total = 0.0
+    for row_number, label, amount, pct in rows:
+        normalized = normalize_text(label)
+        if normalized in {"budget", "sub total", "subtotal"}:
+            continue
+        if amount is None:
+            continue
+        percentage_total += float(pct or 0)
+        allocation_total += float(amount or 0)
+        items.append(
+            CostItem(
+                source_sheet=sheet_name,
+                source_row=row_number,
+                item_code=None,
+                category="Estudo de verba",
+                item_name=label.strip(),
+                description=label.strip(),
+                quantity=None,
+                period=None,
+                unit_value=None,
+                base_value=float(amount),
+                fees_value=None,
+                charges_value=None,
+                client_total=float(amount),
+                item_status="included",
+                estimate_type="estimated",
+                flags=["preliminary_budget"],
+                raw_data={"allocation_pct": pct, "explicit_zero": float(amount) == 0.0},
+            )
+        )
+
+    if not items:
+        return None
+    reconciled_total = allocation_total
+    client_total = budget_amount if budget_amount is not None else reconciled_total
+    warnings: list[str] = []
+    if budget_amount is not None and abs(reconciled_total - budget_amount) > max(1.0, budget_amount * 0.01):
+        warnings.append(
+            "O estudo de verba foi lido como matriz de alocação, mas a soma das categorias não reconciliou exatamente com o budget informado."
+        )
+
+    return CostWorkbookResult(
+        file_name=file_name,
+        title=Path(file_name).stem,
+        sheet_name=sheet_name,
+        header_row=1,
+        project_name=Path(file_name).stem,
+        total_base=reconciled_total,
+        client_total=client_total,
+        items=items,
+        warnings=warnings,
+        metadata={
+            "cost_kind": "preliminary_budget",
+            "budget_amount": budget_amount,
+            "allocation_total": reconciled_total,
+            "allocation_percentage_total": percentage_total,
+            "parser_mode": "visual_allocation_matrix",
+        },
+    )
+
+
+def _additional_sheet_totals(
+    sheets: list[tuple[str, list[list[Any]]]],
+    selected_sheet_name: str,
+) -> list[dict[str, Any]]:
+    totals: list[dict[str, Any]] = []
+    for sheet_name, matrix in sheets:
+        if sheet_name == selected_sheet_name or _sheet_score(matrix) <= 0:
+            continue
+        try:
+            header_row, mapping = _find_header(matrix)
+            values = _extract_total_row(matrix, header_row, mapping)
+        except Exception:
+            continue
+        client_total = values.get("client_total")
+        if client_total is None:
+            continue
+        totals.append({
+            "sheet_name": sheet_name,
+            "client_total": float(client_total),
+            "total_base": values.get("total_base"),
+            "fees_total": values.get("fees_total"),
+            "charges_total": values.get("charges_total"),
+        })
+    return totals
+
+
 def parse_cost_workbook(
     file_name: str,
     data: bytes,
@@ -442,6 +597,11 @@ def parse_cost_workbook(
 
     if not sheets:
         raise ValueError("A planilha não possui abas legíveis.")
+
+    if max((_sheet_score(matrix) for _, matrix in sheets), default=0) <= 0:
+        preliminary = _parse_preliminary_budget_matrix(file_name, sheets)
+        if preliminary is not None:
+            return preliminary
 
     selected_sheet_name, matrix = max(
         sheets,
@@ -523,18 +683,27 @@ def parse_cost_workbook(
             and looks_like_heading
             and all(value in (None, 0) for value in numeric_values)
         )
+        category_text = str(category_or_name or "").strip()
+        description_text = str(description or "").strip()
+        same_category_description = (
+            bool(category_text)
+            and normalize_text(category_text) == normalize_text(description_text)
+            and not str(billing_type or "").strip()
+            and all(value in (None, 0) for value in numeric_values)
+        )
         is_category = (
             single_text_section
+            or same_category_description
             or (
-                bool(str(category_or_name or "").strip())
-                and not str(description or "").strip()
+                bool(category_text)
+                and not description_text
                 and not str(billing_type or "").strip()
                 and all(value in (None, 0) for value in numeric_values)
             )
         )
 
         if is_category:
-            current_category = str(category_or_name).strip()
+            current_category = _category_label(category_text or description_text) or current_category
             continue
 
         full_description = str(
@@ -638,6 +807,11 @@ def parse_cost_workbook(
         else None
     )
     stated_total = totals.get("client_total")
+    metadata["cost_kind"] = "detailed_costs"
+    metadata["parser_mode"] = "structured_cost_table"
+    additional_totals = _additional_sheet_totals(sheets, selected_sheet_name)
+    if additional_totals:
+        metadata["additional_sheet_totals"] = additional_totals
 
     if (
         stated_total is not None

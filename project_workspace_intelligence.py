@@ -473,7 +473,7 @@ def ensure_automatic_cost_links(
         row for row in snapshot.get("memory_items", [])
         if row.get("id") and is_project_relevant_record(row)
     ]
-    costs = [row for row in snapshot.get("cost_items", []) if row.get("id")]
+    costs = [row for row in proposal_cost_items(snapshot) if row.get("id")]
     if not items or not costs:
         return 0
 
@@ -597,7 +597,7 @@ def section_cost_context(snapshot: dict[str, Any], section: str) -> dict[str, An
         and str(row.get("memory_item_id") or "") in relevant_item_ids
     ]
     linked_cost_ids = {str(row.get("cost_item_id")) for row in active_links if row.get("cost_item_id")}
-    section_costs = [row for row in snapshot.get("cost_items", []) if infer_cost_section(row) == section]
+    section_costs = [row for row in proposal_cost_items(snapshot) if infer_cost_section(row) == section]
     unallocated = [row for row in section_costs if str(row.get("id")) not in linked_cost_ids]
     return {
         "section_costs": section_costs,
@@ -704,6 +704,104 @@ def _numeric_values(rows: Iterable[dict[str, Any]], field: str) -> list[float]:
     return values
 
 
+def cost_document_kind(document: dict[str, Any]) -> str:
+    metadata = document.get("metadata") if isinstance(document.get("metadata"), dict) else {}
+    kind = str(metadata.get("document_role") or metadata.get("cost_kind") or "").strip()
+    if kind in {"detailed_costs", "preliminary_budget"}:
+        return kind
+    file_name = normalise_text(document.get("file_name") or document.get("title"))
+    if "estudo de verba" in file_name or "verba preliminar" in file_name:
+        return "preliminary_budget"
+    return "detailed_costs"
+
+
+def proposal_cost_items(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    documents = snapshot.get("cost_documents", [])
+    detailed_ids = {
+        str(row.get("id"))
+        for row in documents
+        if row.get("id") and cost_document_kind(row) == "detailed_costs"
+    }
+    if not detailed_ids:
+        preliminary_ids = {
+            str(row.get("id"))
+            for row in documents
+            if row.get("id") and cost_document_kind(row) == "preliminary_budget"
+        }
+        return [
+            row for row in snapshot.get("cost_items", [])
+            if str(row.get("cost_document_id") or "") not in preliminary_ids
+        ]
+    return [
+        row for row in snapshot.get("cost_items", [])
+        if str(row.get("cost_document_id") or "") in detailed_ids
+    ]
+
+
+def _first_document_total(documents: list[dict[str, Any]], kind: str) -> float | None:
+    for row in documents:
+        if cost_document_kind(row) != kind:
+            continue
+        raw = row.get("client_total")
+        if raw in (None, ""):
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _financial_scope(snapshot: dict[str, Any]) -> dict[str, Any]:
+    documents = list(snapshot.get("cost_documents", []))
+    detailed_documents = [row for row in documents if cost_document_kind(row) == "detailed_costs"]
+    preliminary_documents = [row for row in documents if cost_document_kind(row) == "preliminary_budget"]
+    proposal_items = proposal_cost_items(snapshot)
+
+    proposal_total = _first_document_total(detailed_documents, "detailed_costs")
+    if proposal_total is None:
+        values = _numeric_values(proposal_items, "client_total")
+        proposal_total = sum(values) if values else None
+
+    preliminary_total = _first_document_total(preliminary_documents, "preliminary_budget")
+    preliminary_items = [
+        row for row in snapshot.get("cost_items", [])
+        if str(row.get("cost_document_id") or "") in {str(doc.get("id")) for doc in preliminary_documents if doc.get("id")}
+    ]
+
+    category_totals: dict[str, float] = defaultdict(float)
+    for item in proposal_items:
+        value = item.get("client_total")
+        if value in (None, ""):
+            continue
+        category = str(item.get("category") or "Sem categoria").strip() or "Sem categoria"
+        category_totals[category] += _safe_float(value)
+    category_breakdown = [
+        {"category": category, "total": total}
+        for category, total in sorted(category_totals.items(), key=lambda pair: pair[1], reverse=True)
+    ]
+
+    additional_sheets: list[dict[str, Any]] = []
+    for document in detailed_documents:
+        metadata = document.get("metadata") if isinstance(document.get("metadata"), dict) else {}
+        for row in metadata.get("additional_sheet_totals") or []:
+            if not isinstance(row, dict) or row.get("client_total") in (None, ""):
+                continue
+            additional_sheets.append(dict(row))
+
+    return {
+        "documents": documents,
+        "detailed_documents": detailed_documents,
+        "preliminary_documents": preliminary_documents,
+        "proposal_items": proposal_items,
+        "preliminary_items": preliminary_items,
+        "proposal_total": proposal_total,
+        "preliminary_total": preliminary_total,
+        "category_breakdown": category_breakdown,
+        "additional_sheets": additional_sheets,
+    }
+
+
 def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
     project_files = [row for row in snapshot.get("project_files", []) if not row.get("is_archived")]
     role_count = defaultdict(int)
@@ -734,7 +832,9 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         if section in DELIVERY_SECTIONS:
             items.append(enriched)
 
-    cost_by_id = {str(row.get("id")): row for row in snapshot.get("cost_items", []) if row.get("id")}
+    financial_scope = _financial_scope(snapshot)
+    analysis_cost_items = financial_scope["proposal_items"]
+    cost_by_id = {str(row.get("id")): row for row in analysis_cost_items if row.get("id")}
     req_by_id = {str(row.get("id")): row for row in snapshot.get("briefing_requirements", []) if row.get("id")}
     outcomes = {str(row.get("item_id")): row for row in snapshot.get("item_outcomes", []) if row.get("item_id")}
 
@@ -749,6 +849,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         row
         for row in _active_links(snapshot.get("cost_links", []))
         if str(row.get("memory_item_id") or "") in relevant_item_ids
+        and str(row.get("cost_item_id") or "") in cost_by_id
     ]
     for link in active_cost_links:
         cost = cost_by_id.get(str(link.get("cost_item_id")))
@@ -825,7 +926,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     linked_cost_ids = {str(row.get("cost_item_id")) for row in active_cost_links if row.get("cost_item_id")}
     cost_only = []
-    for cost in snapshot.get("cost_items", []):
+    for cost in analysis_cost_items:
         if str(cost.get("id")) in linked_cost_ids:
             continue
         cost_only.append({
@@ -877,8 +978,8 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     proposed_without_cost = [row for row in matrix if row["Custo direto"] <= 0]
 
-    cost_values = _numeric_values(snapshot.get("cost_items", []), "client_total")
-    cost_total = sum(cost_values) if cost_values else None
+    cost_total = financial_scope.get("proposal_total")
+    preliminary_budget_total = financial_scope.get("preliminary_total")
     linked_values = [
         _safe_float(cost_by_id.get(str(cost_id), {}).get("client_total"))
         for cost_id in linked_cost_ids
@@ -891,13 +992,16 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         budget_amount = float(budget_amount) if budget_amount not in (None, "") else None
     except (TypeError, ValueError):
         budget_amount = None
+    if budget_amount is None and preliminary_budget_total is not None:
+        budget_amount = preliminary_budget_total
     budget_delta = (budget_amount - cost_total) if budget_amount is not None and cost_total is not None else None
     budget_usage_pct = (cost_total / budget_amount) if budget_amount and cost_total is not None else None
 
     metrics = {
         "briefing_requirements": len(snapshot.get("briefing_requirements", [])),
         "presentation_items": len(items),
-        "cost_items": len(snapshot.get("cost_items", [])),
+        "cost_items": len(analysis_cost_items),
+        "preliminary_cost_items": len(financial_scope.get("preliminary_items") or []),
         "items_with_cost": len(matrix) - len(proposed_without_cost),
         "executed_with_evidence": executed_count,
         "explicit_not_executed": explicit_not_executed,
@@ -910,6 +1014,9 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         "budget_amount": budget_amount,
         "budget_delta": budget_delta,
         "budget_usage_pct": budget_usage_pct,
+        "preliminary_budget_total": preliminary_budget_total,
+        "cost_category_breakdown": financial_scope.get("category_breakdown") or [],
+        "additional_cost_sheets": financial_scope.get("additional_sheets") or [],
         "stage": stage_key,
         "stage_label": stage_label,
     }
@@ -935,15 +1042,21 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
                 f"{no_execution_evidence} ainda não possuem evidência suficiente."
             ),
         })
-    if snapshot.get("cost_items"):
+    if analysis_cost_items or financial_scope.get("detailed_documents"):
         total_text = _money(cost_total) if cost_total is not None else "total ainda não identificado"
         findings.append({
             "level": "warning" if cost_only or cost_total is None else "info",
             "title": "Proposta × planilha",
             "text": (
-                f"A planilha contém {len(snapshot.get('cost_items', []))} linha(s), com {total_text}. "
+                f"A proposta detalhada contém {len(analysis_cost_items)} linha(s) estruturada(s), com {total_text}. "
                 f"{len(cost_only)} linha(s) ainda não têm correspondência direta na apresentação."
             ),
+        })
+    if preliminary_budget_total is not None:
+        findings.append({
+            "level": "info",
+            "title": "Estudo de verba",
+            "text": f"O estudo preliminar foi reconstruído em {_money(preliminary_budget_total)} e é tratado como referência de alocação, sem ser somado novamente ao total da proposta.",
         })
     if budget_amount is not None:
         if cost_total is None:
@@ -959,6 +1072,18 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "title": "Aderência financeira",
                 "text": f"Budget: {_money(budget_amount)} · planilha: {_money(cost_total)} · diferença: {_money(abs(budget_delta or 0))} {relation} do budget.",
             })
+    additional_cost_sheets = financial_scope.get("additional_sheets") or []
+    if additional_cost_sheets:
+        readable = ", ".join(
+            f"{row.get('sheet_name') or 'Aba adicional'}: {_money(row.get('client_total'))}"
+            for row in additional_cost_sheets[:3]
+        )
+        findings.append({
+            "level": "info",
+            "title": "Escopos financeiros apartados",
+            "text": f"A planilha detalhada possui aba(s) adicional(is) não somada(s) ao total principal: {readable}.",
+        })
+
     if report_only:
         findings.append({
             "level": "warning",

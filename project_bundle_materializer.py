@@ -19,10 +19,11 @@ from memory_db import save_memory_presentation
 from memory_extractor import extract_memory, merge_memory_batches
 from memory_learning_db import save_cost_document, update_project_budget
 from memory_learning_models import CostWorkbookResult
+from project_batch_ingestion import classify_document
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.1.6"
-LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6"}
+WORKFLOW_VERSION = "28.1.7"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -1121,6 +1122,69 @@ def _ensure_project_file_role(client: Any, source_file: Mapping[str, Any], warni
         warnings.append(f"Central de arquivos: {exc}")
 
 
+
+def _repair_financial_source_role(
+    client: Any,
+    source_file: Mapping[str, Any],
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Corrige planilhas financeiras que versões anteriores rotularam pelo texto interno.
+
+    O caso real do Planeja 27 foi salvo como ``post_event_report`` porque uma linha
+    de escopo mencionava pós-evento/relatório final. Antes de decidir quais arquivos
+    reprocessar, voltamos a classificar planilhas com a regra documental da V28.1.7.
+    """
+    row = dict(source_file)
+    file_name = str(row.get("file_name") or "")
+    if Path(file_name).suffix.casefold() not in {".xlsx", ".xlsm", ".xls", ".csv"}:
+        return row
+    predicted, confidence, reasons = classify_document(
+        file_name,
+        str(row.get("text_excerpt") or ""),
+    )
+
+    # A classificação histórica pode ter sido contaminada pelo próprio escopo
+    # da planilha (ex.: uma linha chamada pós-evento). Quando isso acontecer,
+    # validamos a identidade financeira pela estrutura real do workbook antes
+    # de excluir o arquivo da rodada de reprocessamento.
+    if predicted not in {"detailed_costs", "preliminary_budget"}:
+        workbook_bytes = _download_bytes(client, row)
+        if workbook_bytes:
+            try:
+                parsed = parse_cost_workbook(file_name, workbook_bytes)
+                structural_kind = str((parsed.metadata or {}).get("cost_kind") or "")
+                if structural_kind in {"detailed_costs", "preliminary_budget"}:
+                    predicted = structural_kind
+                    confidence = 0.99
+                    reasons = ["estrutura financeira confirmada pelo workbook"]
+            except Exception:
+                pass
+    if predicted not in {"detailed_costs", "preliminary_budget"}:
+        return row
+    current = str(row.get("document_role") or "complementary_document")
+    row["document_role"] = predicted
+    row["role_confidence"] = confidence
+    row["role_reasons"] = reasons
+    if current == predicted:
+        return row
+    source_id = str(row.get("id") or "")
+    if not source_id:
+        return row
+    try:
+        client.table("source_files").update({
+            "document_role": predicted,
+            "role_confidence": confidence,
+            "role_reasons": reasons,
+        }).eq("id", source_id).execute()
+        warnings.append(
+            f"Papel documental corrigido automaticamente: {file_name} · {current} → {predicted}."
+        )
+        _ensure_project_file_role(client, row, warnings)
+    except Exception as exc:
+        warnings.append(f"Não foi possível sincronizar o papel financeiro de {file_name}: {exc}")
+    return row
+
+
 def _source_document(source_file: Mapping[str, Any], data: bytes):
     docs = prepare_input_documents([(
         str(source_file.get("file_name") or "arquivo"),
@@ -1293,6 +1357,29 @@ def _sanitize_memory_items(
         text = _normalize(" ".join(str(row.get(k) or "") for k in ("title", "item_type", "summary", "description", "evidence")))
         title_norm = _normalize(row.get("title"))
         section = str(row.get("section_key") or "")
+        page_number = int(row.get("source_page") or 0)
+        page = pages.get(page_number) or {}
+        page_text_norm = _normalize(page.get("text"))
+
+        # ``palco`` também aparece em frases como "presença de palco" e em
+        # "Ficha de Palco". Esses casos não representam uma entidade cenográfica.
+        if title_norm == "palco" and page_text_norm:
+            structural_stage = any(signal in page_text_norm for signal in (
+                "palco h", "palco com cenografia", "palco grande", "cenografia geral",
+                "implantacao", "led 14x4", "led 6x2", "housemix",
+            ))
+            artistic_page = any(signal in page_text_norm for signal in (
+                "mestre de cerimonias", "palestrante", "comunicadora", "comunicador",
+                "apresentadora", "apresentador",
+            ))
+            if "ficha de palco" in page_text_norm and not structural_stage:
+                row["title"] = "Ficha de palco"
+                row["section_key"] = "communication"
+                row["item_type"] = "Material impresso / comunicação"
+                title_norm = "ficha de palco"
+                section = "communication"
+            elif artistic_page and not structural_stage:
+                continue
 
         # Fichas genéricas de cobertura não são conteúdo de projeto.
         if generic_strategy.match(title_norm) or (
@@ -1303,7 +1390,10 @@ def _sanitize_memory_items(
 
         # O título pesa primeiro. Isso impede que um item "Palco" seja contaminado
         # pelo texto completo de uma planta que também contém PHOTO OP, buffet etc.
-        if "photo op" in title_norm or "ponto de foto" in title_norm:
+        if title_norm == "ficha de palco":
+            row["section_key"] = "communication"
+            row["item_type"] = "Material impresso / comunicação"
+        elif "photo op" in title_norm or "ponto de foto" in title_norm:
             row["section_key"] = "activations"
             row["item_type"] = "Photo-op"
         elif any(term in title_norm for term in ("quick massage", "ilha de massagem", "bacio di latte", "bar de cafe")):
@@ -1356,8 +1446,6 @@ def _sanitize_memory_items(
         if str(row.get("status") or "Não identificado") not in {"Referência", "Opção", "Recomendado"}:
             row["status"] = "Proposto"
 
-        page_number = int(row.get("source_page") or 0)
-        page = pages.get(page_number) or {}
         pattern = _semantic_pattern(title_norm) or _semantic_pattern(text)
         if pattern and page.get("text"):
             scoped = _scoped_page_text(str(page.get("text") or ""), pattern)
@@ -1475,7 +1563,12 @@ def _materialize_costs_semantic(client: Any, source_file: Mapping[str, Any], dat
         try:
             current = _rows(client.table("memory_cost_documents").select("metadata").eq("id", document_id).limit(1).execute())
             metadata = dict((current[0].get("metadata") if current else {}) or {})
-            metadata.update({"materialized_by": WORKFLOW_VERSION, "source_file_id": source_file.get("id"), "semantic_pipeline": True})
+            metadata.update({
+                "materialized_by": WORKFLOW_VERSION,
+                "source_file_id": source_file.get("id"),
+                "semantic_pipeline": True,
+                "document_role": source_file.get("document_role"),
+            })
             client.table("memory_cost_documents").update({"metadata": _safe_json(metadata)}).eq("id", document_id).execute()
         except Exception as exc:
             warnings.append(f"Marcador da planilha: {exc}")
@@ -1493,7 +1586,13 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
         )
     except Exception as exc:
         return {"project_id": project_id, "processed": 0, "errors": 1, "warnings": [str(exc)], "results": []}
-    relevant = [row for row in files if str(row.get("document_role") or "") in {
+
+    repair_warnings: list[str] = []
+    repaired_files = [
+        _repair_financial_source_role(client, row, repair_warnings)
+        for row in files
+    ]
+    relevant = [row for row in repaired_files if str(row.get("document_role") or "") in {
         "briefing_original", "detailed_costs", "preliminary_budget", "proposal_presentation", "final_presentation"
     }]
     results = []
@@ -1505,7 +1604,7 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
         "project_id": project_id,
         "processed": sum(1 for r in results if r.get("status") != "error"),
         "errors": sum(1 for r in results if r.get("status") == "error"),
-        "warnings": [w for r in results for w in (r.get("warnings") or [])][:50],
+        "warnings": (repair_warnings + [w for r in results for w in (r.get("warnings") or [])])[:50],
         "results": results,
     }
 

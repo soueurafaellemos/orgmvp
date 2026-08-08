@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.1.1"
+WORKFLOW_VERSION = "28.1.7"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_BYTES = 100 * 1024 * 1024
 
@@ -142,6 +142,69 @@ _ROLE_TERMS: dict[str, tuple[tuple[str, float], ...]] = {
         ("lead time", 2.0), ("prazo de entrega", 2.0), ("condicoes comerciais", 3.0),
     ),
 }
+
+_SPREADSHEET_EXTENSIONS = {".xlsx", ".xlsm", ".xls", ".csv"}
+
+
+def _spreadsheet_cost_identity(
+    *,
+    extension: str,
+    normalized_name: str,
+    normalized_text: str,
+) -> tuple[str | None, list[str]]:
+    """Resolve o papel financeiro antes de termos incidentais do conteúdo.
+
+    Planilhas humanas de orçamento costumam carregar textos como ``pós-evento`` ou
+    ``relatório final`` dentro de uma linha de escopo. Esses termos descrevem um
+    serviço, não a identidade documental da planilha. O formato + a estrutura da
+    tabela devem pesar mais do que palavras encontradas em células isoladas.
+    """
+    if extension not in _SPREADSHEET_EXTENSIONS:
+        return None, []
+
+    haystack = f" {normalized_name} {normalized_text} "
+    preliminary_signals = (
+        "estudo de verba",
+        "verba preliminar",
+        "budget preliminar",
+        "pre orcamento",
+        "pre-orcamento",
+        "estimativa preliminar",
+    )
+    if any(signal in normalized_name for signal in preliminary_signals):
+        return "preliminary_budget", ["nome identifica estudo preliminar de verba"]
+
+    detailed_groups = (
+        ("tipo faturamento", "valor unit", "valor total"),
+        ("total com honorarios", "honorarios", "encargos"),
+        ("abertura de custos", "impostos", "total geral dos servicos"),
+    )
+    if any(all(signal in haystack for signal in group) for group in detailed_groups):
+        return "detailed_costs", ["estrutura tabular de abertura de custos"]
+
+    # Resumo de categorias com valores, honorários e impostos também é uma
+    # evidência forte de orçamento detalhado mesmo sem cabeçalho convencional.
+    financial_signals = sum(
+        signal in haystack
+        for signal in (
+            "planejamento e producao",
+            "infraestrutura",
+            "comunicacao",
+            "brindes",
+            "artistico",
+            "staff",
+            "honorarios",
+            "impostos",
+            "total geral",
+        )
+    )
+    if financial_signals >= 6 and ("honorarios" in haystack or "valor total" in haystack):
+        return "detailed_costs", ["categorias financeiras e totais de produção"]
+
+    if "budget" in haystack and "estudo de verba" in haystack:
+        return "preliminary_budget", ["estrutura de budget preliminar"]
+    return None, []
+
 
 _NAME_STOPWORDS = {
     "briefing", "brief", "debriefing", "interno", "interna", "voe", "ideias",
@@ -375,6 +438,14 @@ def classify_document(name: str, text_excerpt: str) -> tuple[str, float, list[st
     name_haystack = f" {normalized_name} "
     full_haystack = f" {normalized_name} {normalized_text} "
     extension = Path(name).suffix.lower()
+
+    spreadsheet_role, spreadsheet_reasons = _spreadsheet_cost_identity(
+        extension=extension,
+        normalized_name=normalized_name,
+        normalized_text=normalized_text,
+    )
+    if spreadsheet_role:
+        return spreadsheet_role, 0.98, spreadsheet_reasons
 
     scores: dict[str, float] = {role: 0.0 for role in ROLE_LABELS}
     reasons: dict[str, list[str]] = {role: [] for role in ROLE_LABELS}

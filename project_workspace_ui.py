@@ -29,7 +29,13 @@ from project_workspace_reports import (
     render_report_analyses,
 )
 from project_workspace_visuals import render_visual_section
-from project_workspace_intelligence import build_project_intelligence, project_stage, render_project_intelligence
+from project_workspace_intelligence import (
+    build_project_intelligence,
+    cost_document_kind,
+    project_stage,
+    proposal_cost_items,
+    render_project_intelligence,
+)
 
 
 PROJECT_SECTIONS = [
@@ -771,20 +777,41 @@ def _render_overview(
 
     financial = st.columns(4)
     financial[0].metric("Budget do briefing", _format_money(intel_metrics.get("budget_amount")) if intel_metrics.get("budget_amount") is not None else "Não identificado")
-    financial[1].metric("Total da planilha", _format_money(intel_metrics.get("cost_total")) if intel_metrics.get("cost_total") is not None else "Não identificado")
+    financial[1].metric("Proposta detalhada", _format_money(intel_metrics.get("cost_total")) if intel_metrics.get("cost_total") is not None else "Não identificado")
     financial[2].metric("Diferença para o budget", _format_money(intel_metrics.get("budget_delta")) if intel_metrics.get("budget_delta") is not None else "Não calculável")
     usage = intel_metrics.get("budget_usage_pct")
     financial[3].metric("Budget comprometido", f"{usage:.1%}" if usage is not None else "Não calculável")
 
+    context_notes: list[str] = []
     observations: list[str] = []
     if snapshot.get("cost_documents") and intel_metrics.get("cost_total") is None:
         observations.append("A planilha de custos está anexada, mas ainda não há total financeiro utilizável na leitura estruturada.")
+    preliminary_total = intel_metrics.get("preliminary_budget_total")
+    if preliminary_total is not None:
+        context_notes.append(
+            f"Estudo preliminar de verba: {_format_money(preliminary_total)}. É referência de alocação e não é somado novamente à proposta detalhada."
+        )
+    additional_cost_sheets = intel_metrics.get("additional_cost_sheets") or []
+    if additional_cost_sheets:
+        readable = ", ".join(
+            f"{row.get('sheet_name') or 'Aba adicional'} ({_format_money(row.get('client_total'))})"
+            for row in additional_cost_sheets[:3]
+        )
+        context_notes.append(
+            f"Escopo(s) financeiro(s) apartado(s) do total principal: {readable}."
+        )
+    if intel_metrics.get("budget_delta") is not None and float(intel_metrics.get("budget_delta")) < 0:
+        observations.append(
+            f"A proposta detalhada excede o budget em {_format_money(abs(float(intel_metrics.get('budget_delta'))))}."
+        )
     if intel_metrics.get("presentation_items", 0) == 0 and snapshot.get("memory_documents"):
         observations.append("A apresentação está preservada, mas a decupagem semântica ainda não gerou entregas confiáveis.")
     if intel_metrics.get("briefing_gaps", 0):
         observations.append(f"Há {intel_metrics.get('briefing_gaps')} demanda(s) do briefing ainda sem correspondência consolidada na proposta.")
     if intel_metrics.get("cost_only_items", 0):
         observations.append(f"Há {intel_metrics.get('cost_only_items')} linha(s) de custo ainda sem correspondência direta com uma entrega apresentada.")
+    for note in context_notes[:2]:
+        st.info(note)
     if observations:
         for observation in observations[:4]:
             st.warning(observation)
@@ -1138,7 +1165,7 @@ def _render_scenography(
 ) -> None:
     _section_title(
         "Cenografia e ativações",
-        "Ambientes, ativações, experiências, jornada e operação.",
+        "Ambientes, ativações, experiências, conteúdo artístico, comunicação, jornada e operação.",
     )
 
     st.markdown("#### Cenografia e ambientes")
@@ -1157,6 +1184,22 @@ def _render_scenography(
         snapshot=snapshot,
         section_keys=["activations"],
         empty_message="Nenhuma ativação ou experiência foi identificada.",
+    )
+
+    st.markdown("#### Conteúdo, artístico e programação")
+    _render_memory_cards(
+        client,
+        project_id=project_id,
+        section_keys=["content_agenda"],
+        empty_message="Nenhum conteúdo artístico, palestrante ou programação foi estruturado.",
+    )
+
+    st.markdown("#### Comunicação e materiais")
+    _render_memory_cards(
+        client,
+        project_id=project_id,
+        section_keys=["communication"],
+        empty_message="Nenhum conteúdo de comunicação ou material foi estruturado.",
     )
 
     st.markdown("#### Jornada e operação")
@@ -1223,37 +1266,85 @@ def _render_budget(
 ) -> None:
     _section_title(
         "Orçamento e aderência",
-        "Budget do briefing, total da proposta, diferença financeira e conexão entre briefing, apresentação e custos.",
+        "Budget do briefing, estudo preliminar de verba, proposta detalhada e leitura financeira sem duplicar fontes.",
     )
 
     intelligence = build_project_intelligence(snapshot)
     financial = intelligence.get("metrics") or {}
     budget_amount = financial.get("budget_amount")
-    cost_total = financial.get("cost_total")
+    proposal_total = financial.get("cost_total")
+    preliminary_total = financial.get("preliminary_budget_total")
     delta = financial.get("budget_delta")
     usage = financial.get("budget_usage_pct")
-    summary_cols = st.columns(4)
-    summary_cols[0].metric("Budget do briefing", _format_money(budget_amount) if budget_amount is not None else "Não identificado")
-    summary_cols[1].metric("Total da planilha", _format_money(cost_total) if cost_total is not None else "Não identificado")
-    summary_cols[2].metric("Saldo / diferença", _format_money(delta) if delta is not None else "Não calculável")
-    summary_cols[3].metric("% do budget", f"{usage:.1%}" if usage is not None else "Não calculável")
+    additional_cost_sheets = financial.get("additional_cost_sheets") or []
 
-    if budget_amount is not None and cost_total is not None:
-        if delta >= 0:
-            st.success(f"A proposta identificada está {_format_money(delta)} abaixo do budget registrado no briefing.")
+    summary_cols = st.columns(4)
+    summary_cols[0].metric(
+        "Budget do briefing",
+        _format_money(budget_amount) if budget_amount is not None else "Não identificado",
+    )
+    summary_cols[1].metric(
+        "Proposta detalhada",
+        _format_money(proposal_total) if proposal_total is not None else "Não identificado",
+    )
+    summary_cols[2].metric(
+        "Saldo / diferença",
+        _format_money(delta) if delta is not None else "Não calculável",
+    )
+    summary_cols[3].metric(
+        "% do budget",
+        f"{usage:.1%}" if usage is not None else "Não calculável",
+    )
+
+    if preliminary_total is not None:
+        if budget_amount is not None and abs(float(preliminary_total) - float(budget_amount)) <= 0.01:
+            st.info(
+                f"**Estudo de verba:** {_format_money(preliminary_total)} · reconciliado com o budget do briefing. "
+                "Ele é referência de alocação e não é somado novamente à proposta detalhada."
+            )
         else:
-            st.warning(f"A proposta identificada está {_format_money(abs(delta))} acima do budget registrado no briefing.")
+            st.info(
+                f"**Estudo de verba:** {_format_money(preliminary_total)} · tratado separadamente como referência de alocação, "
+                "sem ser somado novamente à proposta detalhada."
+            )
+
+    if budget_amount is not None and proposal_total is not None:
+        if delta is not None and delta >= 0:
+            st.success(
+                f"A proposta detalhada está {_format_money(delta)} abaixo do budget registrado no briefing."
+            )
+        else:
+            over_pct = (abs(float(delta)) / float(budget_amount)) if delta is not None and budget_amount else None
+            suffix = f" ({over_pct:.1%} acima)" if over_pct is not None else ""
+            st.warning(
+                f"A proposta detalhada está {_format_money(abs(float(delta or 0)))} acima do budget registrado no briefing{suffix}."
+            )
     elif budget_amount is not None and snapshot.get("cost_documents"):
-        st.warning("O budget foi identificado, mas a planilha ainda não possui um total financeiro confiável. A aderência não será inventada até a leitura conseguir provar os valores.")
+        st.warning(
+            "O budget foi identificado, mas a proposta detalhada ainda não possui um total financeiro comprovado. "
+            "A aderência não será inventada até a leitura conseguir provar os valores."
+        )
+
+    if additional_cost_sheets:
+        st.markdown("#### Escopos financeiros apartados")
+        for row in additional_cost_sheets:
+            label = row.get("sheet_name") or "Aba adicional"
+            value = row.get("client_total")
+            st.info(
+                f"**{label}: {_format_money(value)}.** Este valor permanece fora do total principal até que o escopo seja confirmado como parte da proposta."
+            )
 
     files = _role_rows(snapshot, "cost_sheet")
     cost_documents = snapshot.get("cost_documents", [])
     if files:
         _render_file_list(client, rows=files, empty_message="", allow_archive=True)
     elif cost_documents:
-        st.caption("A planilha foi incorporada pela importação inteligente e está preservada no projeto.")
+        st.caption("As planilhas foram incorporadas pela importação inteligente e estão preservadas no projeto.")
     else:
-        st.markdown('<div class="nave-workspace-empty">Nenhuma planilha foi anexada.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="nave-workspace-empty">Nenhuma planilha foi anexada.</div>',
+            unsafe_allow_html=True,
+        )
 
     _upload_box(
         client,
@@ -1264,34 +1355,31 @@ def _render_budget(
         key_suffix="budget",
     )
 
-    cost_items = snapshot.get("cost_items", [])
-
     st.markdown("#### Planilhas já estruturadas pela NAVE")
-
     if cost_documents:
-        df = pd.DataFrame(cost_documents)
-        wanted = [
-            column
-            for column in (
-                "file_name",
-                "items_count",
-                "budget_amount",
-                "created_at",
-            )
-            if column in df.columns
-        ]
-        st.dataframe(
-            df[wanted],
-            hide_index=True,
-            width="stretch",
-        )
+        structured_rows: list[dict[str, Any]] = []
+        for document in cost_documents:
+            kind = cost_document_kind(document)
+            metadata = document.get("metadata") if isinstance(document.get("metadata"), dict) else {}
+            total = document.get("client_total")
+            if total in (None, ""):
+                total = document.get("budget_amount")
+            structured_rows.append({
+                "Arquivo": document.get("file_name") or document.get("title") or "Planilha",
+                "Leitura": "Proposta detalhada" if kind == "detailed_costs" else "Estudo de verba",
+                "Aba principal": document.get("sheet_name") or metadata.get("sheet_name") or "—",
+                "Itens": document.get("items_count") if document.get("items_count") is not None else "—",
+                "Total identificado": _format_money(total) if total not in (None, "") else "Não identificado",
+                "Estruturada em": document.get("created_at") or "—",
+            })
+        st.dataframe(pd.DataFrame(structured_rows), hide_index=True, width="stretch")
     else:
         st.caption("Nenhuma planilha estruturada foi encontrada.")
 
-    st.markdown("#### Linhas de custo")
-
-    if cost_items:
-        df = pd.DataFrame(cost_items)
+    proposal_items = proposal_cost_items(snapshot)
+    st.markdown("#### Proposta detalhada — linhas de custo")
+    if proposal_items:
+        df = pd.DataFrame(proposal_items)
         status_labels = {
             "included": "Incluído", "optional": "Opcional", "reserve": "Reserva",
             "pending": "Pendente", "no_value": "Sem valor", "client_responsibility": "Responsabilidade do cliente",
@@ -1310,22 +1398,73 @@ def _render_budget(
             "Tipo": df.get("estimate_type", pd.Series(dtype=str)).map(estimate_labels).fillna(""),
         })
         st.dataframe(
-            view, hide_index=True, width="stretch",
+            view,
+            hide_index=True,
+            width="stretch",
             column_config={
                 "Valor unitário": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Valor final": st.column_config.NumberColumn(format="R$ %.2f"),
             },
         )
-        numeric_totals = pd.to_numeric(df.get("client_total"), errors="coerce")
-        if numeric_totals.notna().any():
-            st.metric("Total identificado", _format_money(float(numeric_totals.dropna().sum())))
-        else:
-            st.metric("Total identificado", "Não identificado")
+        if proposal_total is not None:
+            st.metric("Total reconciliado da proposta", _format_money(proposal_total))
     else:
-        if cost_documents:
-            st.warning("A planilha está estruturada como documento, mas nenhuma linha de custo útil foi materializada. O total permanece como não identificado até uma leitura confiável.")
+        if any(cost_document_kind(row) == "detailed_costs" for row in cost_documents):
+            st.warning(
+                "A proposta detalhada está preservada, mas nenhuma linha de custo útil foi materializada. "
+                "O total permanece não identificado até uma leitura confiável."
+            )
         else:
-            st.caption("As linhas aparecerão após a estruturação da planilha.")
+            st.caption("Nenhuma proposta detalhada de custos foi estruturada.")
+
+    category_breakdown = financial.get("cost_category_breakdown") or []
+    if category_breakdown and proposal_total:
+        st.markdown("#### Distribuição da proposta por categoria")
+        category_rows = []
+        for row in category_breakdown:
+            value = float(row.get("total") or 0)
+            category_rows.append({
+                "Categoria": row.get("category") or "Sem categoria",
+                "Valor": value,
+                "% da proposta": f"{(value / float(proposal_total)):.1%}",
+            })
+        st.dataframe(
+            pd.DataFrame(category_rows),
+            hide_index=True,
+            width="stretch",
+            column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")},
+        )
+
+    preliminary_documents = {
+        str(document.get("id")): document
+        for document in cost_documents
+        if document.get("id") and cost_document_kind(document) == "preliminary_budget"
+    }
+    preliminary_items = [
+        item for item in snapshot.get("cost_items", [])
+        if str(item.get("cost_document_id") or "") in preliminary_documents
+    ]
+    if preliminary_items:
+        st.markdown("#### Estudo de verba — alocação preliminar")
+        allocation_rows = []
+        for item in preliminary_items:
+            raw = item.get("raw_data") if isinstance(item.get("raw_data"), dict) else {}
+            pct = raw.get("allocation_pct")
+            try:
+                pct_text = f"{float(pct):.1%}" if pct not in (None, "") else "—"
+            except (TypeError, ValueError):
+                pct_text = "—"
+            allocation_rows.append({
+                "Categoria": item.get("item_name") or item.get("category") or "Sem categoria",
+                "Alocação": float(item.get("client_total") or 0),
+                "% do estudo": pct_text,
+            })
+        st.dataframe(
+            pd.DataFrame(allocation_rows),
+            hide_index=True,
+            width="stretch",
+            column_config={"Alocação": st.column_config.NumberColumn(format="R$ %.2f")},
+        )
 
 
 def _render_suppliers(
