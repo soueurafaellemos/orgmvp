@@ -831,12 +831,22 @@ def _render_briefing(
     generic = _role_rows(snapshot, "briefing_original")
 
     st.markdown("#### Arquivo original")
-    _render_file_list(
-        client,
-        rows=generic,
-        empty_message="Nenhum briefing original foi anexado por esta central.",
-        allow_archive=True,
-    )
+    if generic:
+        _render_file_list(
+            client,
+            rows=generic,
+            empty_message="",
+            allow_archive=True,
+        )
+    elif structured:
+        st.caption(
+            "O briefing original foi incorporado pela importação inteligente e está preservado no projeto."
+        )
+    else:
+        st.markdown(
+            '<div class="nave-workspace-empty">Nenhum briefing original foi anexado.</div>',
+            unsafe_allow_html=True,
+        )
 
     _upload_box(
         client,
@@ -851,21 +861,22 @@ def _render_briefing(
 
     if structured:
         structured_df = pd.DataFrame(structured)
-        display_columns = [
-            column
-            for column in (
-                "title",
-                "file_name",
-                "requirements_count",
-                "budget_amount",
-                "created_at",
-            )
-            if column in structured_df.columns
-        ]
+        view = pd.DataFrame()
+        if "title" in structured_df.columns:
+            view["Briefing"] = structured_df["title"].fillna(structured_df.get("file_name"))
+        elif "file_name" in structured_df.columns:
+            view["Briefing"] = structured_df["file_name"]
+        if "requirements_count" in structured_df.columns:
+            view["Demandas"] = structured_df["requirements_count"]
+        if "budget_amount" in structured_df.columns:
+            view["Budget"] = pd.to_numeric(structured_df["budget_amount"], errors="coerce")
         st.dataframe(
-            structured_df[display_columns],
+            view,
             hide_index=True,
             width="stretch",
+            column_config={
+                "Budget": st.column_config.NumberColumn("Budget", format="R$ %.2f"),
+            },
         )
     else:
         st.markdown(
@@ -880,22 +891,29 @@ def _render_briefing(
 
     if requirements:
         req_df = pd.DataFrame(requirements)
-        wanted = [
-            column
-            for column in (
-                "requirement_type",
-                "title",
-                "priority",
-                "mandatory",
-                "adherence_status",
-            )
-            if column in req_df.columns
-        ]
-        st.dataframe(
-            req_df[wanted],
-            hide_index=True,
-            width="stretch",
-        )
+        type_labels = {
+            "objective": "Objetivo", "deliverable": "Entregável", "mandatory": "Obrigatoriedade",
+            "restriction": "Restrição", "audience": "Público", "logistics": "Logística",
+            "budget": "Budget", "kpi": "KPI", "operation": "Operação",
+            "communication": "Comunicação", "desirable": "Desejável", "context": "Contexto",
+        }
+        priority_labels = {
+            "critical": "Crítica", "high": "Alta", "medium": "Média", "low": "Baixa", "not_informed": "",
+        }
+        adherence_labels = {
+            "not_assessed": "Não avaliada", "fulfilled": "Cumprida", "partially_fulfilled": "Parcial",
+            "not_fulfilled": "Não cumprida", "exceeded": "Superada", "changed_justified": "Alterada",
+            "removed_budget": "Retirada por budget", "removed_timeline": "Retirada por prazo",
+            "not_applicable": "Não aplicável", "unproven": "Não comprovada",
+        }
+        view = pd.DataFrame({
+            "Tipo": req_df.get("requirement_type", pd.Series(dtype=str)).map(type_labels).fillna(req_df.get("requirement_type", "")),
+            "Demanda": req_df.get("title", ""),
+            "Prioridade": req_df.get("priority", pd.Series(dtype=str)).map(priority_labels).fillna(""),
+            "Obrigatória": req_df.get("mandatory", False),
+            "Aderência": req_df.get("adherence_status", pd.Series(dtype=str)).map(adherence_labels).fillna(""),
+        })
+        st.dataframe(view, hide_index=True, width="stretch")
     else:
         st.caption(
             "As demandas aparecerão aqui após a análise estruturada do briefing."
@@ -1077,12 +1095,13 @@ def _render_budget(
     )
 
     files = _role_rows(snapshot, "cost_sheet")
-    _render_file_list(
-        client,
-        rows=files,
-        empty_message="Nenhuma planilha foi anexada por esta central.",
-        allow_archive=True,
-    )
+    cost_documents = snapshot.get("cost_documents", [])
+    if files:
+        _render_file_list(client, rows=files, empty_message="", allow_archive=True)
+    elif cost_documents:
+        st.caption("A planilha foi incorporada pela importação inteligente e está preservada no projeto.")
+    else:
+        st.markdown('<div class="nave-workspace-empty">Nenhuma planilha foi anexada.</div>', unsafe_allow_html=True)
 
     _upload_box(
         client,
@@ -1093,7 +1112,6 @@ def _render_budget(
         key_suffix="budget",
     )
 
-    cost_documents = snapshot.get("cost_documents", [])
     cost_items = snapshot.get("cost_items", [])
 
     st.markdown("#### Planilhas já estruturadas pela NAVE")
@@ -1122,31 +1140,35 @@ def _render_budget(
 
     if cost_items:
         df = pd.DataFrame(cost_items)
-        wanted = [
-            column
-            for column in (
-                "category",
-                "item_name",
-                "quantity",
-                "unit_value",
-                "client_total",
-                "item_status",
-                "estimate_type",
-            )
-            if column in df.columns
-        ]
+        status_labels = {
+            "included": "Incluído", "optional": "Opcional", "reserve": "Reserva",
+            "pending": "Pendente", "no_value": "Sem valor", "client_responsibility": "Responsabilidade do cliente",
+        }
+        estimate_labels = {
+            "quoted": "Cotado", "estimated": "Estimado", "reserve": "Reserva",
+            "waiting_supplier": "Aguardando fornecedor", "no_value": "Sem valor",
+        }
+        view = pd.DataFrame({
+            "Categoria": df.get("category", ""),
+            "Item": df.get("item_name", ""),
+            "Quantidade": df.get("quantity"),
+            "Valor unitário": pd.to_numeric(df.get("unit_value"), errors="coerce"),
+            "Valor final": pd.to_numeric(df.get("client_total"), errors="coerce"),
+            "Situação": df.get("item_status", pd.Series(dtype=str)).map(status_labels).fillna(""),
+            "Tipo": df.get("estimate_type", pd.Series(dtype=str)).map(estimate_labels).fillna(""),
+        })
         st.dataframe(
-            df[wanted],
-            hide_index=True,
-            width="stretch",
+            view, hide_index=True, width="stretch",
+            column_config={
+                "Valor unitário": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Valor final": st.column_config.NumberColumn(format="R$ %.2f"),
+            },
         )
-
-        if "client_total" in df.columns:
-            total = pd.to_numeric(
-                df["client_total"],
-                errors="coerce",
-            ).fillna(0).sum()
-            st.metric("Total identificado", _format_money(total))
+        numeric_totals = pd.to_numeric(df.get("client_total"), errors="coerce")
+        if numeric_totals.notna().any():
+            st.metric("Total identificado", _format_money(float(numeric_totals.dropna().sum())))
+        else:
+            st.metric("Total identificado", "Não identificado")
     else:
         st.caption("As linhas aparecerão após a estruturação da planilha.")
 

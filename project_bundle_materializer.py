@@ -4,13 +4,25 @@ import csv
 import io
 import json
 import math
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-WORKFLOW_VERSION = "28.1.1"
+
+from document_io import prepare_documents as prepare_input_documents
+from memory_briefing import analyze_briefing_document
+from memory_cost_parser import parse_cost_workbook
+from memory_db import save_memory_presentation
+from memory_extractor import extract_memory, merge_memory_batches
+from memory_learning_db import save_cost_document, update_project_budget
+from memory_learning_models import CostWorkbookResult
+from gemini_extractor import _structured_call, get_client
+
+WORKFLOW_VERSION = "28.1.5"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -978,12 +990,358 @@ def _mark_source_file(
         pass
 
 
+
+PROJECT_FILE_ROLE_BY_DOCUMENT_ROLE = {
+    "briefing_original": "briefing_original",
+    "detailed_costs": "cost_sheet",
+    "preliminary_budget": "cost_sheet",
+    "proposal_presentation": "project_document",
+    "final_presentation": "final_presentation",
+    "feedback_approval": "feedback",
+    "post_event_report": "post_execution_report",
+    "supplier_reference": "supplier_reference",
+    "complementary_document": "project_document",
+}
+
+
+def _ai_settings() -> tuple[str | None, str]:
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    model = os.getenv("GEMINI_MODEL") or "gemini-3.5-flash-lite"
+    try:
+        import streamlit as st
+        api_key = str(st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY") or api_key or "").strip() or None
+        model = str(st.secrets.get("GEMINI_MODEL") or model).strip() or model
+    except Exception:
+        pass
+    return api_key, model
+
+
+def _legacy_marker(row: Mapping[str, Any], field: str) -> str:
+    payload = row.get(field)
+    if not isinstance(payload, Mapping):
+        return ""
+    return str(payload.get("materialized_by") or "").strip()
+
+
+def _delete_legacy_specialized_rows(client: Any, source_file: Mapping[str, Any]) -> dict[str, int]:
+    """Remove somente artefatos automáticos da V28.1.1 para permitir reprocessamento.
+
+    Conteúdo manual ou já processado semanticamente nunca é removido.
+    """
+    project_id = str(source_file.get("project_id") or "")
+    sha = str(source_file.get("sha256") or "")
+    deleted = {"briefing": 0, "cost": 0, "presentation": 0}
+    specs = [
+        ("memory_briefing_documents", "metadata", "briefing"),
+        ("memory_cost_documents", "metadata", "cost"),
+        ("memory_documents", "raw_data", "presentation"),
+    ]
+    for table, marker_field, key in specs:
+        try:
+            rows = _rows(
+                client.table(table).select("*")
+                .eq("project_id", project_id)
+                .eq("content_sha256", sha)
+                .execute()
+            )
+        except Exception:
+            rows = []
+        for row in rows:
+            marker = _legacy_marker(row, marker_field)
+            if marker not in LEGACY_MATERIALIZER_VERSIONS:
+                continue
+            try:
+                client.table(table).delete().eq("id", row.get("id")).execute()
+                deleted[key] += 1
+            except Exception:
+                pass
+    return deleted
+
+
+def _ensure_project_file_role(client: Any, source_file: Mapping[str, Any], warnings: list[str]) -> None:
+    project_id = str(source_file.get("project_id") or "")
+    sha = str(source_file.get("sha256") or "")
+    role = str(source_file.get("document_role") or "complementary_document")
+    desired = PROJECT_FILE_ROLE_BY_DOCUMENT_ROLE.get(role, "project_document")
+    if not project_id or not sha:
+        return
+    try:
+        existing = _rows(
+            client.table("project_files").select("*")
+            .eq("project_id", project_id)
+            .eq("content_sha256", sha)
+            .execute()
+        )
+    except Exception as exc:
+        warnings.append(f"Central de arquivos: {exc}")
+        return
+
+    for row in existing:
+        if str(row.get("file_role") or "") == desired:
+            return
+    if existing:
+        row = existing[0]
+        try:
+            client.table("project_files").update({
+                "file_role": desired,
+                "title": str(source_file.get("file_name") or row.get("title") or "Arquivo"),
+                "metadata": {**(row.get("metadata") or {}), "source_file_id": source_file.get("id"), "semantic_role_sync": WORKFLOW_VERSION},
+            }).eq("id", row.get("id")).execute()
+            return
+        except Exception as exc:
+            warnings.append(f"Central de arquivos: não foi possível ajustar o papel ({exc})")
+            return
+
+    try:
+        versions = _rows(
+            client.table("project_files").select("version_number")
+            .eq("project_id", project_id).eq("file_role", desired).execute()
+        )
+        version = max([int(r.get("version_number") or 0) for r in versions] or [0]) + 1
+        client.table("project_files").insert({
+            "project_id": project_id,
+            "file_role": desired,
+            "title": str(source_file.get("file_name") or "Arquivo"),
+            "file_name": str(source_file.get("file_name") or "arquivo"),
+            "mime_type": source_file.get("mime_type"),
+            "file_size_bytes": source_file.get("file_size_bytes"),
+            "content_sha256": sha,
+            "version_number": version,
+            "storage_bucket": str(source_file.get("storage_bucket") or PROJECT_FILES_BUCKET),
+            "storage_path": str(source_file.get("storage_path") or ""),
+            "metadata": {"source_file_id": source_file.get("id"), "semantic_role_sync": WORKFLOW_VERSION},
+            "is_current": True,
+            "is_archived": False,
+        }).execute()
+    except Exception as exc:
+        warnings.append(f"Central de arquivos: {exc}")
+
+
+def _source_document(source_file: Mapping[str, Any], data: bytes):
+    docs = prepare_input_documents([(
+        str(source_file.get("file_name") or "arquivo"),
+        data,
+        str(source_file.get("mime_type") or "application/octet-stream"),
+    )])
+    if not docs:
+        raise RuntimeError("o arquivo original não pôde ser preparado para leitura")
+    return docs[0]
+
+
+def _materialize_briefing_semantic(client: Any, source_file: Mapping[str, Any], data: bytes, warnings: list[str]) -> dict[str, int]:
+    project_id = str(source_file.get("project_id") or "")
+    sha = str(source_file.get("sha256") or "")
+    existing = _table_select_one(client, "memory_briefing_documents", project_id=project_id, content_sha256=sha)
+    if existing:
+        return {"briefing_documents": 0, "briefing_requirements": 0}
+    api_key, model = _ai_settings()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY não está configurada para a leitura especializada do briefing")
+    doc = _source_document(source_file, data)
+    extraction = analyze_briefing_document(doc, api_key=api_key, model=model)
+    payload = {
+        "project_id": project_id,
+        "title": extraction.title or str(source_file.get("file_name") or "Briefing original"),
+        "file_name": str(source_file.get("file_name") or "briefing"),
+        "mime_type": str(source_file.get("mime_type") or doc.mime_type),
+        "content_sha256": sha,
+        "storage_bucket": source_file.get("storage_bucket"),
+        "storage_path": source_file.get("storage_path"),
+        "extraction_status": "pronto",
+        "requirements_count": len(extraction.requirements),
+        "budget_amount": extraction.budget_amount,
+        "currency": extraction.currency or "BRL",
+        "objective": _clip(extraction.objective, 4000),
+        "audience": _clip(extraction.audience, 4000),
+        "metadata": {
+            "materialized_by": WORKFLOW_VERSION,
+            "source_file_id": source_file.get("id"),
+            "document_role": source_file.get("document_role"),
+            "event_date": extraction.event_date,
+            "venue": extraction.venue,
+            "audience_quantity": extraction.audience_quantity,
+            "client_brand": extraction.client_brand,
+            "event_name": extraction.event_name,
+        },
+        "diagnostic": {"warnings": extraction.warnings, "semantic_pipeline": True},
+    }
+    inserted = _rows(client.table("memory_briefing_documents").insert(_safe_json(payload)).execute())
+    if not inserted:
+        raise RuntimeError("o Supabase não confirmou o briefing estruturado")
+    document_id = str(inserted[0]["id"])
+    rows = []
+    for order, req in enumerate(extraction.requirements, start=1):
+        rows.append({
+            "project_id": project_id,
+            "briefing_document_id": document_id,
+            "requirement_type": req.requirement_type,
+            "title": _clip(req.title, 500) or f"Demanda {order}",
+            "description": _clip(req.description, 5000),
+            "priority": req.priority,
+            "mandatory": bool(req.mandatory),
+            "source_reference": _clip(req.source_reference, 500),
+            "source_quote": _clip(req.source_quote, 1800),
+            "tags": list(req.tags or []),
+            "sort_order": order,
+            "adherence_status": "not_assessed",
+        })
+    created = 0
+    for start in range(0, len(rows), 30):
+        created += len(_rows(client.table("memory_briefing_requirements").insert(_safe_json(rows[start:start+30])).execute()))
+    if extraction.budget_amount is not None:
+        try:
+            update_project_budget(client, project_id=project_id, budget_amount=extraction.budget_amount, currency=extraction.currency or "BRL")
+        except Exception as exc:
+            warnings.append(f"Budget do briefing: {exc}")
+    return {"briefing_documents": 1, "briefing_requirements": created}
+
+
+def _sanitize_memory_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    food_terms = ("risotto", "risoto", "panna cotta", "cannoli", "ossobuco", "polenta", "insalata", "antipasti", "zabaione", "minestrone", "cardapio", "cardápio", "menu ")
+    schedule_terms = ("check in", "check-in", "almoco", "almoço", "jantar", "coffee", "plenaria", "plenária", "check out", "check-out")
+    gift_terms = ("brinde", "gift", "press kit", "presskit", "camiseta", "mochila", "credencial", "sacola", "kit boas vindas", "kit de boas vindas")
+    cleaned = []
+    for item in items:
+        row = dict(item)
+        text = _normalize(" ".join(str(row.get(k) or "") for k in ("title", "summary", "description", "evidence")))
+        section = str(row.get("section_key") or "")
+        if any(term in text for term in food_terms):
+            row["section_key"] = "content_agenda"
+        elif section == "gifts" and any(term in text for term in schedule_terms) and not any(term in text for term in gift_terms):
+            row["section_key"] = "content_agenda"
+        elif section == "strategy" and any(term in text for term in schedule_terms):
+            row["section_key"] = "content_agenda"
+        cleaned.append(row)
+    return cleaned
+
+
+def _materialize_presentation_semantic(client: Any, source_file: Mapping[str, Any], data: bytes, warnings: list[str]) -> dict[str, int]:
+    project_id = str(source_file.get("project_id") or "")
+    sha = str(source_file.get("sha256") or "")
+    existing = _table_select_one(client, "memory_documents", project_id=project_id, content_sha256=sha)
+    if existing:
+        return {"memory_documents": 0, "memory_items": 0}
+    doc = _source_document(source_file, data)
+    if doc.mime_type != "application/pdf":
+        warnings.append("A leitura visual especializada exige PDF; foi aplicada leitura textual de segurança.")
+        text = doc.data.decode("utf-8", errors="replace") if doc.mime_type.startswith("text/") else ""
+        return _materialize_presentation(client, source_file, text, warnings)
+    api_key, model = _ai_settings()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY não está configurada para a decupagem especializada da apresentação")
+    batches = extract_memory([doc], api_key=api_key, model=model)
+    extraction = merge_memory_batches(batches)
+    items = _sanitize_memory_items(list(extraction.get("items") or []))
+    extraction["items"] = items
+    result = save_memory_presentation(
+        client,
+        project_id=project_id,
+        source_document=doc,
+        extraction=extraction,
+        selected_items=items,
+        document_title=str(extraction.get("document_title") or source_file.get("file_name") or "Apresentação"),
+        version_label=str(extraction.get("version_label") or "Importação de projeto"),
+        document_status="sent_to_client",
+    )
+    return {"memory_documents": 0 if result.get("status") == "duplicate" else 1, "memory_items": int(result.get("items_saved") or 0)}
+
+
+def _parse_cost_with_ai(source_file: Mapping[str, Any], data: bytes) -> CostWorkbookResult:
+    api_key, model = _ai_settings()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY não está configurada para a leitura semântica da planilha")
+    doc = _source_document(source_file, data)
+    ai_client = get_client(api_key)
+    prompt = """
+Você estrutura uma planilha humana de orçamento/verba de live marketing.
+A planilha pode ter células mescladas, blocos, subtotais, categorias e textos livres.
+Extraia itens reais de custo, não cabeçalhos. Regras:
+- linhas como SUB TOTAL, TOTAL, EQUIPE E VERBAS ou nome de seção não são itens por si só;
+- preserve a seção anterior em category;
+- use números somente quando estiverem explícitos no arquivo;
+- nunca converta ausência de valor em zero; use null;
+- item_status: included, optional, reserve, pending, no_value ou client_responsibility;
+- estimate_type: quoted, estimated, reserve, waiting_supplier ou no_value;
+- client_total do documento deve ser null se nenhum valor monetário puder ser comprovado;
+- não invente valores a partir de contexto externo.
+Retorne CostWorkbookResult completo.
+"""
+    result = _structured_call(
+        ai_client, model=model, prompt=prompt, docs=[doc],
+        schema=CostWorkbookResult, context=f"planilha de custos {source_file.get('file_name')}"
+    )
+    result.file_name = str(source_file.get("file_name") or result.file_name)
+    return result
+
+
+def _materialize_costs_semantic(client: Any, source_file: Mapping[str, Any], data: bytes, warnings: list[str]) -> dict[str, int]:
+    project_id = str(source_file.get("project_id") or "")
+    sha = str(source_file.get("sha256") or "")
+    existing = _table_select_one(client, "memory_cost_documents", project_id=project_id, content_sha256=sha)
+    if existing:
+        return {"cost_documents": 0, "cost_items": 0}
+    file_name = str(source_file.get("file_name") or "planilha.xlsx")
+    try:
+        parsed = parse_cost_workbook(file_name, data)
+        has_meaningful_structure = bool(parsed.items)
+        obvious_garbage = all(
+            _normalize(item.item_name) in {"sub total", "subtotal", "total", "equipe e verbas"}
+            for item in parsed.items
+        ) if parsed.items else True
+        if not has_meaningful_structure or obvious_garbage:
+            raise ValueError("a leitura tabular não encontrou itens reais")
+    except Exception as deterministic_exc:
+        warnings.append(f"A leitura tabular exigiu interpretação semântica: {deterministic_exc}")
+        parsed = _parse_cost_with_ai(source_file, data)
+    try:
+        memory_rows = _rows(client.table("memory_items").select("*").eq("project_id", project_id).execute())
+    except Exception:
+        memory_rows = []
+    result = save_cost_document(
+        client,
+        project_id=project_id,
+        file_name=str(source_file.get("file_name") or "planilha.xlsx"),
+        file_bytes=data,
+        parsed=parsed,
+        memory_items=memory_rows,
+    )
+    warnings.extend(list(parsed.warnings or []))
+    return {"cost_documents": 0 if result.get("status") == "duplicate" else 1, "cost_items": int(result.get("items_saved") or 0)}
+
+
+def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, Any]:
+    try:
+        files = _rows(
+            client.table("source_files").select("*")
+            .eq("project_id", project_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+    except Exception as exc:
+        return {"project_id": project_id, "processed": 0, "errors": 1, "warnings": [str(exc)], "results": []}
+    relevant = [row for row in files if str(row.get("document_role") or "") in {
+        "briefing_original", "detailed_costs", "preliminary_budget", "proposal_presentation", "final_presentation"
+    }]
+    results = []
+    for row in relevant:
+        _delete_legacy_specialized_rows(client, row)
+        result = materialize_source_file(client, row, force_semantic_reprocess=True)
+        results.append(result.as_dict())
+    return {
+        "project_id": project_id,
+        "processed": sum(1 for r in results if r.get("status") != "error"),
+        "errors": sum(1 for r in results if r.get("status") == "error"),
+        "warnings": [w for r in results for w in (r.get("warnings") or [])][:50],
+        "results": results,
+    }
+
 def materialize_source_file(
     client: Any,
     source_file: Mapping[str, Any],
     *,
     source_bytes: bytes | None = None,
     text_override: str | None = None,
+    force_semantic_reprocess: bool = False,
 ) -> MaterializationResult:
     source_file = dict(source_file)
     source_file_id = str(source_file.get("id") or "").strip()
@@ -995,15 +1353,26 @@ def materialize_source_file(
     warnings: list[str] = []
     created: dict[str, int] = {}
     _sync_project_file(client, source_file_id, warnings)
+    _ensure_project_file_role(client, source_file, warnings)
     text = _clean_text(text_override if text_override is not None else source_file.get("text_excerpt"))
+    if source_bytes is None and role in {"briefing_original", "detailed_costs", "preliminary_budget", "proposal_presentation", "final_presentation"}:
+        source_bytes = _download_bytes(client, source_file)
 
     try:
+        if force_semantic_reprocess:
+            _delete_legacy_specialized_rows(client, source_file)
         if role == "briefing_original":
-            created.update(_materialize_briefing(client, source_file, text, warnings))
+            if source_bytes is None:
+                raise RuntimeError("o briefing original não pôde ser recuperado do Storage")
+            created.update(_materialize_briefing_semantic(client, source_file, source_bytes, warnings))
         elif role in {"detailed_costs", "preliminary_budget"}:
-            created.update(_materialize_costs(client, source_file, text, source_bytes, warnings))
+            if source_bytes is None:
+                raise RuntimeError("a planilha original não pôde ser recuperada do Storage")
+            created.update(_materialize_costs_semantic(client, source_file, source_bytes, warnings))
         elif role in {"proposal_presentation", "final_presentation"}:
-            created.update(_materialize_presentation(client, source_file, text, warnings))
+            if source_bytes is None:
+                raise RuntimeError("a apresentação original não pôde ser recuperada do Storage")
+            created.update(_materialize_presentation_semantic(client, source_file, source_bytes, warnings))
         elif role == "feedback_approval":
             created.update(_materialize_feedback(client, source_file, text))
         elif role == "post_event_report":
@@ -1073,8 +1442,8 @@ def repair_v2810_projects(client: Any, *, limit: int = MAX_SOURCE_FILES_REPAIR) 
     for row in rows:
         status = str(row.get("processing_status") or "").strip()
         metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
-        already_v2811 = str(metadata.get("materialized_by") or "") == WORKFLOW_VERSION
-        if already_v2811 and status in {"materialized", "materialized_with_warnings"}:
+        marker = str(metadata.get("materialized_by") or "").strip()
+        if marker and status in {"materialized", "materialized_with_warnings"}:
             continue
         pending.append(row)
 

@@ -507,18 +507,29 @@ def parse_cost_workbook(
         if re.search(r"\btotal\b", normalized_first):
             continue
 
+        nonempty_values = [
+            value for value in row
+            if value not in (None, "") and str(value).strip()
+        ]
+        numeric_values = [
+            quantity, period, unit_value, base_value,
+            fees_value, charges_value, client_total,
+        ]
+        only_text = str(nonempty_values[0]).strip() if len(nonempty_values) == 1 else ""
+        letters = "".join(ch for ch in only_text if ch.isalpha())
+        looks_like_heading = bool(letters) and (letters.upper() == letters or only_text.endswith(":"))
+        single_text_section = (
+            len(nonempty_values) == 1
+            and looks_like_heading
+            and all(value in (None, 0) for value in numeric_values)
+        )
         is_category = (
-            bool(str(category_or_name or "").strip())
-            and not str(description or "").strip()
-            and not str(billing_type or "").strip()
-            and all(
-                value in (None, 0)
-                for value in [
-                    quantity,
-                    unit_value,
-                    base_value,
-                    client_total,
-                ]
+            single_text_section
+            or (
+                bool(str(category_or_name or "").strip())
+                and not str(description or "").strip()
+                and not str(billing_type or "").strip()
+                and all(value in (None, 0) for value in numeric_values)
             )
         )
 
@@ -613,14 +624,24 @@ def parse_cost_workbook(
             "apenas no arquivo original."
         )
 
-    calculated_total = sum(
-        float(item.client_total or 0)
+    has_any_monetary_value = any(
+        value is not None
         for item in items
+        for value in (
+            item.unit_value, item.base_value, item.fees_value,
+            item.charges_value, item.client_total,
+        )
+    )
+    calculated_total = (
+        sum(float(item.client_total or 0) for item in items)
+        if has_any_monetary_value
+        else None
     )
     stated_total = totals.get("client_total")
 
     if (
-        stated_total
+        stated_total is not None
+        and calculated_total is not None
         and abs(calculated_total - stated_total)
         > max(1.0, stated_total * 0.01)
     ):

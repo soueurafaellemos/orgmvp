@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+import fitz
 from pathlib import Path
 from typing import Any
 
-from document_io import InputDocument
+from document_io import InputDocument, split_pdf
 from gemini_extractor import (
     _structured_call,
     get_client,
@@ -61,6 +62,18 @@ Não agrupe todos os entregáveis em uma única ficha quando o briefing
 listar entregas diferentes. Exemplo: geladeiras, depósito, brindes,
 sampling, mascote e cobertura devem ser requisitos separados.
 
+COBERTURA EXAUSTIVA:
+- percorra todas as páginas do lote;
+- cada ambiente, equipamento, serviço, brinde, quantidade, requisito
+  operacional, comunicação, infraestrutura, internet, mobiliário,
+  artístico, logística ou restrição relevante deve virar uma demanda
+  independente quando representar uma decisão de produção;
+- não resuma uma lista extensa em uma única frase genérica;
+- preserve quantidades, dimensões, valores e responsabilidades quando
+  estiverem explícitos;
+- cardápio, agenda e referências históricas não devem ser confundidos
+  com entregáveis, salvo quando o briefing exigir sua produção.
+
 Use mandatory=true apenas para obrigatoriedades inequívocas.
 
 Prioridades permitidas:
@@ -90,6 +103,16 @@ def _text_value(
             "utf-8",
             errors="replace",
         )
+
+    if doc.mime_type == "application/pdf":
+        try:
+            pdf = fitz.open(stream=doc.data, filetype="pdf")
+            try:
+                return "\n".join(page.get_text("text") for page in pdf)
+            finally:
+                pdf.close()
+        except Exception:
+            return ""
 
     return ""
 
@@ -436,31 +459,125 @@ def _fallback_extraction(
     )
 
 
+def _merge_briefing_extractions(parts: list[BriefingExtraction], *, file_name: str) -> BriefingExtraction:
+    if not parts:
+        return BriefingExtraction(file_name=file_name, title=Path(file_name).stem)
+
+    def first(field: str):
+        for item in parts:
+            value = getattr(item, field, None)
+            if value not in (None, "", []):
+                return value
+        return None
+
+    requirements = []
+    seen = set()
+    for item in parts:
+        for req in item.requirements:
+            key = (
+                normalize_text(req.requirement_type),
+                normalize_text(req.title),
+                normalize_text(req.description or req.source_quote or "")[:240],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            requirements.append(req)
+
+    warnings = list(dict.fromkeys(
+        warning
+        for item in parts
+        for warning in item.warnings
+        if str(warning).strip()
+    ))
+    budgets = [item.budget_amount for item in parts if item.budget_amount is not None]
+
+    return BriefingExtraction(
+        file_name=file_name,
+        title=first("title") or Path(file_name).stem,
+        project_name=first("project_name"),
+        client_brand=first("client_brand"),
+        event_name=first("event_name"),
+        event_date=first("event_date"),
+        venue=first("venue"),
+        objective=first("objective"),
+        audience=first("audience"),
+        audience_quantity=first("audience_quantity"),
+        budget_amount=max(budgets) if budgets else None,
+        currency=first("currency") or "BRL",
+        requirements=requirements,
+        warnings=warnings,
+    )
+
+
 def analyze_briefing_document(
     doc: InputDocument,
     *,
     api_key: str | None,
     model: str,
 ) -> BriefingExtraction:
-    client = get_client(
-        api_key
-    )
+    client = get_client(api_key)
+
+    # PDFs extensos são lidos em pequenos lotes. Isso reduz a tendência de
+    # resumir dezenas de demandas em poucas fichas e preserva a granularidade
+    # operacional de briefings humanos.
+    if doc.mime_type == "application/pdf":
+        try:
+            batches = split_pdf(doc, pages_per_batch=2, start_page=1, end_page=None)
+        except Exception:
+            batches = []
+
+        if batches:
+            extracted_parts: list[BriefingExtraction] = []
+            for part, first_page, last_page in batches:
+                try:
+                    result = _structured_call(
+                        client,
+                        model=model,
+                        prompt=(
+                            BRIEFING_PROMPT
+                            + f"\n\nARQUIVO ORIGINAL: {doc.name}"
+                            + f"\nPÁGINAS ORIGINAIS DESTE LOTE: {first_page} a {last_page}."
+                            + "\nEm source_reference, use o número da página ORIGINAL quando possível."
+                        ),
+                        docs=[part],
+                        schema=BriefingExtraction,
+                        context=f"briefing {doc.name}, páginas {first_page}-{last_page}",
+                    )
+                    result.file_name = doc.name
+                    if not result.requirements:
+                        fallback = _fallback_extraction(
+                            part,
+                            warning=(
+                                f"As páginas {first_page}-{last_page} não retornaram demandas "
+                                "estruturadas; a NAVE aplicou leitura de segurança."
+                            ),
+                        )
+                        result.requirements = fallback.requirements
+                        result.warnings = list(dict.fromkeys([*result.warnings, *fallback.warnings]))
+                    extracted_parts.append(result)
+                except Exception as exc:
+                    fallback = _fallback_extraction(
+                        part,
+                        warning=(
+                            f"A leitura estruturada das páginas {first_page}-{last_page} falhou; "
+                            f"a NAVE aplicou leitura de segurança. Detalhe técnico: {exc}"
+                        ),
+                    )
+                    extracted_parts.append(fallback)
+
+            merged = _merge_briefing_extractions(extracted_parts, file_name=doc.name)
+            if merged.requirements:
+                return merged
 
     try:
         result = _structured_call(
             client,
             model=model,
-            prompt=(
-                BRIEFING_PROMPT
-                + "\n\nARQUIVO ORIGINAL: "
-                + doc.name
-            ),
+            prompt=(BRIEFING_PROMPT + "\n\nARQUIVO ORIGINAL: " + doc.name),
             docs=[doc],
             schema=BriefingExtraction,
-            context=(
-                "análise do briefing "
-                + doc.name
-            ),
+            context=("análise do briefing " + doc.name),
         )
         result.file_name = doc.name
 
@@ -468,32 +585,18 @@ def analyze_briefing_document(
             fallback = _fallback_extraction(
                 doc,
                 warning=(
-                    "A IA não devolveu demandas "
-                    "individuais. A NAVE aplicou "
-                    "uma leitura de segurança."
+                    "A IA não devolveu demandas individuais. A NAVE aplicou uma leitura de segurança."
                 ),
             )
-            result.requirements = (
-                fallback.requirements
-            )
-            result.warnings = list(
-                dict.fromkeys(
-                    [
-                        *result.warnings,
-                        *fallback.warnings,
-                    ]
-                )
-            )
-
+            result.requirements = fallback.requirements
+            result.warnings = list(dict.fromkeys([*result.warnings, *fallback.warnings]))
         return result
-
     except Exception as exc:
         return _fallback_extraction(
             doc,
             warning=(
-                "A análise estruturada não foi "
-                "concluída. A NAVE aplicou uma "
-                "leitura de segurança. "
+                "A análise estruturada não foi concluída. A NAVE aplicou uma leitura de segurança. "
                 f"Detalhe técnico: {exc}"
             ),
         )
+

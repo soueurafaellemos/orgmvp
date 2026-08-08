@@ -18,7 +18,7 @@ from project_batch_ingestion import (
     rank_project_candidates,
     save_project_bundle,
 )
-from project_bundle_materializer import repair_v2810_projects
+from project_bundle_materializer import repair_v2810_projects, reprocess_project_semantically
 
 st.set_page_config(
     page_title="Importar projeto completo | NAVE by VOE",
@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.1.1",
+    eyebrow="NAVE by VOE · V28.1.5",
 )
 
 client = get_nave_client()
@@ -55,6 +55,51 @@ if legacy_repair.get("errors"):
     st.warning(
         f"{legacy_repair['errors']} arquivo(s) antigo(s) ainda precisam de revisão. Os demais foram preservados e incorporados normalmente."
     )
+
+with st.expander("Corrigir um projeto importado por uma versão anterior da V28", expanded=False):
+    st.caption(
+        "Use somente quando um projeto já importado estiver com briefing, apresentação ou orçamento estruturados de forma incorreta. "
+        "A NAVE preserva os arquivos originais, remove apenas a materialização automática antiga e reprocessa pelos extratores especializados."
+    )
+    try:
+        repair_projects = fetch_projects(client)
+    except Exception as exc:
+        repair_projects = []
+        st.warning(f"Não foi possível consultar os projetos agora: {exc}")
+    if repair_projects:
+        repair_options = {
+            f"{row.get('project_name') or 'Projeto sem nome'} · {row.get('client_brand') or 'cliente não informado'}": str(row.get('id'))
+            for row in repair_projects if row.get('id')
+        }
+        repair_label = st.selectbox(
+            "Projeto a reprocessar",
+            list(repair_options.keys()),
+            key="v2815_reprocess_project",
+        )
+        confirm_reprocess = st.checkbox(
+            "Confirmo o reprocessamento sem alterar arquivos originais nem conteúdo manual.",
+            key="v2815_reprocess_confirm",
+        )
+        if st.button(
+            "Reprocessar conteúdo com leitura especializada",
+            type="primary",
+            width="stretch",
+            disabled=not confirm_reprocess,
+            key="v2815_reprocess_button",
+        ):
+            with st.spinner("Reprocessando briefing, apresentação e orçamento já preservados..."):
+                outcome = reprocess_project_semantically(client, repair_options[repair_label])
+            if outcome.get("errors"):
+                st.warning(
+                    f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) e {outcome.get('errors', 0)} com erro. "
+                    "Os arquivos originais continuam preservados."
+                )
+                for warning in (outcome.get("warnings") or [])[:12]:
+                    st.caption("• " + str(warning))
+            else:
+                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.1.5.")
+                st.session_state["nave_project_hub_focus_id"] = repair_options[repair_label]
+                st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
 st.markdown("### 1. Arquivos do projeto")
 st.caption(

@@ -76,7 +76,9 @@ KV, identidade visual, campanha, sinalização, telas, fachadas,
 envelopamentos, aplicações, peças e conteúdos de comunicação.
 
 7. content_agenda — Conteúdo & Agenda
-Programação, talks, palestras, workshops, shows, horários e trilhas.
+Programação, talks, palestras, workshops, shows, horários, trilhas,
+cardápios e conteúdos de jantares temáticos quando fizerem parte da
+programação do evento.
 
 8. partners_sponsorship — Parceiros & Cotas
 Cotas, patrocinadores, naming rights, espaços assinados e
@@ -100,6 +102,18 @@ CONTRATO OBRIGATÓRIO DE COBERTURA:
 - Quando um slide contiver propostas distintas, gere vários itens.
   Exemplos: quatro brindes diferentes; duas opções de uniforme;
   dois jogos; diferentes ambientes.
+- Nunca concatene agenda, cardápio, planta, cenografia e ativações em
+  uma única ficha. Separe entidades semanticamente independentes.
+- A palavra "kit" isoladamente não torna um conteúdo um brinde: só use
+  gifts quando houver objeto/material efetivamente entregue ao público.
+- Pratos, menus, sobremesas e nomes de receitas pertencem a
+  content_agenda quando descrevem uma refeição/jantar; nunca a strategy
+  ou gifts por coincidência de palavras.
+- Horários, check-in, almoço, jantar, plenária, coffee break e checkout
+  pertencem a content_agenda ou journey_operation, não a strategy.
+- Palco, LED, photo-op, ilha de massagem, foyer e estruturas físicas
+  devem ser separados por entidade/ambiente; não copie o texto inteiro
+  da planta para uma única ativação.
 - Slides puramente visuais também são relevantes quando representam
   KV, cenografia, ativação, brinde ou material proposto.
 - Não use títulos genéricos como "Foto 1", "Imagem", "Visual" ou
