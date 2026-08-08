@@ -668,6 +668,42 @@ def _source_signature(snapshot: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def project_stage(snapshot: dict[str, Any]) -> tuple[str, str]:
+    """Traduz o estado técnico para a situação de negócio que faz sentido no projeto."""
+    project = snapshot.get("project") or {}
+    outcome = snapshot.get("outcome") or {}
+    status = str(project.get("status") or "")
+    commercial = str(outcome.get("commercial_result") or "")
+    execution = str(outcome.get("execution_result") or "")
+
+    if execution in {"executed", "partially_executed"} or status == "executado":
+        return "executed", "Executado"
+    if execution == "in_progress" or status == "em_producao":
+        return "production", "Em produção"
+    if commercial == "lost" or status == "perdido":
+        return "lost", "Perdido"
+    if commercial == "cancelled" or status == "cancelado":
+        return "cancelled", "Cancelado"
+    if commercial == "no_return":
+        return "no_return", "Sem resposta"
+    if commercial == "won" or status == "aprovado_ganho":
+        return "won", "Ganho / aprovado"
+    return "proposal", "Em proposta / concorrência"
+
+
+def _numeric_values(rows: Iterable[dict[str, Any]], field: str) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        raw = row.get(field)
+        if raw in (None, ""):
+            continue
+        try:
+            values.append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
 def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
     project_files = [row for row in snapshot.get("project_files", []) if not row.get("is_archived")]
     role_count = defaultdict(int)
@@ -681,6 +717,9 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         "report": _coverage_state(len(snapshot.get("report_analyses", [])), role_count["post_execution_report"] + role_count["closure_report"], "Pós-evento / encerramento"),
         "feedback": _coverage_state(len(snapshot.get("feedback_entries", [])), role_count["feedback"] + role_count["approval"], "Feedbacks"),
     }
+
+    stage_key, stage_label = project_stage(snapshot)
+    proposal_stage = stage_key in {"proposal", "no_return", "won"}
 
     items = []
     for row in snapshot.get("memory_items", []):
@@ -736,7 +775,9 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         item_id = str(item.get("id") or "")
         outcome = outcomes.get(item_id) or {}
         outcome_status = str(outcome.get("outcome_status") or "unassessed")
-        if outcome_status in EXECUTED_STATUSES:
+        if proposal_stage:
+            execution_reading = "Ainda não aplicável — projeto em proposta"
+        elif outcome_status in EXECUTED_STATUSES:
             execution_reading = "Executado com evidência"
             executed_count += 1
         elif outcome_status in NO_EXECUTION_STATUSES:
@@ -836,11 +877,22 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     proposed_without_cost = [row for row in matrix if row["Custo direto"] <= 0]
 
-    cost_total = sum(_safe_float(row.get("client_total")) for row in snapshot.get("cost_items", []))
-    linked_cost_total = sum(
+    cost_values = _numeric_values(snapshot.get("cost_items", []), "client_total")
+    cost_total = sum(cost_values) if cost_values else None
+    linked_values = [
         _safe_float(cost_by_id.get(str(cost_id), {}).get("client_total"))
         for cost_id in linked_cost_ids
-    )
+        if cost_by_id.get(str(cost_id), {}).get("client_total") not in (None, "")
+    ]
+    linked_cost_total = sum(linked_values) if linked_values else None
+    outcome_project = snapshot.get("outcome") or {}
+    budget_amount = outcome_project.get("budget_amount")
+    try:
+        budget_amount = float(budget_amount) if budget_amount not in (None, "") else None
+    except (TypeError, ValueError):
+        budget_amount = None
+    budget_delta = (budget_amount - cost_total) if budget_amount is not None and cost_total is not None else None
+    budget_usage_pct = (cost_total / budget_amount) if budget_amount and cost_total is not None else None
 
     metrics = {
         "briefing_requirements": len(snapshot.get("briefing_requirements", [])),
@@ -855,10 +907,24 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         "briefing_gaps": len(briefing_gaps),
         "cost_total": cost_total,
         "linked_cost_total": linked_cost_total,
+        "budget_amount": budget_amount,
+        "budget_delta": budget_delta,
+        "budget_usage_pct": budget_usage_pct,
+        "stage": stage_key,
+        "stage_label": stage_label,
     }
 
     findings: list[dict[str, str]] = []
-    if items:
+    if items and proposal_stage:
+        findings.append({
+            "level": "info",
+            "title": "Projeto ainda em proposta",
+            "text": (
+                f"A apresentação contém {len(items)} entrega(s) estruturada(s). "
+                "Como o projeto ainda não foi ganho/executado, a NAVE não cobra nem infere evidência de execução."
+            ),
+        })
+    elif items:
         findings.append({
             "level": "info",
             "title": "Proposta × execução",
@@ -870,14 +936,29 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
             ),
         })
     if snapshot.get("cost_items"):
+        total_text = _money(cost_total) if cost_total is not None else "total ainda não identificado"
         findings.append({
-            "level": "warning" if cost_only else "info",
+            "level": "warning" if cost_only or cost_total is None else "info",
             "title": "Proposta × planilha",
             "text": (
-                f"A planilha contém {len(snapshot.get('cost_items', []))} linha(s), totalizando {_money(cost_total)}. "
+                f"A planilha contém {len(snapshot.get('cost_items', []))} linha(s), com {total_text}. "
                 f"{len(cost_only)} linha(s) ainda não têm correspondência direta na apresentação."
             ),
         })
+    if budget_amount is not None:
+        if cost_total is None:
+            findings.append({
+                "level": "warning",
+                "title": "Budget identificado, total da planilha pendente",
+                "text": f"O briefing registra budget de {_money(budget_amount)}, mas a leitura atual da planilha ainda não permite calcular a aderência financeira.",
+            })
+        else:
+            relation = "abaixo" if budget_delta is not None and budget_delta >= 0 else "acima"
+            findings.append({
+                "level": "warning" if budget_delta is not None and budget_delta < 0 else "info",
+                "title": "Aderência financeira",
+                "text": f"Budget: {_money(budget_amount)} · planilha: {_money(cost_total)} · diferença: {_money(abs(budget_delta or 0))} {relation} do budget.",
+            })
     if report_only:
         findings.append({
             "level": "warning",
@@ -903,14 +984,16 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         recommendations.append("Revisar as linhas de custo sem correspondência e confirmar se representam entregas adicionais, custos transversais ou itens omitidos da apresentação.")
     if proposed_without_cost:
         recommendations.append("Revisar as propostas sem custo direto: algumas podem estar agrupadas em linhas cenográficas ou operacionais e precisam de confirmação humana.")
-    if no_execution_evidence:
+    if no_execution_evidence and not proposal_stage:
         recommendations.append("Validar as entregas sem evidência no relatório. Ausência de evidência não significa que o item não foi executado.")
     if report_only:
         recommendations.append("Classificar as entregas identificadas apenas no pós-evento como adaptações de produção, escopo adicional ou substituições da proposta.")
     if briefing_gaps:
         recommendations.append("Revisar a matriz de aderência do briefing e registrar evidência, justificativa ou retirada por budget/prazo para cada lacuna.")
-    if not snapshot.get("feedback_entries"):
-        recommendations.append("O diagnóstico já usa os arquivos disponíveis; quando feedbacks forem adicionados, as conclusões passam a incorporar intenção e decisão do cliente.")
+    if budget_amount is not None and cost_total is None and snapshot.get("cost_documents"):
+        recommendations.append("Reprocessar ou revisar a estrutura da planilha de custos para transformar o budget do briefing em uma análise financeira comparável.")
+    if not snapshot.get("feedback_entries") and stage_key not in {"executed", "lost", "cancelled"}:
+        recommendations.append("Quando houver retorno do cliente, registrar o resultado comercial para atualizar automaticamente a leitura do projeto.")
     if not recommendations:
         recommendations.append("Manter o projeto atualizado com novas versões, feedbacks e resultados para preservar o ciclo de aprendizado.")
 
@@ -1035,18 +1118,27 @@ def render_project_intelligence(
 
     metrics = intelligence["metrics"]
     st.markdown("#### Visão executiva")
-    metric_columns = st.columns(6)
-    metric_columns[0].metric("Demandas do briefing", metrics["briefing_requirements"])
-    metric_columns[1].metric("Entregas apresentadas", metrics["presentation_items"])
-    metric_columns[2].metric("Com custo direto", metrics["items_with_cost"])
-    metric_columns[3].metric("Executadas com evidência", metrics["executed_with_evidence"])
-    metric_columns[4].metric("Sem evidência de execução", metrics["without_execution_evidence"])
-    metric_columns[5].metric("Custos sem proposta", metrics["cost_only_items"])
-
-    st.info(
-        "A classificação ‘sem evidência de execução’ não significa que a entrega não aconteceu. "
-        "Ela indica apenas que os arquivos atuais ainda não comprovam o resultado."
-    )
+    if metrics.get("stage") in {"proposal", "no_return", "won"}:
+        metric_columns = st.columns(6)
+        metric_columns[0].metric("Situação", metrics.get("stage_label") or "Em proposta")
+        metric_columns[1].metric("Demandas do briefing", metrics["briefing_requirements"])
+        metric_columns[2].metric("Entregas apresentadas", metrics["presentation_items"])
+        metric_columns[3].metric("Com custo direto", metrics["items_with_cost"])
+        metric_columns[4].metric("Custos sem proposta", metrics["cost_only_items"])
+        metric_columns[5].metric("Lacunas do briefing", metrics["briefing_gaps"])
+        st.info("Este projeto ainda não está em etapa de execução. A análise abaixo compara briefing, proposta e custos; execução só entra quando houver evidência posterior.")
+    else:
+        metric_columns = st.columns(6)
+        metric_columns[0].metric("Demandas do briefing", metrics["briefing_requirements"])
+        metric_columns[1].metric("Entregas apresentadas", metrics["presentation_items"])
+        metric_columns[2].metric("Com custo direto", metrics["items_with_cost"])
+        metric_columns[3].metric("Executadas com evidência", metrics["executed_with_evidence"])
+        metric_columns[4].metric("Sem evidência de execução", metrics["without_execution_evidence"])
+        metric_columns[5].metric("Custos sem proposta", metrics["cost_only_items"])
+        st.info(
+            "A classificação ‘sem evidência de execução’ não significa que a entrega não aconteceu. "
+            "Ela indica apenas que os arquivos atuais ainda não comprovam o resultado."
+        )
 
     left, right = st.columns(2, gap="large")
     with left:
@@ -1072,8 +1164,9 @@ def render_project_intelligence(
         st.dataframe(display, hide_index=True, width="stretch", height=min(680, 95 + len(display) * 38))
 
     discrepancies = intelligence["discrepancies"]
+    proposal_view = metrics.get("stage") in {"proposal", "no_return", "won"}
     tabs = st.tabs([
-        "Proposta × execução",
+        "Proposta × custos" if proposal_view else "Proposta × execução",
         "Custos sem proposta",
         "Entregas fora da apresentação",
         "Briefing sem evidência",
@@ -1083,6 +1176,12 @@ def render_project_intelligence(
     with tabs[0]:
         if matrix.empty:
             st.caption("Nenhuma entrega estruturada.")
+        elif proposal_view:
+            proposal_df = matrix[[
+                "Item apresentado", "Área", "Situação na apresentação", "Briefing", "Custo direto", "Correlação do custo"
+            ]]
+            proposal_df = _dataframe_money(proposal_df, ["Custo direto"])
+            st.dataframe(proposal_df, hide_index=True, width="stretch")
         else:
             execution_view = matrix[[
                 "Item apresentado", "Área", "Execução", "Evidência / resultado"

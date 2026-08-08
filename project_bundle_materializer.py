@@ -21,8 +21,8 @@ from memory_learning_db import save_cost_document, update_project_budget
 from memory_learning_models import CostWorkbookResult
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.1.5"
-LEGACY_MATERIALIZER_VERSIONS = {"28.1.1"}
+WORKFLOW_VERSION = "28.1.6"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -1024,19 +1024,24 @@ def _legacy_marker(row: Mapping[str, Any], field: str) -> str:
 
 
 def _delete_legacy_specialized_rows(client: Any, source_file: Mapping[str, Any]) -> dict[str, int]:
-    """Remove somente artefatos automáticos da V28.1.1 para permitir reprocessamento.
+    """Remove a interpretação estruturada do mesmo arquivo antes do reprocessamento.
 
-    Conteúdo manual ou já processado semanticamente nunca é removido.
+    A ação só é chamada pelo fluxo explícito de reprocessamento. O arquivo original em
+    ``source_files``/Storage não é removido. A identidade por projeto + SHA-256 garante
+    que apenas a materialização daquele mesmo documento seja substituída.
     """
     project_id = str(source_file.get("project_id") or "")
     sha = str(source_file.get("sha256") or "")
     deleted = {"briefing": 0, "cost": 0, "presentation": 0}
     specs = [
-        ("memory_briefing_documents", "metadata", "briefing"),
-        ("memory_cost_documents", "metadata", "cost"),
-        ("memory_documents", "raw_data", "presentation"),
+        ("memory_briefing_documents", "briefing"),
+        ("memory_cost_documents", "cost"),
+        ("memory_documents", "presentation"),
     ]
-    for table, marker_field, key in specs:
+    if not project_id or not sha:
+        return deleted
+
+    for table, key in specs:
         try:
             rows = _rows(
                 client.table(table).select("*")
@@ -1047,9 +1052,8 @@ def _delete_legacy_specialized_rows(client: Any, source_file: Mapping[str, Any])
         except Exception:
             rows = []
         for row in rows:
-            marker = _legacy_marker(row, marker_field)
-            if marker not in LEGACY_MATERIALIZER_VERSIONS:
-                continue
+            # Reprocessar significa substituir a leitura estruturada, não o original.
+            # As tabelas filhas possuem cascade para o documento estruturado.
             try:
                 client.table(table).delete().eq("id", row.get("id")).execute()
                 deleted[key] += 1
@@ -1196,21 +1200,173 @@ def _materialize_briefing_semantic(client: Any, source_file: Mapping[str, Any], 
     return {"briefing_documents": 1, "briefing_requirements": created}
 
 
-def _sanitize_memory_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    food_terms = ("risotto", "risoto", "panna cotta", "cannoli", "ossobuco", "polenta", "insalata", "antipasti", "zabaione", "minestrone", "cardapio", "cardápio", "menu ")
-    schedule_terms = ("check in", "check-in", "almoco", "almoço", "jantar", "coffee", "plenaria", "plenária", "check out", "check-out")
-    gift_terms = ("brinde", "gift", "press kit", "presskit", "camiseta", "mochila", "credencial", "sacola", "kit boas vindas", "kit de boas vindas")
-    cleaned = []
+def _scoped_page_text(page_text: str, pattern: str, limit: int = 520) -> str | None:
+    lines = [re.sub(r"\s+", " ", line).strip() for line in str(page_text or "").splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return None
+    try:
+        matcher = re.compile(pattern, flags=re.IGNORECASE)
+    except re.error:
+        return None
+    for index, line in enumerate(lines):
+        if not matcher.search(line):
+            continue
+        selected = [line]
+        for next_line in lines[index + 1:index + 3]:
+            if len(" ".join(selected + [next_line])) > limit:
+                break
+            selected.append(next_line)
+        return _clip(" ".join(selected), limit)
+    return None
+
+
+def _semantic_pattern(text: str) -> str | None:
+    if "photo op" in text or "ponto de foto" in text:
+        return r"photo[\s-]?op|ponto de foto"
+    if "quick massage" in text or "ilha de massagem" in text or "massagem" in text:
+        return r"quick massage|ilha de massagem|massagem"
+    if "bar de cafe" in text:
+        return r"bar de caf[eé]s?|caf[eé]"
+    if "bacio di latte" in text:
+        return r"bacio di latte"
+    if "palco" in text:
+        return r"\bpalco\b"
+    if "totem" in text:
+        return r"\btotem\b"
+    if "kit de boas vindas" in text or "kit boas vindas" in text:
+        return r"kit de boas[- ]vindas|kit boas[- ]vindas"
+    if "camiseta" in text:
+        return r"camiseta"
+    if "mala" in text or "mochila" in text:
+        return r"mala|mochila"
+    if "jantar tematico" in text:
+        return r"jantar tem[aá]tico"
+    if "banda" in text or "musica ao vivo" in text:
+        return r"banda|m[uú]sica ao vivo"
+    return None
+
+
+def _sanitize_memory_items(
+    items: list[dict[str, Any]],
+    page_inventory: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    pages = {
+        int(row.get("page_number") or 0): row
+        for row in (page_inventory or [])
+        if int(row.get("page_number") or 0) > 0
+    }
+    food_terms = (
+        "risotto", "risoto", "panna cotta", "cannoli", "ossobuco", "polenta",
+        "insalata", "antipasti", "zabaione", "minestrone", "cardapio", "menu",
+    )
+    schedule_terms = (
+        "check in", "almoco", "jantar", "coffee", "plenaria", "check out", "coquetel",
+        "happy hour", "dia 0", "dia 1", "dia 2", "dia 3", "dia 4",
+    )
+    gift_terms = (
+        "brinde", "gift", "press kit", "presskit", "camiseta", "mochila", "mala para esportes",
+        "credencial", "sacola", "kit boas vindas", "kit de boas vindas",
+    )
+    activation_terms = (
+        "photo op", "ponto de foto", "quick massage", "ilha de massagem", "bar de cafe",
+        "bacio di latte", "ativacao", "experiencia",
+    )
+    scenography_terms = (
+        "palco", "totem led", "totem", "cenografia", "implantacao", "planta", "led 14x4",
+        "led 6x2", "housemix", "backdrop",
+    )
+    venue_terms = (
+        "bourbon atibaia", "hotel bourbon", "ballroom garden", "sala londrina", "board room",
+        "orquidea", "tulipa", "montagem dias",
+    )
+    artistic_terms = ("banda", "studio 4", "musica ao vivo", "palestrante", "mestre de cerimonias")
+    strategy_terms = (
+        "brief recap", "objetivo", "estrategia", "conceito", "racional", "insight", "narrativa",
+        "direcional", "territorio criativo", "premissa",
+    )
+    generic_strategy = re.compile(r"^estrategia(?: e conceito)?(?: slide)? \d+$")
+
+    cleaned: list[dict[str, Any]] = []
     for item in items:
         row = dict(item)
-        text = _normalize(" ".join(str(row.get(k) or "") for k in ("title", "summary", "description", "evidence")))
+        text = _normalize(" ".join(str(row.get(k) or "") for k in ("title", "item_type", "summary", "description", "evidence")))
+        title_norm = _normalize(row.get("title"))
         section = str(row.get("section_key") or "")
-        if any(term in text for term in food_terms):
+
+        # Fichas genéricas de cobertura não são conteúdo de projeto.
+        if generic_strategy.match(title_norm) or (
+            str(row.get("extraction_origin") or "") == "automatic_repair"
+            and title_norm.startswith("estrategia slide")
+        ):
+            continue
+
+        # O título pesa primeiro. Isso impede que um item "Palco" seja contaminado
+        # pelo texto completo de uma planta que também contém PHOTO OP, buffet etc.
+        if "photo op" in title_norm or "ponto de foto" in title_norm:
+            row["section_key"] = "activations"
+            row["item_type"] = "Photo-op"
+        elif any(term in title_norm for term in ("quick massage", "ilha de massagem", "bacio di latte", "bar de cafe")):
+            row["section_key"] = "activations"
+            row["item_type"] = "Ativação / experiência"
+        elif any(term in title_norm for term in ("jantar tematico", "banda", "studio 4", "musica ao vivo", "palestrante", "mestre de cerimonias")):
             row["section_key"] = "content_agenda"
-        elif section == "gifts" and any(term in text for term in schedule_terms) and not any(term in text for term in gift_terms):
+            row["item_type"] = "Conteúdo artístico" if any(term in title_norm for term in artistic_terms) else "Conteúdo / programação"
+        elif any(term in title_norm for term in ("kit de boas vindas", "camiseta", "mala", "mochila", "brinde", "gift", "press kit", "presskit")):
+            row["section_key"] = "gifts"
+            row["item_type"] = "Brinde / kit"
+        elif any(term in title_norm for term in ("palco", "totem", "cenografia", "implantacao", "backdrop")):
+            row["section_key"] = "scenography"
+            row["item_type"] = "Cenografia / ambiente"
+        elif any(term in title_norm for term in ("bourbon atibaia", "hotel bourbon", "ballroom garden", "sala londrina", "board room")):
+            row["section_key"] = "journey_operation"
+            row["item_type"] = "Local / operação"
+        elif any(term in text for term in food_terms) or "jantar tematico" in text:
             row["section_key"] = "content_agenda"
+            row["item_type"] = "Conteúdo / programação"
+        elif any(term in text for term in artistic_terms):
+            row["section_key"] = "content_agenda"
+            row["item_type"] = "Conteúdo artístico"
+        elif any(term in text for term in activation_terms):
+            row["section_key"] = "activations"
+            row["item_type"] = "Ativação / experiência"
+        elif any(term in text for term in gift_terms):
+            row["section_key"] = "gifts"
+            row["item_type"] = "Brinde / kit"
+        elif any(term in text for term in scenography_terms):
+            row["section_key"] = "scenography"
+            row["item_type"] = "Cenografia / ambiente"
+        elif any(term in text for term in venue_terms):
+            row["section_key"] = "journey_operation"
+            row["item_type"] = "Local / operação"
+        elif section == "gifts" and any(term in text for term in schedule_terms):
+            row["section_key"] = "content_agenda"
+            row["item_type"] = "Conteúdo / programação"
         elif section == "strategy" and any(term in text for term in schedule_terms):
             row["section_key"] = "content_agenda"
+            row["item_type"] = "Conteúdo / programação"
+        elif section == "strategy" and not any(term in text for term in strategy_terms):
+            # Não removemos conteúdo desconhecido de forma agressiva; apenas evitamos
+            # que contexto operacional evidente seja rotulado como estratégia.
+            if "hotel" in text or "montagem" in text or "sala " in text:
+                row["section_key"] = "journey_operation"
+                row["item_type"] = "Local / operação"
+
+        # Uma apresentação de proposta não comprova aprovação nem execução.
+        if str(row.get("status") or "Não identificado") not in {"Referência", "Opção", "Recomendado"}:
+            row["status"] = "Proposto"
+
+        page_number = int(row.get("source_page") or 0)
+        page = pages.get(page_number) or {}
+        pattern = _semantic_pattern(title_norm) or _semantic_pattern(text)
+        if pattern and page.get("text"):
+            scoped = _scoped_page_text(str(page.get("text") or ""), pattern)
+            if scoped:
+                row["summary"] = scoped
+                if len(str(row.get("description") or "")) > 520 or not row.get("description"):
+                    row["description"] = scoped
+                row["evidence"] = _clip(scoped, 260)
+
         cleaned.append(row)
     return cleaned
 
@@ -1231,7 +1387,7 @@ def _materialize_presentation_semantic(client: Any, source_file: Mapping[str, An
         raise RuntimeError("GEMINI_API_KEY não está configurada para a decupagem especializada da apresentação")
     batches = extract_memory([doc], api_key=api_key, model=model)
     extraction = merge_memory_batches(batches)
-    items = _sanitize_memory_items(list(extraction.get("items") or []))
+    items = _sanitize_memory_items(list(extraction.get("items") or []), list(extraction.get("page_inventory") or []))
     extraction["items"] = items
     result = save_memory_presentation(
         client,
@@ -1240,9 +1396,18 @@ def _materialize_presentation_semantic(client: Any, source_file: Mapping[str, An
         extraction=extraction,
         selected_items=items,
         document_title=str(extraction.get("document_title") or source_file.get("file_name") or "Apresentação"),
-        version_label=str(extraction.get("version_label") or "Importação de projeto"),
+        version_label="Importação de projeto",
         document_status="sent_to_client",
     )
+    document_id = result.get("document_id")
+    if document_id and result.get("status") != "duplicate":
+        try:
+            current = _rows(client.table("memory_documents").select("raw_data").eq("id", document_id).limit(1).execute())
+            raw = dict((current[0].get("raw_data") if current else {}) or {})
+            raw.update({"materialized_by": WORKFLOW_VERSION, "source_file_id": source_file.get("id"), "semantic_pipeline": True})
+            client.table("memory_documents").update({"raw_data": _safe_json(raw)}).eq("id", document_id).execute()
+        except Exception as exc:
+            warnings.append(f"Marcador da apresentação: {exc}")
     return {"memory_documents": 0 if result.get("status") == "duplicate" else 1, "memory_items": int(result.get("items_saved") or 0)}
 
 
@@ -1305,6 +1470,15 @@ def _materialize_costs_semantic(client: Any, source_file: Mapping[str, Any], dat
         parsed=parsed,
         memory_items=memory_rows,
     )
+    document_id = result.get("document_id")
+    if document_id and result.get("status") != "duplicate":
+        try:
+            current = _rows(client.table("memory_cost_documents").select("metadata").eq("id", document_id).limit(1).execute())
+            metadata = dict((current[0].get("metadata") if current else {}) or {})
+            metadata.update({"materialized_by": WORKFLOW_VERSION, "source_file_id": source_file.get("id"), "semantic_pipeline": True})
+            client.table("memory_cost_documents").update({"metadata": _safe_json(metadata)}).eq("id", document_id).execute()
+        except Exception as exc:
+            warnings.append(f"Marcador da planilha: {exc}")
     warnings.extend(list(parsed.warnings or []))
     return {"cost_documents": 0 if result.get("status") == "duplicate" else 1, "cost_items": int(result.get("items_saved") or 0)}
 

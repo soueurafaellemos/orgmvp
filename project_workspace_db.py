@@ -40,6 +40,26 @@ STATUS_LABELS = {
     "arquivado": "Arquivado",
 }
 
+def _business_status_label(project_status: str, outcome: dict[str, Any] | None = None) -> str:
+    outcome = outcome or {}
+    execution = str(outcome.get("execution_result") or "")
+    commercial = str(outcome.get("commercial_result") or "")
+    if execution in {"executed", "partially_executed"} or project_status == "executado":
+        return "Executada"
+    if execution == "in_progress" or project_status == "em_producao":
+        return "Em produção"
+    if commercial == "lost" or project_status == "perdido":
+        return "Perdeu"
+    if commercial == "cancelled" or project_status == "cancelado":
+        return "Cancelada"
+    if commercial == "no_return":
+        return "Sem resposta"
+    if commercial == "won" or project_status == "aprovado_ganho":
+        return "Ganhou / aprovada"
+    if project_status == "arquivado":
+        return "Arquivada"
+    return "Em proposta / concorrência"
+
 FILE_ROLE_LABELS = {
     "briefing_original": "Briefing original",
     "cost_sheet": "Planilha de custos",
@@ -494,6 +514,17 @@ def fetch_projects_workspace(client: Client) -> pd.DataFrame:
         descending=True,
     )
 
+    outcome_rows = _safe_rows(
+        client,
+        "memory_project_outcomes",
+        columns="project_id,process_type,commercial_result,proposal_result,execution_result",
+    )
+    outcome_by_project = {
+        str(row.get("project_id")): row
+        for row in outcome_rows
+        if row.get("project_id")
+    }
+
     counters = {
         "briefings": _count_by_project(
             client,
@@ -565,9 +596,9 @@ def fetch_projects_workspace(client: Client) -> pd.DataFrame:
                 "Projeto": project.get("project_name") or "Sem nome",
                 "Cliente": project.get("client_brand") or "Não informado",
                 "Evento": project.get("event_name") or "Não informado",
-                "Status": STATUS_LABELS.get(
+                "Status": _business_status_label(
                     str(project.get("status") or ""),
-                    str(project.get("status") or "Não informado"),
+                    outcome_by_project.get(project_id),
                 ),
                 "Briefings": counters["briefings"][project_id],
                 "Recomendações": counters["recommendations"][project_id],

@@ -552,12 +552,9 @@ def render_visual_section(
                 snapshot=snapshot,
                 section_keys=keys,
             ) > 0
-    changed = ensure_visual_page_items(
-        client,
-        project_id=project_id,
-        snapshot=snapshot,
-        section_keys=keys,
-    ) > 0 or changed
+    # Páginas sem ficha continuam disponíveis como registro visual, mas não
+    # materializamos mais um item genérico no banco apenas para preencher a tela.
+    # Isso evita poluir cenografia/ativações/brindes com "Material visual" sem semântica.
     ensure_automatic_cost_links(
         client,
         project_id=project_id,

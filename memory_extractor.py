@@ -198,6 +198,9 @@ SECTION_KEYWORDS: dict[str, list[tuple[str, int]]] = {
 
 CANDIDATE_PATTERNS: list[tuple[str, str, str]] = [
     (r"\bphoto[\s-]?op\b|\bponto de foto\b|\bphoto opportunity\b", "Ponto de foto", "activations"),
+    (r"\bquick massage\b|\bilha de massagem\b|\bmassagem\b", "Quick Massage", "activations"),
+    (r"\bbar de caf[eé]s?\b|\bcoffee bar\b", "Bar de cafés", "activations"),
+    (r"\bbacio di latte\b", "Bacio di Latte", "activations"),
     (r"\bjogo da mem[oó]ria\b", "Jogo da memória", "activations"),
     (r"\brealidade virtual\b|\bexperi[eê]ncia vr\b", "Experiência em realidade virtual", "activations"),
     (r"\bpersonaliza[cç][aã]o\b", "Personalização", "activations"),
@@ -205,6 +208,9 @@ CANDIDATE_PATTERNS: list[tuple[str, str, str]] = [
     (r"\bquiz\b", "Quiz", "activations"),
     (r"\broleta\b", "Roleta", "activations"),
     (r"\bsimulador\b", "Simulador", "activations"),
+    (r"\bkit de boas[- ]vindas\b|\bkit boas[- ]vindas\b|\bwelcome kit\b", "Kit de boas-vindas", "gifts"),
+    (r"\bcamiseta(?:s)?\b|\bcamisa(?:s)?\b", "Camisetas", "gifts"),
+    (r"\bmala para esportes\b|\bmala esportiva\b|\bmochila(?:s)?\b", "Mala / mochila", "gifts"),
     (r"\bcaneca(?:s)?\b", "Caneca", "gifts"),
     (r"\btiara(?:s)?\b", "Tiara", "gifts"),
     (r"\bchap[eé]u(?:s)?\b", "Chapéu", "gifts"),
@@ -215,15 +221,17 @@ CANDIDATE_PATTERNS: list[tuple[str, str, str]] = [
     (r"\bpulseira(?:s)?\b", "Pulseiras", "gifts"),
     (r"\bcredencial(?:is)?\b", "Credenciais", "gifts"),
     (r"\bsacola(?:s)?\b|\bbag(?:s)?\b", "Sacola / bag", "gifts"),
-    (r"\bkit(?:s)?\b", "Kit", "gifts"),
     (r"\bcapacete(?:s)?\b|\bhelmet(?:s)?\b", "Capacete / helmet", "gifts"),
+    (r"\bjantar tem[aá]tico\b", "Jantar temático", "content_agenda"),
+    (r"\bbanda(?: studio 4)?\b|\bm[uú]sica ao vivo\b|\bshow musical\b", "Atração musical", "content_agenda"),
+    (r"\bpalestrante(?:s)?\b|\bmestre de cerim[oô]nias\b", "Conteúdo artístico / palestrantes", "content_agenda"),
     (r"\bcamarote\b", "Camarote", "scenography"),
     (r"\bestande\b|\bstand\b", "Estande", "scenography"),
     (r"\bpalco\b", "Palco", "scenography"),
     (r"\blounge\b", "Lounge", "scenography"),
     (r"\bloja\b", "Loja", "scenography"),
     (r"\bt[uú]nel\b", "Túnel", "scenography"),
-    (r"\btotem\b", "Totem", "scenography"),
+    (r"\btotem(?: led)?\b", "Totem", "scenography"),
     (r"\bfachada\b", "Fachada", "scenography"),
     (r"\bkv\b|\bkey visual\b", "Key visual", "communication"),
     (r"\bidentidade visual\b", "Identidade visual", "communication"),
@@ -237,6 +245,7 @@ CANDIDATE_PATTERNS: list[tuple[str, str, str]] = [
     (r"\besg\b|\bsustentabilidade\b", "Ação ESG", "pr_esg_legacy"),
     (r"\blegado\b", "Legado", "pr_esg_legacy"),
 ]
+
 
 
 DIVIDER_TERMS = {
@@ -357,6 +366,7 @@ def _candidate_items(text: str) -> list[dict]:
                 {
                     "title": title,
                     "section_key": section,
+                    "pattern": pattern,
                 }
             )
 
@@ -470,6 +480,33 @@ def _fallback_item_type(section_key: str, title: str) -> str:
     }.get(section_key, "Conteúdo do projeto")
 
 
+def _candidate_evidence(text: str | None, candidate: dict | None) -> str | None:
+    candidate = candidate or {}
+    pattern = str(candidate.get("pattern") or "").strip()
+    lines = _clean_lines(str(text or ""))
+    if not lines:
+        return None
+    if not pattern:
+        return _shorten(" ".join(lines), 320)
+
+    for index, line in enumerate(lines):
+        if not re.search(pattern, line, flags=re.IGNORECASE):
+            continue
+        selected = [line]
+        for next_line in lines[index + 1:index + 3]:
+            if any(
+                re.search(other_pattern, next_line, flags=re.IGNORECASE)
+                for other_pattern, _, _ in CANDIDATE_PATTERNS
+                if other_pattern != pattern
+            ):
+                break
+            if len(" ".join(selected + [next_line])) > 260:
+                break
+            selected.append(next_line)
+        return _shorten(" ".join(selected), 320)
+    return _shorten(" ".join(lines), 320)
+
+
 def _inventory_item(row: dict, candidate: dict | None = None) -> MemoryItem:
     candidate = candidate or {}
     section_key = str(
@@ -480,7 +517,8 @@ def _inventory_item(row: dict, candidate: dict | None = None) -> MemoryItem:
         candidate.get("title")
         or row["suggested_title"]
     )
-    summary = row.get("summary") or (
+    scoped_evidence = _candidate_evidence(row.get("text"), candidate)
+    summary = scoped_evidence or row.get("summary") or (
         "Registro visual da proposta apresentada "
         f"no slide {row['page_number']}."
     )
@@ -490,7 +528,7 @@ def _inventory_item(row: dict, candidate: dict | None = None) -> MemoryItem:
         item_type=_fallback_item_type(section_key, title),
         title=title,
         summary=_shorten(summary, 420),
-        description=_shorten(row.get("text"), 900)
+        description=_shorten(scoped_evidence, 900)
         or "Slide visual preservado para consulta do projeto.",
         status=_fallback_status(
             row.get("normalized_text", ""),
@@ -510,7 +548,7 @@ def _inventory_item(row: dict, candidate: dict | None = None) -> MemoryItem:
         ),
         visual_crop=None,
         confidence=0.58,
-        evidence=_shorten(row.get("text"), 240),
+        evidence=_shorten(scoped_evidence, 240),
         extraction_origin="automatic_repair",
     )
 
@@ -563,9 +601,6 @@ def _extract_page_inventory(doc: InputDocument) -> list[dict]:
                     context_section = "communication"
                 if context_section:
                     section_key = context_section
-
-            if section_score >= 5:
-                context_section = section_key
 
             if candidates:
                 anchor_label = str(candidates[0]["title"])
@@ -622,7 +657,7 @@ def _extract_page_inventory(doc: InputDocument) -> list[dict]:
                     "anchor_label": anchor_label,
                     "content_kind": "visual" if image_count > 0 else "textual",
                     "candidate_items": candidates,
-                    "expected_min_items": max(1, len(candidates)) if meaningful else 0,
+                    "expected_min_items": len(candidates) if meaningful else 0,
                 }
             )
     finally:
@@ -807,9 +842,11 @@ def _repair_batch_coverage(
             repair_item_count += 1
             repaired_pages.append(page_number)
 
-        if not slide.items:
-            candidates = row.get("candidate_items") or [None]
-            for candidate in candidates:
+        # Uma página relevante pode ser apenas contexto. Não criamos mais
+        # fichas genéricas para "preencher" cobertura. O reparo automático
+        # só materializa entidades explicitamente reconhecidas por padrão.
+        if not slide.items and row.get("candidate_items"):
+            for candidate in row.get("candidate_items") or []:
                 slide.items.append(_inventory_item(row, candidate))
                 repair_item_count += 1
             repaired_pages.append(page_number)

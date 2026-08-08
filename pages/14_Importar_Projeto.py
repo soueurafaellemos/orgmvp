@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.1.5",
+    eyebrow="NAVE by VOE · V28.1.6",
 )
 
 client = get_nave_client()
@@ -97,7 +97,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                 for warning in (outcome.get("warnings") or [])[:12]:
                     st.caption("• " + str(warning))
             else:
-                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.1.5.")
+                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.1.6.")
                 st.session_state["nave_project_hub_focus_id"] = repair_options[repair_label]
                 st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 

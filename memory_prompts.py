@@ -97,8 +97,10 @@ CONTRATO OBRIGATÓRIO DE COBERTURA:
 - Nunca omita silenciosamente uma página.
 - Para capa, divisória, agradecimento ou página sem conteúdo útil,
   use is_meaningful=false, explique exclusion_reason e deixe items=[].
-- Para todo slide relevante, use is_meaningful=true e gere pelo menos
-  um item.
+- Para slide relevante, use is_meaningful=true. Gere items apenas quando
+  houver uma entidade, proposta, conteúdo ou decisão semanticamente identificável.
+  Um slide pode ser relevante como contexto e ainda assim ter items=[].
+- Nunca crie ficha genérica apenas para preencher cobertura de página.
 - Quando um slide contiver propostas distintas, gere vários itens.
   Exemplos: quatro brindes diferentes; duas opções de uniforme;
   dois jogos; diferentes ambientes.

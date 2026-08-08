@@ -10,7 +10,6 @@ from supabase import Client
 
 from project_workspace_db import (
     FILE_ROLE_LABELS,
-    STATUS_LABELS,
     archive_project_file,
     create_project_file_signed_url,
     fetch_memory_items_by_sections,
@@ -30,7 +29,7 @@ from project_workspace_reports import (
     render_report_analyses,
 )
 from project_workspace_visuals import render_visual_section
-from project_workspace_intelligence import render_project_intelligence
+from project_workspace_intelligence import build_project_intelligence, project_stage, render_project_intelligence
 
 
 PROJECT_SECTIONS = [
@@ -48,8 +47,40 @@ PROJECT_SECTIONS = [
     "Documentos",
 ]
 
-STATUS_OPTIONS = list(STATUS_LABELS.keys())
-STATUS_BY_LABEL = {label: key for key, label in STATUS_LABELS.items()}
+BUSINESS_STATE_OPTIONS = [
+    "proposal",
+    "won",
+    "lost",
+    "no_return",
+    "production",
+    "executed",
+    "cancelled",
+]
+BUSINESS_STATE_LABELS = {
+    "proposal": "Em proposta / concorrência",
+    "won": "Ganhou / aprovada",
+    "lost": "Perdeu",
+    "no_return": "Sem resposta",
+    "production": "Em produção",
+    "executed": "Executada",
+    "cancelled": "Cancelada",
+}
+PROCESS_TYPE_OPTIONS = ["competition", "direct", "proactive", "renewal"]
+PROCESS_TYPE_LABELS = {
+    "competition": "Concorrência",
+    "direct": "Projeto direto",
+    "proactive": "Proativo",
+    "renewal": "Renovação",
+}
+BUSINESS_TO_PROJECT_STATUS = {
+    "proposal": "apresentado",
+    "won": "aprovado_ganho",
+    "lost": "perdido",
+    "no_return": "apresentado",
+    "production": "em_producao",
+    "executed": "executado",
+    "cancelled": "cancelado",
+}
 
 WORKSPACE_CSS = """
 <style>
@@ -245,14 +276,42 @@ def _format_money(value: Any) -> str:
     return "R$ " + formatted.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def _project_header(project: dict[str, Any]) -> None:
+def _optional_date(value: Any) -> date | None:
+    if not value:
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        return pd.to_datetime(value).date()
+    except Exception:
+        return None
+
+
+def _business_state(project: dict[str, Any], outcome: dict[str, Any]) -> str:
+    execution = str(outcome.get("execution_result") or "")
+    commercial = str(outcome.get("commercial_result") or "")
+    status = str(project.get("status") or "")
+    if execution in {"executed", "partially_executed"} or status == "executado":
+        return "executed"
+    if execution == "in_progress" or status == "em_producao":
+        return "production"
+    if commercial == "lost" or status == "perdido":
+        return "lost"
+    if commercial == "cancelled" or status == "cancelado":
+        return "cancelled"
+    if commercial == "no_return":
+        return "no_return"
+    if commercial == "won" or status == "aprovado_ganho":
+        return "won"
+    return "proposal"
+
+
+def _project_header(project: dict[str, Any], outcome: dict[str, Any] | None = None) -> None:
     title = project.get("project_name") or "Projeto sem nome"
     client = project.get("client_brand") or "Cliente não informado"
     event = project.get("event_name") or "Evento não informado"
-    status = STATUS_LABELS.get(
-        str(project.get("status") or ""),
-        str(project.get("status") or "Não informado"),
-    )
+    business_state = _business_state(project, outcome or {})
+    status = BUSINESS_STATE_LABELS.get(business_state, "Não informado")
     date_text = _format_date(project.get("event_date"))
 
     st.markdown(
@@ -283,48 +342,92 @@ def _status_selector(
     *,
     project: dict[str, Any],
     project_id: str,
+    outcome: dict[str, Any] | None = None,
 ) -> None:
-    current_status = str(project.get("status") or "rascunho")
-    if current_status not in STATUS_OPTIONS:
-        STATUS_OPTIONS_WITH_CURRENT = [current_status, *STATUS_OPTIONS]
-    else:
-        STATUS_OPTIONS_WITH_CURRENT = STATUS_OPTIONS
+    outcome = outcome or {}
+    current_state = _business_state(project, outcome)
+    process_type = str(outcome.get("process_type") or "competition")
+    if process_type not in PROCESS_TYPE_OPTIONS:
+        process_type = "competition"
 
-    status_index = STATUS_OPTIONS_WITH_CURRENT.index(current_status)
-    workspace = _workspace_raw(project)
-
-    with st.expander("Editar status e próxima ação"):
-        with st.form(f"workspace_meta_{project_id}"):
-            selected_status = st.selectbox(
-                "Status do projeto",
-                options=STATUS_OPTIONS_WITH_CURRENT,
-                index=status_index,
-                format_func=lambda value: STATUS_LABELS.get(
-                    value,
-                    value.replace("_", " ").title(),
-                ),
+    with st.form(f"business_state_{project_id}"):
+        columns = st.columns([1.15, 1, 0.55], vertical_alignment="bottom")
+        with columns[0]:
+            selected_state = st.selectbox(
+                "Situação do projeto",
+                BUSINESS_STATE_OPTIONS,
+                index=BUSINESS_STATE_OPTIONS.index(current_state),
+                format_func=lambda value: BUSINESS_STATE_LABELS[value],
             )
+        with columns[1]:
+            selected_process = st.selectbox(
+                "Tipo de processo",
+                PROCESS_TYPE_OPTIONS,
+                index=PROCESS_TYPE_OPTIONS.index(process_type),
+                format_func=lambda value: PROCESS_TYPE_LABELS[value],
+            )
+        with columns[2]:
+            submitted = st.form_submit_button("Atualizar", width="stretch")
+
+    if submitted:
+        mappings = {
+            "proposal": ("in_evaluation", outcome.get("proposal_result") or "not_informed", "not_informed"),
+            "won": ("won", "fully_approved", outcome.get("execution_result") or "not_informed"),
+            "lost": ("lost", "not_approved", "not_applicable"),
+            "no_return": ("no_return", "no_feedback", "not_applicable"),
+            "production": ("won", "fully_approved", "in_progress"),
+            "executed": ("won", "fully_approved", "executed"),
+            "cancelled": ("cancelled", outcome.get("proposal_result") or "not_informed", "not_applicable"),
+        }
+        commercial_result, proposal_result, execution_result = mappings[selected_state]
+        try:
+            save_project_outcome(
+                client,
+                project_id=project_id,
+                process_type=selected_process,
+                commercial_result=str(commercial_result),
+                proposal_result=str(proposal_result),
+                execution_result=str(execution_result),
+                result_date=_optional_date(outcome.get("result_date")),
+                execution_date=_optional_date(outcome.get("execution_date")),
+                contracting_client=outcome.get("contracting_client"),
+                partners_involved=outcome.get("partners_involved"),
+                result_reasons=list(outcome.get("result_reasons") or []),
+                result_context=outcome.get("result_context"),
+                execution_notes=outcome.get("execution_notes"),
+                budget_amount=(float(outcome.get("budget_amount")) if outcome.get("budget_amount") not in (None, "") else None),
+                confidence_level="voe_confirmed",
+                information_source="voe_team",
+            )
+            update_project_workspace_data(
+                client,
+                project_id=project_id,
+                status=BUSINESS_TO_PROJECT_STATUS[selected_state],
+            )
+        except Exception as exc:
+            st.error(f"Não foi possível atualizar a situação do projeto: {exc}")
+        else:
+            st.success("Situação do projeto atualizada.")
+            st.rerun()
+
+    workspace = _workspace_raw(project)
+    with st.expander("Próxima ação e observações"):
+        with st.form(f"workspace_meta_{project_id}"):
             next_action = st.text_input(
                 "Próxima ação",
                 value=str(workspace.get("next_action") or ""),
-                placeholder="Ex.: revisar orçamento antes do envio ao cliente",
+                placeholder="Ex.: aguardar retorno do cliente sobre a proposta",
             )
             notes = st.text_area(
                 "Observações operacionais",
                 value=str(workspace.get("notes") or ""),
                 height=90,
             )
-
-            submitted = st.form_submit_button(
-                "Salvar informações",
-                width="stretch",
-            )
-
-        if submitted:
+            meta_submitted = st.form_submit_button("Salvar observações", width="stretch")
+        if meta_submitted:
             update_project_workspace_data(
                 client,
                 project_id=project_id,
-                status=selected_status,
                 next_action=next_action,
                 workspace_notes=notes,
             )
@@ -585,28 +688,22 @@ def _derive_pending_items(
     if not has_cost:
         pending.append("Anexar a planilha de custos.")
     if not has_presentation:
-        pending.append("Adicionar a apresentação final.")
+        pending.append("Adicionar a apresentação / proposta.")
 
     status = str(project.get("status") or "")
+    outcome = snapshot.get("outcome") or {}
+    business_state = _business_state(project, outcome)
 
-    if status in {
-        "apresentado",
-        "em_revisao",
-        "em_negociacao",
-        "aprovado_ganho",
-        "perdido",
-        "em_producao",
-        "executado",
-    } and not has_feedback:
-        pending.append("Registrar feedback ou aprovação do cliente.")
+    if business_state in {"won", "lost", "production", "executed"} and not has_feedback:
+        pending.append("Registrar feedback ou decisão do cliente.")
 
-    if status == "perdido" and not _has_role(
+    if business_state == "lost" and not _has_role(
         snapshot,
         "closure_report",
     ):
         pending.append("Adicionar o relatório de encerramento da concorrência.")
 
-    if status == "executado" and not _has_role(
+    if business_state == "executed" and not _has_role(
         snapshot,
         "post_execution_report",
     ):
@@ -624,7 +721,7 @@ def _render_overview(
     project = snapshot["project"]
     _section_title(
         "Visão geral",
-        "Status, pendências, arquivos principais e próximos passos do projeto.",
+        "Situação comercial, leitura do material recebido, aderência financeira e próximos passos.",
     )
 
     metrics = st.columns(5)
@@ -659,6 +756,39 @@ def _render_overview(
         ),
     )
 
+    intelligence = build_project_intelligence(snapshot)
+    intel_metrics = intelligence.get("metrics") or {}
+    st.markdown("#### Leitura atual do projeto")
+    stage_label = intel_metrics.get("stage_label") or "Em proposta / concorrência"
+    st.info(
+        f"**{stage_label}.** A leitura atual considera briefing, proposta e custos. "
+        + (
+            "Ainda não é esperado haver evidência de execução neste momento."
+            if intel_metrics.get("stage") in {"proposal", "no_return", "won"}
+            else "Resultados de execução entram somente quando houver fonte que os comprove."
+        )
+    )
+
+    financial = st.columns(4)
+    financial[0].metric("Budget do briefing", _format_money(intel_metrics.get("budget_amount")) if intel_metrics.get("budget_amount") is not None else "Não identificado")
+    financial[1].metric("Total da planilha", _format_money(intel_metrics.get("cost_total")) if intel_metrics.get("cost_total") is not None else "Não identificado")
+    financial[2].metric("Diferença para o budget", _format_money(intel_metrics.get("budget_delta")) if intel_metrics.get("budget_delta") is not None else "Não calculável")
+    usage = intel_metrics.get("budget_usage_pct")
+    financial[3].metric("Budget comprometido", f"{usage:.1%}" if usage is not None else "Não calculável")
+
+    observations: list[str] = []
+    if snapshot.get("cost_documents") and intel_metrics.get("cost_total") is None:
+        observations.append("A planilha de custos está anexada, mas ainda não há total financeiro utilizável na leitura estruturada.")
+    if intel_metrics.get("presentation_items", 0) == 0 and snapshot.get("memory_documents"):
+        observations.append("A apresentação está preservada, mas a decupagem semântica ainda não gerou entregas confiáveis.")
+    if intel_metrics.get("briefing_gaps", 0):
+        observations.append(f"Há {intel_metrics.get('briefing_gaps')} demanda(s) do briefing ainda sem correspondência consolidada na proposta.")
+    if intel_metrics.get("cost_only_items", 0):
+        observations.append(f"Há {intel_metrics.get('cost_only_items')} linha(s) de custo ainda sem correspondência direta com uma entrega apresentada.")
+    if observations:
+        for observation in observations[:4]:
+            st.warning(observation)
+
     pending = _derive_pending_items(snapshot, project)
     workspace = _workspace_raw(project)
 
@@ -678,12 +808,12 @@ def _render_overview(
 
     st.markdown("#### Arquivos principais")
 
-    status = str(project.get("status") or "")
+    business_state = _business_state(project, snapshot.get("outcome") or {})
     report_role = (
         "post_execution_report"
-        if status == "executado"
+        if business_state == "executed"
         else "closure_report"
-        if status == "perdido"
+        if business_state == "lost"
         else None
     )
     report_title = (
@@ -711,8 +841,8 @@ def _render_overview(
         ),
         (
             "Entrega",
-            "Apresentações finais",
-            "Versões apresentadas, aprovadas ou executadas.",
+            "Apresentação / proposta",
+            "Versão apresentada ao cliente e suas evoluções.",
             bool(snapshot.get("memory_documents"))
             or _has_role(snapshot, "final_presentation"),
         ),
@@ -724,13 +854,14 @@ def _render_overview(
             or _has_role(snapshot, "feedback")
             or _has_role(snapshot, "approval"),
         ),
-        (
+    ]
+    if report_role:
+        cards.append((
             "Fechamento",
             report_title,
             "Documento de encerramento, resultado ou pós-execução.",
-            bool(report_role and _has_role(snapshot, report_role)),
-        ),
-    ]
+            _has_role(snapshot, report_role),
+        ))
 
     first_row = st.columns(3)
     for column, card in zip(first_row, cards[:3]):
@@ -745,18 +876,19 @@ def _render_overview(
                 unsafe_allow_html=True,
             )
 
-    second_row = st.columns(3)
-    for column, card in zip(second_row, cards[3:]):
-        with column:
-            st.markdown(
-                _html_file_card(
-                    label=card[0],
-                    title=card[1],
-                    copy=card[2],
-                    ready=card[3],
-                ),
-                unsafe_allow_html=True,
-            )
+    if len(cards) > 3:
+        second_row = st.columns(3)
+        for column, card in zip(second_row, cards[3:]):
+            with column:
+                st.markdown(
+                    _html_file_card(
+                        label=card[0],
+                        title=card[1],
+                        copy=card[2],
+                        ready=card[3],
+                    ),
+                    unsafe_allow_html=True,
+                )
 
     st.markdown("#### Arquivos principais")
 
@@ -1091,8 +1223,28 @@ def _render_budget(
 ) -> None:
     _section_title(
         "Orçamento e aderência",
-        "Planilhas, linhas de custo e conexão entre briefing, proposta e orçamento.",
+        "Budget do briefing, total da proposta, diferença financeira e conexão entre briefing, apresentação e custos.",
     )
+
+    intelligence = build_project_intelligence(snapshot)
+    financial = intelligence.get("metrics") or {}
+    budget_amount = financial.get("budget_amount")
+    cost_total = financial.get("cost_total")
+    delta = financial.get("budget_delta")
+    usage = financial.get("budget_usage_pct")
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Budget do briefing", _format_money(budget_amount) if budget_amount is not None else "Não identificado")
+    summary_cols[1].metric("Total da planilha", _format_money(cost_total) if cost_total is not None else "Não identificado")
+    summary_cols[2].metric("Saldo / diferença", _format_money(delta) if delta is not None else "Não calculável")
+    summary_cols[3].metric("% do budget", f"{usage:.1%}" if usage is not None else "Não calculável")
+
+    if budget_amount is not None and cost_total is not None:
+        if delta >= 0:
+            st.success(f"A proposta identificada está {_format_money(delta)} abaixo do budget registrado no briefing.")
+        else:
+            st.warning(f"A proposta identificada está {_format_money(abs(delta))} acima do budget registrado no briefing.")
+    elif budget_amount is not None and snapshot.get("cost_documents"):
+        st.warning("O budget foi identificado, mas a planilha ainda não possui um total financeiro confiável. A aderência não será inventada até a leitura conseguir provar os valores.")
 
     files = _role_rows(snapshot, "cost_sheet")
     cost_documents = snapshot.get("cost_documents", [])
@@ -1170,7 +1322,10 @@ def _render_budget(
         else:
             st.metric("Total identificado", "Não identificado")
     else:
-        st.caption("As linhas aparecerão após a estruturação da planilha.")
+        if cost_documents:
+            st.warning("A planilha está estruturada como documento, mas nenhuma linha de custo útil foi materializada. O total permanece como não identificado até uma leitura confiável.")
+        else:
+            st.caption("As linhas aparecerão após a estruturação da planilha.")
 
 
 def _render_suppliers(
@@ -1488,6 +1643,22 @@ def _render_results(
     project = snapshot["project"]
     status = str(project.get("status") or "")
     outcome = snapshot.get("outcome") or {}
+    business_state = _business_state(project, outcome)
+
+    if business_state in {"proposal", "no_return"}:
+        _section_title(
+            "Situação comercial",
+            "O projeto ainda está em proposta. Resultado de execução e aprendizados pós-evento só passam a fazer sentido depois da decisão do cliente.",
+        )
+        st.info(
+            f"Situação atual: **{BUSINESS_STATE_LABELS[business_state]}** · "
+            f"Processo: **{PROCESS_TYPE_LABELS.get(str(outcome.get('process_type') or 'competition'), 'Concorrência')}**. "
+            "Use o controle no topo do projeto para marcar ganho, perda, ausência de resposta, produção ou execução quando isso acontecer."
+        )
+        if outcome.get("result_context"):
+            st.markdown("#### Observações já registradas")
+            st.write(outcome.get("result_context"))
+        return
 
     title = (
         "Encerramento e aprendizados"
@@ -1959,11 +2130,12 @@ def render_project_workspace(
         st.error("O projeto selecionado não foi encontrado.")
         return
 
-    _project_header(project)
+    _project_header(project, snapshot.get("outcome") or {})
     _status_selector(
         client,
         project=project,
         project_id=project_id,
+        outcome=snapshot.get("outcome") or {},
     )
 
     nav_column, content_column = st.columns([0.24, 0.76], gap="large")
