@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.1.7.2",
+    eyebrow="NAVE by VOE · V28.1.7.3",
 )
 
 client = get_nave_client()
@@ -89,17 +89,46 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
         ):
             with st.spinner("Reprocessando briefing, apresentação e orçamento já preservados..."):
                 outcome = reprocess_project_semantically(client, repair_options[repair_label])
-            if outcome.get("errors"):
+            counts = outcome.get("workspace_counts") or {}
+            if outcome.get("errors") or outcome.get("incomplete"):
                 st.warning(
-                    f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) e {outcome.get('errors', 0)} com erro. "
-                    "Os arquivos originais continuam preservados."
+                    f"Reprocessamento concluído com diagnóstico: {outcome.get('processed', 0)} arquivo(s) materializado(s), "
+                    f"{outcome.get('errors', 0)} erro(s). A NAVE não considera a correção concluída enquanto briefing/apresentação esperados continuarem zerados."
                 )
-                for warning in (outcome.get("warnings") or [])[:12]:
-                    st.caption("• " + str(warning))
             else:
-                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.1.7.2.")
+                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.1.7.3.")
                 st.session_state["nave_project_hub_focus_id"] = repair_options[repair_label]
-                st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
+
+            if counts:
+                metric_cols = st.columns(5)
+                metric_cols[0].metric("Briefings", counts.get("briefings", 0))
+                metric_cols[1].metric("Apresentações", counts.get("presentations", 0))
+                metric_cols[2].metric("Conteúdos", counts.get("contents", 0))
+                metric_cols[3].metric("Custos", counts.get("cost_documents", 0))
+                metric_cols[4].metric("Feedbacks", counts.get("feedbacks", 0))
+
+            diagnostic_rows = []
+            for item in outcome.get("results") or []:
+                created = item.get("created") or {}
+                diagnostic_rows.append({
+                    "Arquivo": item.get("file_name") or item.get("source_file_id"),
+                    "Papel anterior": item.get("role_before"),
+                    "Papel resolvido": item.get("role_after") or item.get("role"),
+                    "Status": item.get("status"),
+                    "Criado no workspace": ", ".join(f"{key}: {value}" for key, value in created.items()) or "—",
+                    "Observação": " | ".join(str(w) for w in (item.get("warnings") or [])[:3]) or "—",
+                })
+            if diagnostic_rows:
+                with st.expander("Diagnóstico arquivo por arquivo", expanded=bool(outcome.get("errors") or outcome.get("incomplete"))):
+                    st.dataframe(pd.DataFrame(diagnostic_rows), hide_index=True, width="stretch")
+
+            warnings = list(dict.fromkeys(str(w) for w in (outcome.get("warnings") or []) if str(w).strip()))
+            if warnings:
+                with st.expander("Avisos técnicos do reprocessamento", expanded=bool(outcome.get("errors") or outcome.get("incomplete"))):
+                    for warning in warnings[:30]:
+                        st.caption("• " + warning)
+
+            st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
 st.markdown("### 1. Arquivos do projeto")
 st.caption(

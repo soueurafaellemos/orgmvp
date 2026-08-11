@@ -22,8 +22,8 @@ from memory_learning_models import CostWorkbookResult
 from project_batch_ingestion import classify_document
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.1.7.2"
-LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2"}
+WORKFLOW_VERSION = "28.1.7.3"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -1316,27 +1316,39 @@ def _repair_bundle_topology(
     source_files: Sequence[Mapping[str, Any]],
     warnings: list[str],
 ) -> list[dict[str, Any]]:
-    """Usa a composição do lote apenas como fallback para papéis ausentes.
+    """Recupera papéis ausentes usando a topologia inequívoca do lote.
 
-    Caso típico: um lote contém uma planilha de custos, um print de feedback, um
-    Word de briefing e um PDF de proposta com nome genérico. Se briefing ou
-    apresentação ficaram sem papel específico, a NAVE corrige apenas quando há
-    um único candidato plausível, preservando a revisão humana como autoridade.
+    Versões anteriores podiam rotular um DOCX de briefing ou um PDF de proposta
+    como relatório/fornecedor/feedback porque uma palavra interna pesava mais que
+    a função do arquivo no lote. A V28.1.7.3 usa a combinação dos formatos como
+    fallback somente quando existe UM candidato por função. Assim, o caso real
+    briefing Word + proposta PDF + planilha + print de feedback deixa de depender
+    do rótulo histórico incorreto ou de page_count/text_excerpt preenchidos.
     """
     rows = [dict(row) for row in source_files]
     roles = {str(row.get("document_role") or "") for row in rows}
+    extensions = [Path(str(row.get("file_name") or "")).suffix.casefold() for row in rows]
+    has_cost = bool({"detailed_costs", "preliminary_budget"} & roles) or any(
+        ext in {".xlsx", ".xlsm", ".xls", ".csv"} for ext in extensions
+    )
+    has_image_feedback = any(
+        ext in {".jpg", ".jpeg", ".png", ".webp"}
+        and str(row.get("document_role") or "") == "feedback_approval"
+        for row, ext in zip(rows, extensions)
+    )
 
     if "briefing_original" not in roles:
         candidates = [
             row for row in rows
             if Path(str(row.get("file_name") or "")).suffix.casefold() in {".docx", ".txt", ".md"}
-            and str(row.get("document_role") or "") == "complementary_document"
-            and len(str(row.get("text_excerpt") or "").strip()) >= 350
+            and str(row.get("document_role") or "") not in {"detailed_costs", "preliminary_budget"}
         ]
-        if len(candidates) == 1:
+        # Um único documento textual acompanhado de custos + apresentação/feedback
+        # é uma assinatura forte de briefing no fluxo "Importar projeto completo".
+        if len(candidates) == 1 and has_cost and (".pdf" in extensions or has_image_feedback):
             fixed = _set_source_document_role(
-                client, candidates[0], role="briefing_original", confidence=0.72,
-                reasons=["único documento textual substancial do lote e briefing ausente"],
+                client, candidates[0], role="briefing_original", confidence=0.84,
+                reasons=["topologia do lote: único documento textual + custos + proposta/feedback"],
                 warnings=warnings,
             )
             rows = [fixed if str(row.get("id")) == str(fixed.get("id")) else row for row in rows]
@@ -1345,22 +1357,22 @@ def _repair_bundle_topology(
     if not ({"proposal_presentation", "final_presentation"} & roles):
         bundle_has_briefing_and_cost = (
             "briefing_original" in roles
-            and bool({"detailed_costs", "preliminary_budget"} & roles)
+            and has_cost
         )
         candidates = [
             row for row in rows
             if bundle_has_briefing_and_cost
             and Path(str(row.get("file_name") or "")).suffix.casefold() == ".pdf"
-            and str(row.get("document_role") or "") in {"complementary_document", "feedback_approval"}
-            and int(row.get("page_count") or 0) >= 4
+            and str(row.get("document_role") or "") not in {"briefing_original", "detailed_costs", "preliminary_budget"}
         ]
         if len(candidates) == 1:
             fixed = _set_source_document_role(
-                client, candidates[0], role="proposal_presentation", confidence=0.70,
-                reasons=["único PDF multipágina do lote e apresentação ausente"],
+                client, candidates[0], role="proposal_presentation", confidence=0.84,
+                reasons=["topologia do lote: único PDF + briefing + custos"],
                 warnings=warnings,
             )
             rows = [fixed if str(row.get("id")) == str(fixed.get("id")) else row for row in rows]
+            roles.add("proposal_presentation")
 
     return rows
 
@@ -1756,6 +1768,25 @@ def _materialize_costs_semantic(client: Any, source_file: Mapping[str, Any], dat
     return {"cost_documents": 0 if result.get("status") == "duplicate" else 1, "cost_items": int(result.get("items_saved") or 0)}
 
 
+def _workspace_counts(client: Any, project_id: str) -> dict[str, int]:
+    tables = {
+        "briefings": "memory_briefing_documents",
+        "presentations": "memory_documents",
+        "contents": "memory_items",
+        "cost_documents": "memory_cost_documents",
+        "cost_items": "memory_cost_items",
+        "feedbacks": "memory_feedback_entries",
+    }
+    counts: dict[str, int] = {}
+    for key, table in tables.items():
+        try:
+            rows = _rows(client.table(table).select("id").eq("project_id", project_id).execute())
+            counts[key] = len(rows)
+        except Exception:
+            counts[key] = -1
+    return counts
+
+
 def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, Any]:
     try:
         files = _rows(
@@ -1765,28 +1796,70 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
             .execute()
         )
     except Exception as exc:
-        return {"project_id": project_id, "processed": 0, "errors": 1, "warnings": [str(exc)], "results": []}
+        return {"project_id": project_id, "processed": 0, "errors": 1, "incomplete": True, "warnings": [str(exc)], "results": []}
 
+    original_roles = {str(row.get("id") or ""): str(row.get("document_role") or "complementary_document") for row in files}
     repair_warnings: list[str] = []
     repaired_files = [
         _repair_general_source_role(client, row, repair_warnings)
         for row in files
     ]
     repaired_files = _repair_bundle_topology(client, repaired_files, repair_warnings)
-    relevant = [row for row in repaired_files if str(row.get("document_role") or "") in {
-        "briefing_original", "detailed_costs", "preliminary_budget", "proposal_presentation", "final_presentation"
-    }]
-    results = []
+    materializable_roles = {
+        "briefing_original", "detailed_costs", "preliminary_budget",
+        "proposal_presentation", "final_presentation", "feedback_approval", "post_event_report",
+    }
+    relevant = [row for row in repaired_files if str(row.get("document_role") or "") in materializable_roles]
+    results: list[dict[str, Any]] = []
+    processed_ids: set[str] = set()
     for row in relevant:
         _delete_legacy_specialized_rows(client, row)
         result = materialize_source_file(client, row, force_semantic_reprocess=True)
-        results.append(result.as_dict())
+        payload = result.as_dict()
+        payload.update({
+            "file_name": row.get("file_name"),
+            "role_before": original_roles.get(str(row.get("id") or ""), ""),
+            "role_after": row.get("document_role"),
+        })
+        results.append(payload)
+        processed_ids.add(str(row.get("id") or ""))
+
+    for row in repaired_files:
+        source_id = str(row.get("id") or "")
+        if source_id in processed_ids:
+            continue
+        results.append({
+            "source_file_id": source_id,
+            "project_id": project_id,
+            "file_name": row.get("file_name"),
+            "role_before": original_roles.get(source_id, ""),
+            "role_after": row.get("document_role"),
+            "role": row.get("document_role"),
+            "status": "preserved_only",
+            "created": {},
+            "warnings": ["Arquivo preservado em Documentos; o papel atual não exige materialização especializada."],
+        })
+
+    counts = _workspace_counts(client, project_id)
+    resolved_roles = {str(row.get("document_role") or "") for row in repaired_files}
+    post_warnings: list[str] = []
+    if "briefing_original" in resolved_roles and counts.get("briefings", 0) == 0:
+        post_warnings.append("O lote contém um briefing, mas nenhum briefing estruturado foi confirmado no workspace.")
+    if ({"proposal_presentation", "final_presentation"} & resolved_roles) and counts.get("presentations", 0) == 0:
+        post_warnings.append("O lote contém uma apresentação, mas nenhuma apresentação estruturada foi confirmada no workspace.")
+    if ({"detailed_costs", "preliminary_budget"} & resolved_roles) and counts.get("cost_documents", 0) == 0:
+        post_warnings.append("O lote contém custos, mas nenhum documento financeiro estruturado foi confirmado no workspace.")
+    actual_errors = sum(1 for r in results if r.get("status") == "error")
+    all_warnings = repair_warnings + [w for r in results for w in (r.get("warnings") or [])] + post_warnings
     return {
         "project_id": project_id,
-        "processed": sum(1 for r in results if r.get("status") != "error"),
-        "errors": sum(1 for r in results if r.get("status") == "error"),
-        "warnings": (repair_warnings + [w for r in results for w in (r.get("warnings") or [])])[:50],
+        "processed": sum(1 for r in results if r.get("status") not in {"error", "preserved_only"}),
+        "errors": actual_errors,
+        "incomplete": bool(post_warnings),
+        "warnings": all_warnings[:80],
         "results": results,
+        "workspace_counts": counts,
+        "resolved_roles": sorted(resolved_roles),
     }
 
 def materialize_source_file(
@@ -1817,16 +1890,38 @@ def materialize_source_file(
             _delete_legacy_specialized_rows(client, source_file)
         if role == "briefing_original":
             if source_bytes is None:
-                raise RuntimeError("o briefing original não pôde ser recuperado do Storage")
-            created.update(_materialize_briefing_semantic(client, source_file, source_bytes, warnings))
+                if text:
+                    warnings.append("O original não pôde ser recuperado do Storage; o briefing foi reconstruído a partir do trecho textual preservado em source_files.")
+                    created.update(_materialize_briefing(client, source_file, text, warnings))
+                else:
+                    raise RuntimeError("o briefing original não pôde ser recuperado do Storage e não há trecho textual preservado")
+            else:
+                try:
+                    created.update(_materialize_briefing_semantic(client, source_file, source_bytes, warnings))
+                except Exception as semantic_exc:
+                    if not text:
+                        raise
+                    warnings.append(f"A leitura especializada do briefing falhou; aplicada reconstrução textual de segurança: {semantic_exc}")
+                    created.update(_materialize_briefing(client, source_file, text, warnings))
         elif role in {"detailed_costs", "preliminary_budget"}:
             if source_bytes is None:
                 raise RuntimeError("a planilha original não pôde ser recuperada do Storage")
             created.update(_materialize_costs_semantic(client, source_file, source_bytes, warnings))
         elif role in {"proposal_presentation", "final_presentation"}:
             if source_bytes is None:
-                raise RuntimeError("a apresentação original não pôde ser recuperada do Storage")
-            created.update(_materialize_presentation_semantic(client, source_file, source_bytes, warnings))
+                if text:
+                    warnings.append("O PDF original não pôde ser recuperado do Storage; a apresentação foi materializada pelo texto preservado para não deixar o workspace vazio.")
+                    created.update(_materialize_presentation(client, source_file, text, warnings))
+                else:
+                    raise RuntimeError("a apresentação original não pôde ser recuperada do Storage e não há trecho textual preservado")
+            else:
+                try:
+                    created.update(_materialize_presentation_semantic(client, source_file, source_bytes, warnings))
+                except Exception as semantic_exc:
+                    if not text:
+                        raise
+                    warnings.append(f"A decupagem visual especializada falhou; aplicada materialização textual de segurança: {semantic_exc}")
+                    created.update(_materialize_presentation(client, source_file, text, warnings))
         elif role == "feedback_approval":
             created.update(_materialize_feedback(client, source_file, text))
         elif role == "post_event_report":
