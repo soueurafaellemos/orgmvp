@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.1.7.1"
+WORKFLOW_VERSION = "28.1.7.2"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_MB = 300
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
@@ -486,9 +486,38 @@ def classify_document(name: str, text_excerpt: str) -> tuple[str, float, list[st
     elif extension in {".pptx", ".ppt"}:
         scores["proposal_presentation"] += 2.8
         reasons["proposal_presentation"].append("formato de apresentação")
+    elif extension == ".pdf":
+        # PDFs são o formato mais comum das propostas enviadas ao cliente. A V28.1.7.1
+        # dependia quase só de palavras literais como "proposta" no arquivo e, por isso,
+        # PDFs reais com nomes genéricos podiam cair em Documento complementar ou até
+        # Feedback quando uma página mencionava retorno do cliente.
+        presentation_anchors = (
+            "conceito", "estrategia", "cenografia", "ativacao", "experiencia",
+            "implantacao", "moodboard", "key visual", "comunicacao", "brindes",
+            "jornada", "proposta",
+        )
+        briefing_anchors = (
+            "objetivo", "desafio", "publico alvo", "entregaveis", "mandatorios",
+            "obrigatoriedades", "escopo", "budget", "verba", "prazo",
+        )
+        presentation_hits = sum(anchor in full_haystack for anchor in presentation_anchors)
+        briefing_hits = sum(anchor in full_haystack for anchor in briefing_anchors)
+        if presentation_hits >= 3:
+            scores["proposal_presentation"] += 4.5
+            reasons["proposal_presentation"].append("PDF com estrutura de apresentação/proposta")
+        if briefing_hits >= 4 and presentation_hits < 3:
+            scores["briefing_original"] += 4.0
+            reasons["briefing_original"].append("PDF com estrutura de briefing")
     elif extension in {".docx", ".txt", ".md"}:
         scores["briefing_original"] += 1.4
         reasons["briefing_original"].append("formato textual")
+        briefing_anchors = (
+            "objetivo", "desafio", "publico alvo", "entregaveis", "mandatorios",
+            "obrigatoriedades", "escopo", "budget", "verba", "prazo",
+        )
+        if sum(anchor in full_haystack for anchor in briefing_anchors) >= 3:
+            scores["briefing_original"] += 2.2
+            reasons["briefing_original"].append("estrutura textual de briefing")
     elif extension == ".eml":
         scores["feedback_approval"] += 2.2
         reasons["feedback_approval"].append("mensagem de e-mail")

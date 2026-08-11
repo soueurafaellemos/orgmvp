@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.1.7.1",
+    eyebrow="NAVE by VOE · V28.1.7.2",
 )
 
 client = get_nave_client()
@@ -97,7 +97,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                 for warning in (outcome.get("warnings") or [])[:12]:
                     st.caption("• " + str(warning))
             else:
-                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.1.7.1.")
+                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.1.7.2.")
                 st.session_state["nave_project_hub_focus_id"] = repair_options[repair_label]
                 st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
@@ -380,6 +380,27 @@ if documents:
                 st.caption(
                     "Briefing, custos, apresentações, feedbacks e relatórios passam a alimentar as estruturas que a Visão geral e as abas do projeto realmente consultam."
                 )
+                materialization_rows = []
+                role_labels_by_key = ROLE_LABELS
+                source_name_by_sha = {document.sha256: document.name for document in documents}
+                source_id_to_name = {}
+                # O resultado técnico vem por source_file_id; o nome é recuperado
+                # do lote quando disponível e, caso contrário, o papel ainda deixa
+                # claro qual pipeline falhou.
+                for item in result.get("materialization_results") or []:
+                    created = item.get("created") or {}
+                    materialization_rows.append({
+                        "Papel": role_labels_by_key.get(str(item.get("role") or ""), str(item.get("role") or "Documento")),
+                        "Status": "OK" if str(item.get("status") or "") != "error" else "Erro",
+                        "Estruturas criadas": ", ".join(f"{key}: {value}" for key, value in created.items() if int(value or 0) > 0) or "arquivo preservado",
+                        "Observações": " | ".join(str(w) for w in (item.get("warnings") or [])[:4]) or "—",
+                    })
+                if materialization_rows:
+                    with st.expander("Ver diagnóstico da incorporação ao workspace", expanded=bool(workspace_errors)):
+                        st.dataframe(pd.DataFrame(materialization_rows), hide_index=True, width="stretch")
+                        st.caption(
+                            "Um arquivo pode estar preservado e ainda assim ter falha na leitura estruturada. Este quadro separa as duas situações."
+                        )
                 st.page_link(
                     "pages/4_Historico_de_Projetos.py",
                     label="Abrir Projetos",

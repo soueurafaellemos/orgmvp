@@ -24,6 +24,54 @@ from memory_prompts import (
 
 DETAIL_PAGES_PER_PASS = 6
 SYNTHESIS_CONTEXT_MAX_CHARS = 140_000
+MAX_AI_INLINE_PDF_BYTES = 12 * 1024 * 1024
+AI_RASTER_TARGET_WIDTH = 1600
+AI_JPEG_QUALITY = 72
+
+
+
+def _compact_pdf_for_ai(
+    doc: InputDocument,
+    *,
+    max_bytes: int = MAX_AI_INLINE_PDF_BYTES,
+) -> InputDocument:
+    """Reduz somente a cópia enviada ao modelo; o original permanece intacto.
+
+    PDFs de proposta podem ultrapassar 200 MB por causa de renders em altíssima
+    resolução. O pipeline já trabalha em lotes de seis páginas, mas um lote ainda
+    pode exceder o payload inline do provedor de IA. Quando isso acontece, esta
+    função rasteriza apenas aquele lote em resolução suficiente para leitura
+    visual, mantendo a numeração e o PDF original preservados no Storage.
+    """
+    if doc.mime_type != "application/pdf" or len(doc.data) <= max_bytes:
+        return doc
+
+    source = fitz.open(stream=doc.data, filetype="pdf")
+    output = fitz.open()
+    try:
+        for page in source:
+            rect = page.rect
+            width = max(float(rect.width), 1.0)
+            scale = min(2.0, max(1.0, AI_RASTER_TARGET_WIDTH / width))
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            jpeg = pix.tobytes("jpeg", jpg_quality=AI_JPEG_QUALITY)
+            target = output.new_page(width=rect.width, height=rect.height)
+            target.insert_image(target.rect, stream=jpeg)
+        compacted = output.tobytes(garbage=4, deflate=True)
+    finally:
+        output.close()
+        source.close()
+
+    if not compacted:
+        return doc
+    return InputDocument(
+        name=doc.name,
+        data=compacted,
+        mime_type="application/pdf",
+        original_data=doc.original_data or doc.data,
+        original_mime_type=doc.original_mime_type or doc.mime_type,
+    )
+
 
 MEMORY_EDITOR_COLUMNS = [
     "_row_id",
@@ -1100,12 +1148,17 @@ def extract_memory(
             )
 
             ai_batch: MemoryBatch | None = None
+            ai_part = _compact_pdf_for_ai(part)
+            if len(ai_part.data) < len(part.data):
+                document_warnings.append(
+                    f"Slides {first}-{last}: lote visual compactado de {len(part.data) / (1024 * 1024):.1f} MB para {len(ai_part.data) / (1024 * 1024):.1f} MB antes da leitura sem alterar o arquivo original."
+                )
             try:
                 ai_batch = _structured_call(
                     client,
                     model=model,
                     prompt=prompt,
-                    docs=[part],
+                    docs=[ai_part],
                     schema=MemoryBatch,
                     context=f"Memória de {doc.name}, slides {first}-{last}",
                 )

@@ -22,8 +22,8 @@ from memory_learning_models import CostWorkbookResult
 from project_batch_ingestion import classify_document
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.1.7.1"
-LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1"}
+WORKFLOW_VERSION = "28.1.7.2"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -1094,6 +1094,25 @@ def _ensure_project_file_role(client: Any, source_file: Mapping[str, Any], warni
 
     for row in existing:
         if str(row.get("file_role") or "") == desired:
+            # Mesmo quando o papel físico já está correto, sincronizamos a função
+            # semântica original. Isso permite distinguir proposta de documento
+            # genérico sem alterar o CHECK legado de project_files.
+            metadata = dict(row.get("metadata") or {})
+            wanted_metadata = {
+                **metadata,
+                "source_file_id": source_file.get("id"),
+                "semantic_role_sync": WORKFLOW_VERSION,
+                "document_role": role,
+                "source_processing_status": source_file.get("processing_status"),
+            }
+            if wanted_metadata != metadata:
+                try:
+                    client.table("project_files").update({
+                        "title": str(source_file.get("file_name") or row.get("title") or "Arquivo"),
+                        "metadata": _safe_json(wanted_metadata),
+                    }).eq("id", row.get("id")).execute()
+                except Exception as exc:
+                    warnings.append(f"Central de arquivos: não foi possível sincronizar metadados ({exc})")
             return
     if existing:
         row = existing[0]
@@ -1101,7 +1120,13 @@ def _ensure_project_file_role(client: Any, source_file: Mapping[str, Any], warni
             client.table("project_files").update({
                 "file_role": desired,
                 "title": str(source_file.get("file_name") or row.get("title") or "Arquivo"),
-                "metadata": {**(row.get("metadata") or {}), "source_file_id": source_file.get("id"), "semantic_role_sync": WORKFLOW_VERSION},
+                "metadata": _safe_json({
+                    **(row.get("metadata") or {}),
+                    "source_file_id": source_file.get("id"),
+                    "semantic_role_sync": WORKFLOW_VERSION,
+                    "document_role": role,
+                    "source_processing_status": source_file.get("processing_status"),
+                }),
             }).eq("id", row.get("id")).execute()
             return
         except Exception as exc:
@@ -1125,7 +1150,12 @@ def _ensure_project_file_role(client: Any, source_file: Mapping[str, Any], warni
             "version_number": version,
             "storage_bucket": str(source_file.get("storage_bucket") or PROJECT_FILES_BUCKET),
             "storage_path": str(source_file.get("storage_path") or ""),
-            "metadata": {"source_file_id": source_file.get("id"), "semantic_role_sync": WORKFLOW_VERSION},
+            "metadata": _safe_json({
+                "source_file_id": source_file.get("id"),
+                "semantic_role_sync": WORKFLOW_VERSION,
+                "document_role": role,
+                "source_processing_status": source_file.get("processing_status"),
+            }),
             "is_current": True,
             "is_archived": False,
         }).execute()
@@ -1194,6 +1224,145 @@ def _repair_financial_source_role(
     except Exception as exc:
         warnings.append(f"Não foi possível sincronizar o papel financeiro de {file_name}: {exc}")
     return row
+
+
+
+
+def _set_source_document_role(
+    client: Any,
+    source_file: Mapping[str, Any],
+    *,
+    role: str,
+    confidence: float,
+    reasons: Sequence[str],
+    warnings: list[str],
+) -> dict[str, Any]:
+    row = dict(source_file)
+    current = str(row.get("document_role") or "complementary_document")
+    if not row.get("id") or current == role:
+        row["document_role"] = role
+        row["role_confidence"] = confidence
+        row["role_reasons"] = list(reasons)
+        return row
+    try:
+        client.table("source_files").update({
+            "document_role": role,
+            "role_confidence": float(confidence),
+            "role_reasons": list(reasons)[:12],
+        }).eq("id", row.get("id")).execute()
+        row["document_role"] = role
+        row["role_confidence"] = confidence
+        row["role_reasons"] = list(reasons)
+        warnings.append(
+            f"Papel documental corrigido automaticamente: {row.get('file_name') or 'arquivo'} · {current} → {role}."
+        )
+        _ensure_project_file_role(client, row, warnings)
+    except Exception as exc:
+        warnings.append(
+            f"Não foi possível sincronizar o papel de {row.get('file_name') or 'arquivo'}: {exc}"
+        )
+    return row
+
+
+def _repair_general_source_role(
+    client: Any,
+    source_file: Mapping[str, Any],
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Reclassifica papéis semanticamente fortes sem transformar todo PDF em proposta.
+
+    A correção é conservadora: troca automática só ocorre quando o papel anterior
+    era genérico, ou quando um não-imagem foi marcado como feedback apesar de a
+    leitura documental apontar com alta confiança para briefing/apresentação.
+    """
+    row = dict(source_file)
+    file_name = str(row.get("file_name") or "")
+    extension = Path(file_name).suffix.casefold()
+    if extension in {".xlsx", ".xlsm", ".xls", ".csv"}:
+        return _repair_financial_source_role(client, row, warnings)
+
+    predicted, confidence, reasons = classify_document(
+        file_name,
+        str(row.get("text_excerpt") or ""),
+    )
+    current = str(row.get("document_role") or "complementary_document")
+    if predicted == "complementary_document":
+        return row
+    if extension in {".jpg", ".jpeg", ".png", ".webp"}:
+        if current == "complementary_document" and predicted == "feedback_approval" and confidence >= 0.62:
+            return _set_source_document_role(
+                client, row, role=predicted, confidence=confidence,
+                reasons=reasons, warnings=warnings,
+            )
+        return row
+
+    safe_to_replace = (
+        current == "complementary_document" and confidence >= 0.66
+    ) or (
+        current == "feedback_approval"
+        and predicted in {"briefing_original", "proposal_presentation", "final_presentation"}
+        and confidence >= 0.78
+    )
+    if not safe_to_replace or predicted == current:
+        return row
+    return _set_source_document_role(
+        client, row, role=predicted, confidence=confidence,
+        reasons=reasons, warnings=warnings,
+    )
+
+
+def _repair_bundle_topology(
+    client: Any,
+    source_files: Sequence[Mapping[str, Any]],
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    """Usa a composição do lote apenas como fallback para papéis ausentes.
+
+    Caso típico: um lote contém uma planilha de custos, um print de feedback, um
+    Word de briefing e um PDF de proposta com nome genérico. Se briefing ou
+    apresentação ficaram sem papel específico, a NAVE corrige apenas quando há
+    um único candidato plausível, preservando a revisão humana como autoridade.
+    """
+    rows = [dict(row) for row in source_files]
+    roles = {str(row.get("document_role") or "") for row in rows}
+
+    if "briefing_original" not in roles:
+        candidates = [
+            row for row in rows
+            if Path(str(row.get("file_name") or "")).suffix.casefold() in {".docx", ".txt", ".md"}
+            and str(row.get("document_role") or "") == "complementary_document"
+            and len(str(row.get("text_excerpt") or "").strip()) >= 350
+        ]
+        if len(candidates) == 1:
+            fixed = _set_source_document_role(
+                client, candidates[0], role="briefing_original", confidence=0.72,
+                reasons=["único documento textual substancial do lote e briefing ausente"],
+                warnings=warnings,
+            )
+            rows = [fixed if str(row.get("id")) == str(fixed.get("id")) else row for row in rows]
+            roles.add("briefing_original")
+
+    if not ({"proposal_presentation", "final_presentation"} & roles):
+        bundle_has_briefing_and_cost = (
+            "briefing_original" in roles
+            and bool({"detailed_costs", "preliminary_budget"} & roles)
+        )
+        candidates = [
+            row for row in rows
+            if bundle_has_briefing_and_cost
+            and Path(str(row.get("file_name") or "")).suffix.casefold() == ".pdf"
+            and str(row.get("document_role") or "") in {"complementary_document", "feedback_approval"}
+            and int(row.get("page_count") or 0) >= 4
+        ]
+        if len(candidates) == 1:
+            fixed = _set_source_document_role(
+                client, candidates[0], role="proposal_presentation", confidence=0.70,
+                reasons=["único PDF multipágina do lote e apresentação ausente"],
+                warnings=warnings,
+            )
+            rows = [fixed if str(row.get("id")) == str(fixed.get("id")) else row for row in rows]
+
+    return rows
 
 
 def _source_document(source_file: Mapping[str, Any], data: bytes):
@@ -1600,9 +1769,10 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
 
     repair_warnings: list[str] = []
     repaired_files = [
-        _repair_financial_source_role(client, row, repair_warnings)
+        _repair_general_source_role(client, row, repair_warnings)
         for row in files
     ]
+    repaired_files = _repair_bundle_topology(client, repaired_files, repair_warnings)
     relevant = [row for row in repaired_files if str(row.get("document_role") or "") in {
         "briefing_original", "detailed_costs", "preliminary_budget", "proposal_presentation", "final_presentation"
     }]

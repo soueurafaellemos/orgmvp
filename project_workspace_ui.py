@@ -486,6 +486,28 @@ def _has_role(
     return bool(_role_rows(snapshot, role))
 
 
+def _semantic_document_role(row: dict[str, Any]) -> str:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    return str(metadata.get("document_role") or "")
+
+
+def _presentation_file_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for row in snapshot.get("project_files", []):
+        if row.get("is_archived"):
+            continue
+        file_role = str(row.get("file_role") or "")
+        semantic_role = _semantic_document_role(row)
+        if file_role == "final_presentation" or semantic_role in {"proposal_presentation", "final_presentation"}:
+            rows.append(row)
+    return rows
+
+
+def _count_structured_or_files(structured_rows: list[Any], file_rows: list[Any]) -> int:
+    """Evita contar o mesmo original duas vezes após a materialização."""
+    return max(len(structured_rows), len(file_rows))
+
+
 def _upload_box(
     client: Client,
     *,
@@ -733,23 +755,29 @@ def _render_overview(
     metrics = st.columns(5)
     metrics[0].metric(
         "Briefings",
-        len(snapshot.get("briefing_documents", []))
-        + len(_role_rows(snapshot, "briefing_original")),
+        _count_structured_or_files(
+            list(snapshot.get("briefing_documents", [])),
+            _role_rows(snapshot, "briefing_original"),
+        ),
     )
     metrics[1].metric(
         "Apresentações",
-        len(snapshot.get("memory_documents", []))
-        + len(_role_rows(snapshot, "final_presentation")),
+        _count_structured_or_files(
+            list(snapshot.get("memory_documents", [])),
+            _presentation_file_rows(snapshot),
+        ),
     )
     metrics[2].metric(
         "Conteúdos",
         len(snapshot.get("memory_items", [])),
     )
+    feedback_files = _role_rows(snapshot, "feedback") + _role_rows(snapshot, "approval")
     metrics[3].metric(
         "Feedbacks",
-        len(snapshot.get("feedback_entries", []))
-        + len(_role_rows(snapshot, "feedback"))
-        + len(_role_rows(snapshot, "approval")),
+        _count_structured_or_files(
+            list(snapshot.get("feedback_entries", [])),
+            feedback_files,
+        ),
     )
     metrics[4].metric(
         "Arquivos",

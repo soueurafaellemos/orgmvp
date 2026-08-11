@@ -426,21 +426,31 @@ def _extract_total_row(
     header_row: int,
     mapping: dict[str, int],
 ) -> dict:
-    for row in matrix[header_row : min(len(matrix), header_row + 8)]:
-        first_values = " ".join(
-            normalize_text(value)
-            for value in row[:4]
-        )
+    # O total real costuma estar no fim da planilha, não nas oito primeiras
+    # linhas após o cabeçalho. Priorizamos TOTAL GERAL / TOTAL FINAL e, na
+    # ausência deles, o último TOTAL com valor monetário explícito.
+    candidates: list[tuple[int, int, dict[str, float | None]]] = []
+    for row_index, row in enumerate(matrix[header_row:], start=header_row + 1):
+        first_values = " ".join(normalize_text(value) for value in row[:6]).strip()
+        if not re.search(r"\btotal\b", first_values):
+            continue
+        values = {
+            "total_base": _number(_get(row, mapping, "base_value")),
+            "fees_total": _number(_get(row, mapping, "fees_value")),
+            "charges_total": _number(_get(row, mapping, "charges_value")),
+            "client_total": _number(_get(row, mapping, "client_total")),
+        }
+        if not any(value is not None for value in values.values()):
+            continue
+        priority = 3 if any(term in first_values for term in ("total geral", "total final", "grand total")) else 2
+        if "sub total" in first_values or "subtotal" in first_values:
+            priority = 1
+        candidates.append((priority, row_index, values))
 
-        if re.search(r"\btotal\b", first_values):
-            return {
-                "total_base": _number(_get(row, mapping, "base_value")),
-                "fees_total": _number(_get(row, mapping, "fees_value")),
-                "charges_total": _number(_get(row, mapping, "charges_value")),
-                "client_total": _number(_get(row, mapping, "client_total")),
-            }
-
-    return {}
+    if not candidates:
+        return {}
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[-1][2]
 
 
 
@@ -720,10 +730,21 @@ def parse_cost_workbook(
         if not item_name:
             continue
 
+        # Algumas planilhas usam apenas "Valor total" e deixam a coluna
+        # "Total cliente" vazia. Quando os componentes monetários estão explícitos,
+        # reconciliamos o total por item sem inventar nenhum valor externo.
+        effective_client_total = client_total
+        if effective_client_total is None and base_value is not None:
+            effective_client_total = float(base_value)
+            if fees_value is not None:
+                effective_client_total += float(fees_value)
+            if charges_value is not None:
+                effective_client_total += float(charges_value)
+
         status, estimate_type, flags = _status_and_estimate(
             full_description,
             base_value=base_value,
-            client_total=client_total,
+            client_total=effective_client_total,
         )
 
         items.append(
@@ -756,7 +777,7 @@ def parse_cost_workbook(
                 base_value=base_value,
                 fees_value=fees_value,
                 charges_value=charges_value,
-                client_total=client_total,
+                client_total=effective_client_total,
                 item_status=status,
                 estimate_type=estimate_type,
                 flags=flags,
