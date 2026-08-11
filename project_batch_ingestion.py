@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.1.7"
+WORKFLOW_VERSION = "28.1.7.1"
 MAX_TEXT_CHARS = 60000
-MAX_FILE_BYTES = 100 * 1024 * 1024
+MAX_FILE_MB = 300
+MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
 
 ROLE_LABELS: dict[str, str] = {
     "briefing_original": "Briefing original",
@@ -76,9 +77,12 @@ TARGET_SECTIONS: dict[str, tuple[str, ...]] = {
     "complementary_document": ("Documentos",),
 }
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
 ALLOWED_EXTENSIONS = {
     ".pdf", ".docx", ".pptx", ".ppt", ".xlsx", ".xlsm", ".xls",
     ".csv", ".txt", ".md", ".eml", ".msg",
+    *IMAGE_EXTENSIONS,
 }
 
 MIME_BY_EXTENSION = {
@@ -94,6 +98,10 @@ MIME_BY_EXTENSION = {
     ".md": "text/markdown",
     ".eml": "message/rfc822",
     ".msg": "application/vnd.ms-outlook",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
 }
 
 _ROLE_TERMS: dict[str, tuple[tuple[str, float], ...]] = {
@@ -277,10 +285,26 @@ def safe_filename(value: str) -> str:
     return f"{stem}{suffix}"
 
 
-def infer_mime_type(name: str, supplied: str | None = None) -> str:
+def detect_image_mime(data: bytes) -> str | None:
+    """Identifica JPEG/PNG/WEBP pela assinatura binária, sem confiar só no nome."""
+    prefix = bytes(data[:16])
+    if prefix.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if prefix.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(prefix) >= 12 and prefix[:4] == b"RIFF" and prefix[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def infer_mime_type(name: str, supplied: str | None = None, data: bytes | None = None) -> str:
+    suffix = Path(name).suffix.lower()
+    if suffix in IMAGE_EXTENSIONS and data is not None:
+        detected = detect_image_mime(data)
+        if detected:
+            return detected
     if supplied and supplied != "application/octet-stream":
         return str(supplied)
-    suffix = Path(name).suffix.lower()
     return MIME_BY_EXTENSION.get(suffix) or mimetypes.guess_type(name)[0] or "application/octet-stream"
 
 
@@ -501,13 +525,17 @@ def prepare_document(name: str, data: bytes, mime_type: str | None = None) -> Pr
     if extension not in ALLOWED_EXTENSIONS:
         raise ProjectBatchError(f"Formato não suportado nesta etapa: {name}")
     if len(data) > MAX_FILE_BYTES:
-        raise ProjectBatchError(f"{name} ultrapassa o limite de 100 MB da NAVE.")
+        raise ProjectBatchError(f"{name} ultrapassa o limite de {MAX_FILE_MB} MB da NAVE.")
+    if extension in IMAGE_EXTENSIONS and not detect_image_mime(data):
+        raise ProjectBatchError(
+            f"{name} tem extensão de imagem, mas o conteúdo não parece ser um JPG, PNG ou WEBP válido."
+        )
     excerpt, page_count = extract_text(data, name)
     role, confidence, reasons = classify_document(name, excerpt)
     return PreparedDocument(
         name=name,
         extension=extension,
-        mime_type=infer_mime_type(name, mime_type),
+        mime_type=infer_mime_type(name, mime_type, data),
         data=data,
         sha256=hashlib.sha256(data).hexdigest(),
         file_size_bytes=len(data),
@@ -710,19 +738,37 @@ def _ensure_bucket(client: Any) -> None:
             return
 
 
+def _storage_size_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return any(token in message for token in (
+        "413", "payload too large", "request entity too large",
+        "file size", "maximum file size", "exceeded the maximum",
+    ))
+
+
 def _upload_bytes(client: Any, *, path: str, data: bytes, mime_type: str) -> None:
+    bucket = client.storage.from_(PROJECT_FILES_BUCKET)
     try:
-        client.storage.from_(PROJECT_FILES_BUCKET).upload(
-            path,
-            data,
-            file_options={"content-type": mime_type, "upsert": "false"},
-        )
-    except TypeError:
-        client.storage.from_(PROJECT_FILES_BUCKET).upload(
-            path,
-            data,
-            {"content-type": mime_type, "upsert": "false"},
-        )
+        try:
+            bucket.upload(
+                path,
+                data,
+                file_options={"content-type": mime_type, "upsert": "false"},
+            )
+        except TypeError:
+            bucket.upload(
+                path,
+                data,
+                {"content-type": mime_type, "upsert": "false"},
+            )
+    except Exception as exc:
+        if _storage_size_error(exc):
+            size_mb = len(data) / (1024 * 1024)
+            raise ProjectBatchError(
+                f"O arquivo ({size_mb:.1f} MB) passou pela validação da NAVE, mas o Storage do projeto recusou o tamanho. "
+                f"A aplicação permite até {MAX_FILE_MB} MB por arquivo; confirme que o bucket '{PROJECT_FILES_BUCKET}' também permite esse limite."
+            ) from exc
+        raise
 
 
 def _project_raw_data(client: Any, project_id: str) -> dict[str, Any]:

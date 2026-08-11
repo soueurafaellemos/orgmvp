@@ -22,8 +22,8 @@ from memory_learning_models import CostWorkbookResult
 from project_batch_ingestion import classify_document
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.1.7"
-LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7"}
+WORKFLOW_VERSION = "28.1.7.1"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -884,7 +884,14 @@ def _materialize_feedback(
     text: str,
 ) -> dict[str, int]:
     project_id = str(source_file.get("project_id") or "")
-    content = _clip(text, 12000) or f"Arquivo de feedback: {source_file.get('file_name')}"
+    mime_type = str(source_file.get("mime_type") or "").casefold()
+    file_name = str(source_file.get("file_name") or "arquivo")
+    if _clip(text, 12000):
+        content = _clip(text, 12000)
+    elif mime_type.startswith("image/"):
+        content = f"Feedback visual anexado: {file_name}. Conteúdo textual não extraído automaticamente nesta etapa."
+    else:
+        content = f"Arquivo de feedback: {file_name}"
     marker = _source_marker(source_file)
     try:
         response = (
@@ -914,7 +921,11 @@ def _materialize_feedback(
         "theme": theme,
         "sentiment": sentiment,
         "original_feedback": content,
-        "internal_interpretation": f"{marker} · Materializado automaticamente a partir do arquivo, sem inventar autor ou decisão.",
+        "internal_interpretation": (
+            f"{marker} · Arquivo visual preservado como evidência; sem inferir texto, autor ou decisão."
+            if mime_type.startswith("image/") and not _clip(text, 12000)
+            else f"{marker} · Materializado automaticamente a partir do arquivo, sem inventar autor ou decisão."
+        ),
         "action_taken": None,
         "confidence_level": "incomplete",
     }
