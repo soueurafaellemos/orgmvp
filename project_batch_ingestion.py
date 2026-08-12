@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.2.2"
+WORKFLOW_VERSION = "28.2.2.1"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_MB = 300
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
@@ -1015,6 +1015,19 @@ def _source_file_payload(
     }
 
 
+def _assert_project_db_client(client: Any) -> None:
+    """Fail early if a UI/local variable accidentally replaced the data client.
+
+    This protects the import transaction from starting with a string/dict/etc. and
+    turns a cryptic ``object has no attribute table`` into an actionable error.
+    """
+    if not callable(getattr(client, "table", None)) or not hasattr(client, "storage"):
+        raise ProjectBatchError(
+            "A conexão de dados da NAVE ficou inválida antes da importação. "
+            "Recarregue a página após o deploy da versão atual; nenhum arquivo foi importado."
+        )
+
+
 def save_project_bundle(
     client: Any,
     *,
@@ -1027,6 +1040,8 @@ def save_project_bundle(
     existing_project_id: str | None = None,
     match_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    _assert_project_db_client(client)
+
     selected = [
         document for document in documents
         if include_sha256 is None or document.sha256 in include_sha256

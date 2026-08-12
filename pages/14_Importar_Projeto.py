@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.2.2",
+    eyebrow="NAVE by VOE · V28.2.2.1",
 )
 
 client = get_nave_client()
@@ -152,6 +152,7 @@ if current_signature != st.session_state.get("v281_upload_signature"):
         "v281_client_brand",
         "v281_event_name",
         "v281_role_editor",
+        "v281_destination",
     ):
         st.session_state.pop(state_key, None)
     st.session_state["v281_upload_signature"] = current_signature
@@ -274,6 +275,7 @@ if documents:
         ["Um novo projeto", "Um projeto que já existe"],
         horizontal=True,
         index=1 if strong_match else 0,
+        key="v281_destination",
     )
 
     force_new_confirmed = True
@@ -298,9 +300,9 @@ if documents:
             option_to_id = {}
             for row in projects:
                 label = str(row.get("project_name") or "Projeto sem nome")
-                client = str(row.get("client_brand") or "").strip()
+                project_client_label = str(row.get("client_brand") or "").strip()
                 event = str(row.get("event_name") or "").strip()
-                suffix = " · ".join(item for item in (client, event) if item)
+                suffix = " · ".join(item for item in (project_client_label, event) if item)
                 display = f"{label} — {suffix}" if suffix else label
                 # Evita colisão visual sem mostrar UUID ao usuário.
                 if display in option_to_id:
