@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from supabase import Client
 
-from project_analyst import derive_advanced_project_insights
+from project_analyst import derive_advanced_project_insights, sanitize_semantic_payload
 
 
 VISUAL_SECTIONS = {"scenography", "activations", "gifts"}
@@ -348,7 +348,7 @@ def _record_text(record: dict[str, Any]) -> str:
             values.extend(str(item) for item in value)
     raw = record.get("raw_data")
     if isinstance(raw, dict):
-        for key in ("suggested_title", "suggested_section", "slide_title", "slide_summary"):
+        for key in ("suggested_title", "suggested_section", "slide_title", "slide_summary", "summary", "text", "normalized_text"):
             if raw.get(key):
                 values.append(str(raw.get(key)))
     return normalise_text(" ".join(values))
@@ -1173,11 +1173,19 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
             })
         else:
             relation = "abaixo" if budget_delta is not None and budget_delta >= 0 else "acima"
-            findings.append({
-                "level": "warning" if budget_delta is not None and budget_delta < 0 else "info",
-                "title": "Aderência financeira",
-                "text": f"Budget: {_money(budget_amount)} · planilha: {_money(cost_total)} · diferença: {_money(abs(budget_delta or 0))} {relation} do budget.",
-            })
+            direct_payment = bool((unified.get("financial_context") or {}).get("direct_payment_signal"))
+            if budget_delta is not None and budget_delta < 0 and direct_payment:
+                findings.append({
+                    "level": "warning",
+                    "title": "Diferença bruta a reconciliar",
+                    "text": f"O total bruto da proposta ({_money(cost_total)}) supera o budget nominal ({_money(budget_amount)}) em {_money(abs(budget_delta or 0))}, mas há indicação de pagamento direto pelo cliente. A aderência final depende da separação de responsabilidades financeiras.",
+                })
+            else:
+                findings.append({
+                    "level": "warning" if budget_delta is not None and budget_delta < 0 else "info",
+                    "title": "Aderência financeira",
+                    "text": f"Budget: {_money(budget_amount)} · planilha: {_money(cost_total)} · diferença: {_money(abs(budget_delta or 0))} {relation} do budget.",
+                })
     additional_cost_sheets = financial_scope.get("additional_sheets") or []
     if additional_cost_sheets:
         readable = ", ".join(
@@ -1200,7 +1208,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         findings.append({
             "level": "info",
             "title": "Briefing × proposta · evidências ainda não consolidadas",
-            "text": f"A NAVE encontrou evidência relacionada para {len(briefing_unconsolidated)} demanda(s) do briefing; elas não devem ser tratadas como ausência de resposta apenas porque os links legados ainda estão incompletos.",
+            "text": f"A NAVE encontrou evidência de resposta para {len(briefing_unconsolidated)} demanda(s) do briefing na proposta. Essas demandas devem aparecer como respostas identificadas, ainda que algumas relações exijam confirmação adicional.",
         })
     if briefing_gaps:
         findings.append({
@@ -1285,7 +1293,8 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
     # das fontes. Recalcular a parte determinística não apaga o raciocínio já
     # validado para exatamente o mesmo conjunto de evidências.
     if prior_semantic:
-        metrics["semantic_synthesis"] = prior_semantic
+        safe_semantic = sanitize_semantic_payload(prior_semantic, snapshot)
+        metrics["semantic_synthesis"] = safe_semantic
         semantic_rows = []
         for group_name, level in (
             ("diagnostic", "info"),
@@ -1293,7 +1302,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
             ("discovered_connections", "info"),
             ("contradictions_or_gaps", "warning"),
         ):
-            for row in prior_semantic.get(group_name) or []:
+            for row in safe_semantic.get(group_name) or []:
                 if not isinstance(row, dict):
                     continue
                 semantic_rows.append({
@@ -1314,7 +1323,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
                 existing.add(key)
         recommendations.extend(
             str(value).strip()
-            for value in prior_semantic.get("decision_recommendations") or []
+            for value in safe_semantic.get("decision_recommendations") or []
             if str(value).strip()
         )
         recommendations = list(dict.fromkeys(recommendations))
@@ -1414,6 +1423,12 @@ def render_project_intelligence(
     project_id: str,
     snapshot: dict[str, Any],
 ) -> None:
+    """Projeção executiva da inteligência do projeto.
+
+    A tela principal mostra CONCLUSÕES. Cobertura de fonte, links automáticos,
+    matriz detalhada e saúde de processamento permanecem auditáveis, mas ficam
+    fora do caminho principal do usuário.
+    """
     st.markdown(DIAGNOSTIC_CSS, unsafe_allow_html=True)
 
     with st.spinner("Cruzando briefing, apresentação, custos e resultados..."):
@@ -1434,218 +1449,167 @@ def render_project_intelligence(
         "Resultados pós-evento e aprendizados permanecem em uma área própria do workspace."
     )
 
-    semantic = (intelligence.get("metrics") or {}).get("semantic_synthesis")
-    if isinstance(semantic, dict) and semantic.get("executive_summary"):
-        st.markdown("#### Project Analyst · leitura integrada")
-        st.info(str(semantic.get("executive_summary") or ""))
-        if semantic.get("strategic_reading"):
-            st.markdown(f"**Leitura estratégica:** {semantic.get('strategic_reading')}")
-        learn_cols = st.columns(2, gap="large")
-        with learn_cols[0]:
-            st.markdown("**O que merece ser preservado como repertório**")
-            for value in (semantic.get("validated_learnings") or [])[:5]:
-                st.success(str(value))
-        with learn_cols[1]:
-            st.markdown("**O que precisa mudar em projetos futuros**")
-            for value in (semantic.get("challenged_learnings") or [])[:5]:
-                st.warning(str(value))
-        unknowns = [str(value).strip() for value in (semantic.get("unknowns") or []) if str(value).strip()]
-        if unknowns:
-            with st.expander("O que a NAVE ainda não pode concluir", expanded=False):
-                for value in unknowns[:8]:
-                    st.write(f"• {value}")
-
-    if new_cost_links or new_brief_links:
-        st.success(
-            f"A NAVE criou {new_cost_links} nova(s) sugestão(ões) de custo e "
-            f"{new_brief_links} nova(s) sugestão(ões) de aderência para revisão."
-        )
-
-    st.markdown("#### Cobertura das fontes")
-    coverage = intelligence["coverage"]
-    columns = st.columns(5)
-    for column, key in zip(columns, ("briefing", "presentation", "cost", "report", "feedback")):
-        with column:
-            st.markdown(_render_source_card(coverage[key]), unsafe_allow_html=True)
-
     metrics = intelligence["metrics"]
-    st.markdown("#### Visão executiva")
-    if metrics.get("stage") in {"proposal", "no_return", "won"}:
-        metric_columns = st.columns(6)
-        metric_columns[0].metric("Situação", metrics.get("stage_label") or "Em proposta")
-        metric_columns[1].metric("Demandas do briefing", metrics["briefing_requirements"])
-        metric_columns[2].metric("Entregas apresentadas", metrics["presentation_items"])
-        metric_columns[3].metric("Com custo direto", metrics["items_with_cost"])
-        metric_columns[4].metric("Custos sem proposta", metrics["cost_only_items"])
-        metric_columns[5].metric("Lacunas do briefing", metrics["briefing_gaps"])
-        st.info("Este projeto ainda não está em etapa de execução. A análise abaixo compara briefing, proposta e custos; execução só entra quando houver evidência posterior.")
-    else:
-        metric_columns = st.columns(6)
-        metric_columns[0].metric("Demandas do briefing", metrics["briefing_requirements"])
-        metric_columns[1].metric("Entregas apresentadas", metrics["presentation_items"])
-        metric_columns[2].metric("Com custo direto", metrics["items_with_cost"])
-        metric_columns[3].metric("Executadas com evidência", metrics["executed_with_evidence"])
-        metric_columns[4].metric("Sem evidência de execução", metrics["without_execution_evidence"])
-        metric_columns[5].metric("Custos sem proposta", metrics["cost_only_items"])
-        st.info(
-            "A classificação ‘sem evidência de execução’ não significa que a entrega não aconteceu. "
-            "Ela indica apenas que os arquivos atuais ainda não comprovam o resultado."
-        )
+    semantic = metrics.get("semantic_synthesis") if isinstance(metrics.get("semantic_synthesis"), dict) else {}
+    if semantic.get("executive_summary"):
+        st.markdown("#### Leitura executiva")
+        st.info(str(semantic.get("executive_summary")))
 
-    advanced = intelligence.get("advanced_insights") or {}
-    validated = advanced.get("validated_items") or []
-    challenged = advanced.get("challenged_items") or []
-    requirement_risks = advanced.get("requirement_risks") or []
-    if validated or challenged or requirement_risks:
-        st.markdown("#### Conexões inteligentes")
-        st.caption(
-            "A NAVE conecta feedbacks às soluções apresentadas e, quando houver vínculo financeiro/briefing, "
-            "mostra o impacto daquela decisão no projeto."
-        )
-        connections = st.columns(2, gap="large")
-        with connections[0]:
-            st.markdown("**O que recebeu validação**")
-            if validated:
-                for row in validated[:6]:
-                    cost = row.get("linked_cost")
-                    cost_text = f" · custo ligado: {_money(cost)}" if cost not in (None, 0, "") else ""
-                    st.success(
-                        f"**{row.get('title') or 'Solução'}**{cost_text}\n\n"
-                        f"{row.get('feedback') or 'Validação registrada pelo cliente.'}"
-                    )
-            else:
-                st.caption("Nenhuma solução recebeu validação estruturada até agora.")
-        with connections[1]:
-            st.markdown("**O que foi questionado**")
-            if challenged:
-                for row in challenged[:6]:
-                    cost = row.get("linked_cost")
-                    cost_text = f" · custo ligado: {_money(cost)}" if cost not in (None, 0, "") else ""
-                    st.warning(
-                        f"**{row.get('title') or 'Solução'}**{cost_text}\n\n"
-                        f"{row.get('feedback') or 'Ponto questionado pelo cliente.'}"
-                    )
-            else:
-                st.caption("Nenhuma solução questionada foi vinculada ainda.")
-        if requirement_risks:
-            st.markdown("**Briefing × solução × feedback**")
-            st.dataframe(
-                pd.DataFrame(requirement_risks).rename(columns={
-                    "requirement": "Demanda do briefing",
-                    "item": "Solução apresentada",
-                    "adherence": "Aderência registrada",
-                }),
-                hide_index=True,
-                width="stretch",
-            )
+    # Cards próprios evitam labels truncados do st.metric em grids estreitos.
+    if metrics.get("stage") in {"proposal", "no_return", "won"}:
+        metric_rows = [
+            ("Situação", metrics.get("stage_label") or "Em proposta"),
+            ("Demandas do briefing", metrics.get("briefing_requirements", 0)),
+            ("Entregas apresentadas", metrics.get("presentation_items", 0)),
+            ("Entregas com custo direto", metrics.get("items_with_cost", 0)),
+            ("Custos sem correspondência", metrics.get("cost_only_items", 0)),
+            ("Demandas sem evidência", metrics.get("briefing_gaps", 0)),
+        ]
+    else:
+        metric_rows = [
+            ("Demandas do briefing", metrics.get("briefing_requirements", 0)),
+            ("Entregas apresentadas", metrics.get("presentation_items", 0)),
+            ("Entregas com custo direto", metrics.get("items_with_cost", 0)),
+            ("Executadas com evidência", metrics.get("executed_with_evidence", 0)),
+            ("Ainda sem evidência de execução", metrics.get("without_execution_evidence", 0)),
+            ("Custos sem correspondência", metrics.get("cost_only_items", 0)),
+        ]
+    cards = "".join(
+        f'<div class="nave-exec-metric"><div class="nave-exec-metric-label">{str(label)}</div><div class="nave-exec-metric-value">{str(value)}</div></div>'
+        for label, value in metric_rows
+    )
+    st.markdown(
+        """
+        <style>
+        .nave-exec-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:.55rem 0 1rem}
+        .nave-exec-metric{background:#F7F9FC;border:1px solid #E1E6EF;border-radius:14px;padding:14px 15px;min-width:0}
+        .nave-exec-metric-label{font-size:.78rem;line-height:1.25;color:#58647B;font-weight:700;white-space:normal;overflow-wrap:anywhere;min-height:2.0em}
+        .nave-exec-metric-value{font-size:1.75rem;line-height:1.1;color:#121B42;font-weight:850;margin-top:.35rem;overflow-wrap:anywhere}
+        @media(max-width:900px){.nave-exec-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        </style>
+        <div class="nave-exec-metrics">""" + cards + "</div>",
+        unsafe_allow_html=True,
+    )
 
     unified = intelligence.get("unified") or {}
     decision = unified.get("decision_intelligence") or {}
-    if any(decision.get(key) for key in ("diagnostic", "recommendations", "connections")):
-        st.markdown("#### Decision Intelligence · o ouro da NAVE")
-        st.caption(
-            "Diagnóstico, recomendações e conexões são a leitura de negócio consolidada do projeto. "
-            "Saúde técnica da leitura fica separada e não contamina a análise executiva."
-        )
-        gold_tabs = st.tabs(["Diagnóstico", "Recomendações", "Conexões descobertas"])
-        for tab, key in zip(gold_tabs, ("diagnostic", "recommendations", "connections")):
-            with tab:
-                rows = decision.get(key) or []
-                if not rows:
-                    st.caption("Nenhuma conclusão consolidada nesta categoria com as fontes atuais.")
-                    continue
-                for row in rows[:16]:
-                    kind = str(row.get("kind") or "inference").upper()
+    diagnostics = [row for row in decision.get("diagnostic") or [] if str(row.get("text") or "").strip()]
+    recommendations = [row for row in decision.get("recommendations") or [] if str(row.get("text") or "").strip()]
+    connections = [row for row in decision.get("connections") or [] if str(row.get("text") or "").strip()]
+
+    if diagnostics or recommendations or connections:
+        st.markdown("#### Inteligência de decisão")
+        tabs = st.tabs(["Diagnóstico", "Recomendações", "Conexões descobertas"])
+        with tabs[0]:
+            if diagnostics:
+                for row in diagnostics[:8]:
                     title = str(row.get("title") or "Leitura NAVE")
                     text = str(row.get("text") or "")
-                    if key == "recommendations":
-                        st.success(f"**{title}**\n\n{text}")
-                    elif str(row.get("kind") or "") in {"contradiction", "risk"}:
+                    if str(row.get("kind") or "") in {"contradiction", "risk"}:
                         st.warning(f"**{title}**\n\n{text}")
                     else:
-                        st.info(f"**{title}** · `{kind}`\n\n{text}")
+                        st.info(f"**{title}**\n\n{text}")
+            else:
+                st.caption("Nenhum diagnóstico adicional consolidado com as fontes atuais.")
+        with tabs[1]:
+            if recommendations:
+                for index, row in enumerate(recommendations[:8], start=1):
+                    title = str(row.get("title") or f"Recomendação {index}")
+                    st.success(f"**{title}**\n\n{str(row.get('text') or '')}")
+            else:
+                for index, value in enumerate((intelligence.get("recommendations") or [])[:8], start=1):
+                    st.markdown(f"**{index}.** {value}")
+        with tabs[2]:
+            if connections:
+                for row in connections[:8]:
+                    st.info(f"**{row.get('title') or 'Conexão'}**\n\n{row.get('text') or ''}")
+            else:
+                st.caption("Nenhuma conexão adicional consolidada com segurança.")
 
-    left, right = st.columns(2, gap="large")
-    with left:
-        st.markdown("#### Diagnóstico detalhado")
-        for finding in intelligence["findings"]:
-            css_class = "nave-diagnostic-alert" if finding.get("level") == "warning" else "nave-diagnostic-callout"
-            st.markdown(
-                f'<div class="{css_class}"><strong>{finding.get("title")}</strong><br>{finding.get("text")}</div>',
-                unsafe_allow_html=True,
+    # Insights financeiros determinísticos continuam úteis, sem duplicar frases
+    # de saúde técnica ou pedir que o usuário faça o trabalho do motor.
+    advanced = intelligence.get("advanced_insights") or {}
+    business_findings = [
+        row for row in (advanced.get("findings") or [])
+        if str(row.get("title") or "") not in {"Custo por participante"}
+    ]
+    if business_findings:
+        st.markdown("#### Leituras objetivas")
+        for row in business_findings[:5]:
+            if row.get("level") == "warning":
+                st.warning(f"**{row.get('title')}**\n\n{row.get('text')}")
+            else:
+                st.info(f"**{row.get('title')}**\n\n{row.get('text')}")
+
+    # Auditoria detalhada existe, mas não compete visualmente com o ouro da NAVE.
+    with st.expander("Detalhes e auditoria do projeto", expanded=False):
+        st.markdown("**Cobertura das fontes**")
+        coverage = intelligence["coverage"]
+        columns = st.columns(5)
+        for column, key in zip(columns, ("briefing", "presentation", "cost", "report", "feedback")):
+            with column:
+                st.markdown(_render_source_card(coverage[key]), unsafe_allow_html=True)
+        if new_cost_links or new_brief_links:
+            st.caption(
+                f"Nesta leitura, a NAVE criou {new_cost_links} nova(s) sugestão(ões) de custo e "
+                f"{new_brief_links} nova(s) sugestão(ões) de aderência."
             )
-    with right:
-        st.markdown("#### Recomendações detalhadas")
-        for index, recommendation in enumerate(intelligence["recommendations"], start=1):
-            st.markdown(f"**{index}.** {recommendation}")
 
-    st.markdown("#### Matriz integrada do projeto")
-    matrix = pd.DataFrame(intelligence["matrix"])
-    if matrix.empty:
-        st.warning("Ainda não há entregas estruturadas suficientes para montar a matriz.")
-    else:
-        display = matrix.drop(columns=["item_id", "section_key"], errors="ignore")
-        display = _dataframe_money(display, ["Custo direto"])
-        st.dataframe(display, hide_index=True, width="stretch", height=min(680, 95 + len(display) * 38))
-
-    discrepancies = intelligence["discrepancies"]
-    proposal_view = metrics.get("stage") in {"proposal", "no_return", "won"}
-    tabs = st.tabs([
-        "Proposta × custos" if proposal_view else "Proposta × execução",
-        "Custos sem proposta",
-        "Entregas fora da apresentação",
-        "Briefing sem evidência",
-    ])
-
-    with tabs[0]:
+        matrix = pd.DataFrame(intelligence["matrix"])
+        st.markdown("**Matriz integrada do projeto**")
         if matrix.empty:
-            st.caption("Nenhuma entrega estruturada.")
-        elif proposal_view:
-            proposal_df = matrix[[
-                "Item apresentado", "Área", "Situação na apresentação", "Briefing", "Custo direto", "Correlação do custo"
-            ]]
-            proposal_df = _dataframe_money(proposal_df, ["Custo direto"])
-            st.dataframe(proposal_df, hide_index=True, width="stretch")
+            st.caption("Ainda não há entregas estruturadas suficientes para montar a matriz.")
         else:
-            execution_view = matrix[[
-                "Item apresentado", "Área", "Execução", "Evidência / resultado"
-            ]]
-            st.dataframe(execution_view, hide_index=True, width="stretch")
+            display = matrix.drop(columns=["item_id", "section_key"], errors="ignore")
+            display = _dataframe_money(display, ["Custo direto"])
+            st.dataframe(display, hide_index=True, width="stretch", height=min(680, 95 + len(display) * 38))
 
-    with tabs[1]:
-        rows = discrepancies["cost_only"]
-        if rows:
-            df = _dataframe_money(pd.DataFrame(rows), ["Valor"])
-            st.dataframe(df, hide_index=True, width="stretch")
-        else:
-            st.success("Todas as linhas da planilha possuem alguma correspondência sugerida ou confirmada.")
-
-    with tabs[2]:
-        rows = discrepancies["report_only"]
-        if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-        else:
-            st.caption("Nenhuma entrega adicional foi identificada no relatório atual.")
-
-    with tabs[3]:
-        evidence_rows = discrepancies.get("briefing_evidence_unconsolidated") or []
-        gap_rows = discrepancies["briefing_gaps"]
-        if evidence_rows:
-            st.info("Há demandas com evidência encontrada na proposta que ainda não viraram vínculos estruturados. Elas não são tratadas como ausência de resposta.")
-            st.dataframe(pd.DataFrame(evidence_rows), hide_index=True, width="stretch")
-        if gap_rows:
-            st.markdown("**Demandas ainda sem evidência identificada**")
-            st.dataframe(pd.DataFrame(gap_rows), hide_index=True, width="stretch")
-        if not evidence_rows and not gap_rows:
-            st.success("Não foram identificadas demandas sem evidência consolidada.")
-
+        discrepancies = intelligence["discrepancies"]
+        proposal_view = metrics.get("stage") in {"proposal", "no_return", "won"}
+        tabs = st.tabs([
+            "Proposta × custos" if proposal_view else "Proposta × execução",
+            "Custos sem correspondência",
+            "Entregas adicionais",
+            "Briefing ainda sem evidência",
+        ])
+        with tabs[0]:
+            if matrix.empty:
+                st.caption("Nenhuma entrega estruturada.")
+            elif proposal_view:
+                proposal_df = matrix[["Item apresentado", "Área", "Situação na apresentação", "Briefing", "Custo direto", "Correlação do custo"]]
+                proposal_df = _dataframe_money(proposal_df, ["Custo direto"])
+                st.dataframe(proposal_df, hide_index=True, width="stretch")
+            else:
+                execution_view = matrix[["Item apresentado", "Área", "Execução", "Evidência / resultado"]]
+                st.dataframe(execution_view, hide_index=True, width="stretch")
+        with tabs[1]:
+            rows = discrepancies["cost_only"]
+            if rows:
+                st.dataframe(_dataframe_money(pd.DataFrame(rows), ["Valor"]), hide_index=True, width="stretch")
+            else:
+                st.caption("Todas as linhas possuem alguma correspondência sugerida ou confirmada.")
+        with tabs[2]:
+            rows = discrepancies["report_only"]
+            if rows:
+                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+            else:
+                st.caption("Nenhuma entrega adicional foi identificada no relatório atual.")
+        with tabs[3]:
+            evidence_rows = discrepancies.get("briefing_evidence_unconsolidated") or []
+            gap_rows = discrepancies["briefing_gaps"]
+            if evidence_rows:
+                st.markdown("**Demandas com resposta identificada, ainda aguardando confirmação de vínculo**")
+                st.dataframe(pd.DataFrame(evidence_rows), hide_index=True, width="stretch")
+            if gap_rows:
+                st.markdown("**Demandas ainda sem evidência identificada**")
+                st.dataframe(pd.DataFrame(gap_rows), hide_index=True, width="stretch")
+            if not evidence_rows and not gap_rows:
+                st.caption("Não foram identificadas demandas sem evidência.")
 
     technical_health = intelligence.get("technical_health") or []
     if technical_health:
-        with st.expander("Saúde da leitura NAVE · diagnóstico técnico", expanded=False):
-            st.caption(
-                "Esta área descreve a qualidade do processamento e não faz parte do diagnóstico de negócio do projeto."
-            )
+        with st.expander("Saúde da leitura NAVE", expanded=False):
+            st.caption("Diagnóstico técnico do processamento; não faz parte da análise de negócio.")
             for row in technical_health[:20]:
                 severity = str(row.get("severity") or row.get("level") or "warning")
                 message = f"**{row.get('title') or 'Aviso técnico'}** — {row.get('text') or ''}"
@@ -1656,18 +1620,14 @@ def render_project_intelligence(
 
     history = snapshot.get("recommendation_queries", [])
     if history:
-        st.markdown("#### Histórico de análises anteriores")
-        for index, row in enumerate(history, start=1):
-            title = row.get("query_label") or row.get("project_name") or f"Análise {index}"
-            with st.expander(str(title), expanded=False):
+        with st.expander("Histórico de análises anteriores", expanded=False):
+            for index, row in enumerate(history, start=1):
+                title = row.get("query_label") or row.get("project_name") or f"Análise {index}"
+                st.markdown(f"**{title}**")
                 if row.get("objective"):
-                    st.markdown(f"**Objetivo:** {row.get('objective')}")
-                if row.get("briefing_text"):
-                    st.write(row.get("briefing_text"))
-                if isinstance(row.get("parsed_brief"), dict):
-                    st.json(row.get("parsed_brief"))
+                    st.caption(str(row.get("objective")))
 
     st.caption(
-        "Snapshot atualizado a partir da combinação atual de fontes. "
-        "Novos arquivos e feedbacks geram uma nova consolidação sem apagar o histórico anterior."
+        "A análise é atualizada quando novas fontes entram no projeto. "
+        "Ausência de evidência não é tratada como prova de ausência."
     )

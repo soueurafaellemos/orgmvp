@@ -130,6 +130,10 @@ expected:
     - usar apenas o token/ano 2026 como evidência de correspondência entre uma solução apresentada e execução
     - calcular custo por participante usando a faixa etária 30–45 anos ou usando os 8 mil visitantes do festival como visitantes comprovados da ativação
     - inferir que a proposta foi integralmente aprovada ou que o projeto foi comercialmente ganho apenas porque existe relatório pós-execução
+    - classificar a ativação como realizada com sucesso apenas porque há evidência de execução
+    - afirmar alto engajamento alto índice de participação excelente aceitação valor percebido superior ou principal driver sem KPI ou feedback específico que sustente a afirmação
+    - transformar a inconsistência 3000 produzidas 225 distribuídas e 0 sobras de tatuagens em percentual calculado de sobra ou desperdício
+    - expor Intelligence Graph links legados backend pipeline ou instruções do Project Analyst como parte da leitura executiva do projeto
 metrics:
   - exact_numeric_accuracy
   - claim_precision

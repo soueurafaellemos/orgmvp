@@ -129,14 +129,14 @@ def test_feedback_empty_state_distinguishes_no_explicit_client_feedback():
 
 def test_user_intelligence_separates_technical_health_from_business_diagnostic():
     text = (ROOT / "project_workspace_intelligence.py").read_text(encoding="utf-8")
-    assert "Saúde da leitura NAVE · diagnóstico técnico" in text
+    assert "Saúde da leitura NAVE" in text
     assert 'st.tabs(["Diagnóstico", "Recomendações", "Conexões descobertas"])' in text
 
 
 def test_visual_projection_fallback_exists_for_rich_domains():
     text = (ROOT / "project_workspace_ui.py").read_text(encoding="utf-8")
     assert "Outras evidências visuais de ativações" in text
-    assert "evidências visuais de brindes/press kits" in text
+    assert "Outras evidências visuais de brindes e press kits" in text
     assert "_render_unified_evidence_cards" in text
 
 

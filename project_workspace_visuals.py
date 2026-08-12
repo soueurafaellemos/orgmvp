@@ -177,21 +177,68 @@ def _inventory_rows(document: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in raw.get("page_inventory") or [] if isinstance(row, dict)]
 
 
+def _visual_inventory_section_hints(rows: list[dict[str, Any]]) -> dict[int, str]:
+    """Reclassifica sequências visuais silenciosas sem hardcode de projeto.
+
+    Apresentações de live marketing frequentemente introduzem o conceito espacial
+    em texto ("casa", "espaço", "ambiente") e depois mostram uma sequência de
+    renders quase sem texto. O parser textual tende a deixar esses slides em
+    Estratégia. Esta heurística mantém o contexto espacial até surgir uma nova
+    seção semanticamente forte (ativações, brindes, comunicação etc.).
+    """
+    hints: dict[int, str] = {}
+    spatial_context = False
+    spatial_terms = (
+        "casa", "espaco", "ambiente", "cenografia", "cenograf", "estande",
+        "stand", "fachada", "arquitetura", "implantacao", "estrutura",
+    )
+    hard_exit = {"activations", "gifts", "communication", "journey_operation", "content_agenda"}
+    for row in sorted(rows, key=lambda value: int(value.get("page_number") or 0)):
+        page_number = int(row.get("page_number") or 0)
+        raw_text = " ".join(str(row.get(key) or "") for key in ("text", "normalized_text", "summary", "suggested_title"))
+        norm = normalise_text(raw_text)
+        explicit = str(row.get("suggested_section") or "").strip()
+        image_count = int(row.get("image_count") or 0)
+        text_length = int(row.get("text_length") or len(norm))
+
+        if explicit in hard_exit or infer_section_from_record(
+            {"title": row.get("suggested_title"), "summary": row.get("summary"), "raw_data": row},
+            explicit_section=explicit,
+        ) in hard_exit:
+            spatial_context = False
+
+        if explicit == "scenography" or any(term in norm for term in spatial_terms):
+            # Só abre contexto espacial quando a linguagem sugere espaço físico;
+            # uma menção solta a "casa" em conteúdo muito longo não basta.
+            if explicit == "scenography" or any(term in norm for term in ("espaco", "ambiente", "cenografia", "estande", "stand", "fachada", "arquitetura", "implantacao")) or "casa" in norm:
+                spatial_context = True
+
+        # Slides de render são tipicamente image-heavy e têm pouquíssimo texto.
+        if spatial_context and image_count >= 1 and text_length <= 70 and explicit not in hard_exit:
+            hints[page_number] = "scenography"
+        elif explicit:
+            hints[page_number] = explicit
+    return hints
+
+
 def _candidate_visual_pages(snapshot: dict[str, Any], accepted: set[str]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for document in snapshot.get("memory_documents", []):
-        for row in _inventory_rows(document):
+        inventory = _inventory_rows(document)
+        section_hints = _visual_inventory_section_hints(inventory)
+        for row in inventory:
+            page_number = int(row.get("page_number") or 0)
+            hinted_section = section_hints.get(page_number) or row.get("suggested_section")
             combined = {
                 "title": row.get("suggested_title"),
-                "summary": row.get("slide_summary"),
-                "primary_section": row.get("suggested_section"),
+                "summary": row.get("summary") or row.get("slide_summary"),
+                "primary_section": hinted_section,
                 "raw_data": row,
             }
             section = infer_section_from_record(
                 combined,
-                explicit_section=row.get("suggested_section"),
+                explicit_section=hinted_section,
             )
-            page_number = int(row.get("page_number") or 0)
             if (
                 section in accepted
                 and page_number > 0
@@ -282,7 +329,7 @@ def recover_missing_visual_pages(
                     "document_id": document_id,
                     "page_number": page_number,
                     "slide_title": str(row.get("suggested_title") or "Material visual").strip(),
-                    "slide_summary": row.get("slide_summary"),
+                    "slide_summary": row.get("summary") or row.get("slide_summary"),
                     "primary_section": row.get("inferred_section"),
                     "storage_bucket": str(uploaded.get("storage_bucket") or r2_bucket_marker()),
                     "storage_path": storage_path,
@@ -508,6 +555,13 @@ def _dedupe_visual_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
 def _visual_records(snapshot: dict[str, Any], section_keys: Iterable[str]) -> list[dict[str, Any]]:
     accepted = set(section_keys)
     maps = _maps(snapshot)
+    inventory_section_hints: dict[tuple[str, int], str] = {}
+    for document in snapshot.get("memory_documents", []):
+        document_id = str(document.get("id") or "")
+        if not document_id:
+            continue
+        for page_number, section in _visual_inventory_section_hints(_inventory_rows(document)).items():
+            inventory_section_hints[(document_id, int(page_number))] = section
     costs_by_item, briefings_by_item = _linked_maps(snapshot, maps)
     relevant_items: list[tuple[dict[str, Any], str, dict[str, Any] | None]] = []
     page_item_counts: dict[tuple[str, int], int] = {}
@@ -570,7 +624,11 @@ def _visual_records(snapshot: dict[str, Any], section_keys: Iterable[str]) -> li
             continue
         page_key = (str(page.get("document_id") or ""), int(page.get("page_number") or 0))
         plan_page = _is_plan_page(page)
-        page_section = infer_section_from_record(page, explicit_section=page.get("primary_section"))
+        hinted_page_section = inventory_section_hints.get(page_key)
+        page_section = infer_section_from_record(
+            page,
+            explicit_section=hinted_page_section or page.get("primary_section"),
+        )
         shared_page = page_item_counts.get(page_key, 0) > 1
         if plan_page:
             page_section = "scenography"
@@ -614,24 +672,27 @@ def _visual_records(snapshot: dict[str, Any], section_keys: Iterable[str]) -> li
     return sorted(records, key=lambda row: (row.get("sort_order", 0), str(row.get("title") or "").casefold()))
 
 def _cost_badges(record: dict[str, Any], section_context: dict[str, Any]) -> None:
+    """Mostra somente custo realmente ligado à ficha.
+
+    Valores não rateados pertencem ao contexto da SEÇÃO e são exibidos uma única
+    vez no topo, nunca repetidos em todos os cards. Correlação com linha de valor
+    zero também não vira um falso badge de R$ 0,00.
+    """
+    del section_context
     costs = record.get("costs") or []
     confirmed = [row for row in costs if row["link"].get("link_status") == "confirmed"]
     active = confirmed or costs
-    if active:
-        total = sum(_safe_float(row["cost"].get("client_total")) for row in active)
-        best_score = max(_safe_float(row["link"].get("match_score")) for row in active)
-        label = "Custo confirmado" if confirmed else f"Custo sugerido · {best_score:.0%}"
-        st.markdown(
-            f'<span class="nave-cost-badge">{escape(label)}: {escape(_money(total))}</span>',
-            unsafe_allow_html=True,
-        )
-    elif section_context.get("unallocated_total", 0) > 0:
-        st.markdown(
-            f'<span class="nave-cost-context">Sem linha direta · {escape(_money(section_context["unallocated_total"]))} em custos da seção ainda não rateados</span>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.caption("Nenhum custo relacionado foi identificado na planilha.")
+    if not active:
+        return
+    total = sum(_safe_float(row["cost"].get("client_total")) for row in active)
+    if total <= 0:
+        return
+    best_score = max(_safe_float(row["link"].get("match_score")) for row in active)
+    label = "Custo confirmado" if confirmed else f"Custo sugerido · {best_score:.0%}"
+    st.markdown(
+        f'<span class="nave-cost-badge">{escape(label)}: {escape(_money(total))}</span>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_item_details(record: dict[str, Any]) -> None:
@@ -702,7 +763,7 @@ def render_visual_section(
     section_keys: Iterable[str],
     empty_message: str,
     columns_count: int | None = None,
-) -> None:
+) -> int:
     del columns_count  # compatibilidade com chamadas antigas
     st.markdown(VISUAL_CSS, unsafe_allow_html=True)
     keys = list(section_keys)
@@ -731,7 +792,7 @@ def render_visual_section(
     records = _visual_records(snapshot, keys)
     if not records:
         st.markdown(f'<div class="nave-workspace-empty">{escape(empty_message)}</div>', unsafe_allow_html=True)
-        return
+        return 0
 
     section = next(iter(accepted)) if len(accepted) == 1 else None
     context = section_cost_context(snapshot, section) if section else {"section_total": 0, "unallocated_total": 0}
@@ -781,3 +842,5 @@ def render_visual_section(
                         st.caption(f"{int(record['related_evidence_count'])} evidências da apresentação foram consolidadas nesta ficha.")
                     _cost_badges(record, context)
                     _render_item_details(record)
+
+    return len(records)

@@ -351,7 +351,14 @@ REGRAS OBRIGATÓRIAS
 7. Identifique aprendizados e recomendações reutilizáveis.
 8. item_results deve usar nomes próximos aos itens apresentados no projeto para permitir correlação com as fichas da Memória.
 9. Não use o número do slide como informação de negócio.
-10. Retorne somente JSON válido, sem markdown.
+10. EXECUÇÃO NÃO É PERFORMANCE: não escreva “realizado com sucesso”, “alto engajamento”, “excelente aceitação”, “principal driver” ou equivalentes sem KPI, feedback ou métrica explícita.
+11. Se o número de pessoas se refere ao evento/festival hospedeiro, participants_count pode registrar esse número, mas executive_summary/objectives_result devem dizer “público do evento”, nunca “participantes da ativação”.
+12. Não conclua que uma meta da ativação foi atingida apenas porque o público total do evento ficou dentro da expectativa do briefing.
+13. learnings e recommendations devem conter apenas aprendizados/recomendações EXPLICITAMENTE registrados no relatório. Inferências cross-source serão produzidas depois pelo Project Analyst.
+14. client_feedback só pode conter fala, avaliação, aprovação, crítica ou comentário explicitamente atribuível ao cliente; não transforme descrição pós-evento em feedback.
+15. Quando produzido, distribuído e sobra/saldo não reconciliam, registre a inconsistência em issues. Não calcule desperdício, sobra implícita ou eficiência.
+16. activation_results pode marcar execução comprovada, mas não performance positiva sem métrica específica da ativação.
+17. Retorne somente JSON válido, sem markdown.
 
 FORMATO EXATO
 {json.dumps(REPORT_SCHEMA_EXAMPLE, ensure_ascii=False, indent=2)}

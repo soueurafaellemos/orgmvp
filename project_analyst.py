@@ -125,6 +125,18 @@ PRINCÍPIOS ABSOLUTOS
   decisões que deveriam ter sido antecipadas.
 - Não transforme um feedback isolado em regra universal. Escreva aprendizados como
   evidência histórica contextualizada.
+- EXECUÇÃO NÃO É PERFORMANCE: não use “sucesso”, “eficaz”, “alto engajamento”,
+  “excelente aceitação”, “principal driver”, “alto índice de participação” ou linguagem
+  equivalente sem KPI, feedback ou métrica específica que sustente a afirmação.
+- Público do evento/festival NÃO é automaticamente visitante/participante da ativação.
+  Nunca calcule custo por participante usando público do evento hospedeiro.
+- Quando produzido, distribuído e saldo/sobra não reconciliam, preserve o conflito.
+  Não calcule desperdício, sobra implícita ou eficiência a partir de números conflitantes.
+- Não escreva linguagem de backend na saída de negócio: evite “Intelligence Graph”,
+  “legado”, “links legados”, “pipeline”, “backend”, “fichas canônicas”, “materialização
+  pendente” ou frases como “o Project Analyst deve avaliar”. Analise e entregue a conclusão.
+- Se não houver evidência suficiente para uma conclusão de performance, diga de forma
+  objetiva o que está comprovado e o que não foi mensurado.
 
 CONNECTION TYPES preferidos
 brief_to_solution, solution_to_cost, solution_to_feedback, brief_to_feedback,
@@ -746,6 +758,147 @@ def project_evidence_signature(snapshot: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+
+_BACKEND_LANGUAGE = (
+    "intelligence graph", "links legados", "link legado", "estrutura legada",
+    "pipeline", "backend", "fichas canonicas", "fichas canônicas",
+    "materializacao pendente", "materialização pendente", "project analyst deve",
+    "nao esta estruturado no legado", "não está estruturado no legado",
+)
+_UNSUPPORTED_PERFORMANCE_LANGUAGE = (
+    "realizado com sucesso", "realizada com sucesso", "executado com sucesso",
+    "executada com sucesso", "altamente eficaz", "alto engajamento",
+    "excelente aceitacao", "excelente aceitação", "alto indice de participacao",
+    "alto índice de participação", "principal driver de interacao",
+    "principal driver de interação", "principal driver de engajamento",
+    "valor percebido superior", "92% de sobra", "92% sobra",
+    "sucesso do engajamento", "alto nivel de engajamento", "alto nível de engajamento",
+    "alta participacao", "alta participação", "excelente performance", "principal fator de engajamento",
+)
+_UNSUPPORTED_BLAME_LANGUAGE = (
+    "a agencia ignorou", "a agência ignorou", "voe ignorou", "desconsiderou a restricao",
+    "desconsiderou a restrição", "sobra massiva", "descompasso severo",
+)
+
+
+def _semantic_support_flags(snapshot: Mapping[str, Any]) -> dict[str, bool]:
+    feedback = bool(snapshot.get("feedback_entries"))
+    reports = snapshot.get("report_analyses") or []
+    performance_kpi = False
+    activation_participation = False
+    data_conflict = False
+    for report in reports:
+        for kpi in report.get("kpis") or []:
+            name_blob = normalize_text(kpi.get("name"))
+            blob = normalize_text(" ".join(str(kpi.get(k) or "") for k in ("name", "unit", "evidence")))
+            specific_activation_metric = any(token in blob for token in (
+                "participacao por ativacao", "visitantes da ativacao", "visitantes casa",
+                "interacoes", "conversao", "satisfacao", "nps", "tempo medio",
+                "engajamento da ativacao", "conteudo gerado",
+            ))
+            generic_attendance = any(token in name_blob for token in ("publico", "público", "presentes", "participantes do evento", "attendance"))
+            if specific_activation_metric:
+                performance_kpi = True
+                activation_participation = True
+            elif blob and not generic_attendance and any(token in blob for token in ("meta", "target", "atingido", "resultado", "conversao", "satisfacao", "engajamento")):
+                performance_kpi = True
+        if report.get("client_feedback"):
+            feedback = True
+        if report.get("issues"):
+            for issue in report.get("issues") or []:
+                blob = normalize_text(issue)
+                if "nao reconc" in blob or "não reconc" in str(issue).casefold():
+                    data_conflict = True
+    unified = snapshot.get("unified_intelligence") if isinstance(snapshot.get("unified_intelligence"), Mapping) else {}
+    for issue in (unified.get("results") or {}).get("data_quality") or []:
+        if "reconc" in normalize_text(issue):
+            data_conflict = True
+    return {
+        "feedback": feedback,
+        "performance_kpi": performance_kpi,
+        "activation_participation": activation_participation,
+        "data_conflict": data_conflict,
+    }
+
+
+def _semantic_sentence_supported(text: str, flags: Mapping[str, bool]) -> bool:
+    norm = normalize_text(text)
+    if any(normalize_text(term) in norm for term in _BACKEND_LANGUAGE):
+        return False
+    if any(normalize_text(term) in norm for term in _UNSUPPORTED_BLAME_LANGUAGE):
+        return False
+    strong = any(normalize_text(term) in norm for term in _UNSUPPORTED_PERFORMANCE_LANGUAGE)
+    if strong and not (flags.get("feedback") or flags.get("performance_kpi") or flags.get("activation_participation")):
+        return False
+    if flags.get("data_conflict") and ("sobra" in norm or "desperdicio" in norm or "desperdício" in text.casefold()) and "%" in text:
+        return False
+    # Público do evento não pode virar participação/impacto da ativação sem métrica própria.
+    if ("8 mil" in norm or "8000" in norm or "8.000" in text) and any(token in norm for token in ("participacao", "engajamento", "visitantes da ativacao", "impacto da ativacao")) and not flags.get("activation_participation"):
+        return False
+    return True
+
+
+def _sanitize_semantic_text(text: Any, flags: Mapping[str, bool]) -> str:
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not raw:
+        return ""
+    # Mantém somente sentenças sustentáveis; evita descartar um parágrafo inteiro
+    # quando apenas uma frase ultrapassa a evidência disponível.
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", raw) if part.strip()]
+    kept = [part for part in sentences if _semantic_sentence_supported(part, flags)]
+    return " ".join(kept).strip()
+
+
+def sanitize_semantic_payload(payload: Mapping[str, Any] | None, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Projection guard: evita que linguagem convincente ultrapasse a evidência.
+
+    Não altera a fonte nem inventa correções. Apenas retira da projeção executiva
+    afirmações de performance/aceitação sem sustentação e vazamentos de backend.
+    """
+    if not isinstance(payload, Mapping):
+        return {}
+    data = json.loads(json.dumps(dict(payload), ensure_ascii=False, default=str))
+    flags = _semantic_support_flags(snapshot)
+    for key in ("executive_summary", "strategic_reading"):
+        if key in data:
+            data[key] = _sanitize_semantic_text(data.get(key), flags)
+    framework = data.get("strategy_framework") if isinstance(data.get("strategy_framework"), dict) else {}
+    for key, value in list(framework.items()):
+        if isinstance(value, str):
+            framework[key] = _sanitize_semantic_text(value, flags)
+    data["strategy_framework"] = framework
+    for group in ("diagnostic", "results", "strongest_connections", "discovered_connections", "contradictions_or_gaps"):
+        clean_rows = []
+        for row in data.get(group) or []:
+            if not isinstance(row, dict):
+                continue
+            title_norm = normalize_text(row.get("title"))
+            if group == "diagnostic" and title_norm in {
+                "projeto com evidencia de execucao",
+                "projeto executado",
+                "status de execucao",
+            }:
+                continue
+            if any(normalize_text(term) in title_norm for term in _BACKEND_LANGUAGE):
+                continue
+            text = _sanitize_semantic_text(row.get("analysis"), flags)
+            action = _sanitize_semantic_text(row.get("recommended_action"), flags) if row.get("recommended_action") else None
+            if not text:
+                continue
+            row["analysis"] = text
+            row["recommended_action"] = action or None
+            clean_rows.append(row)
+        data[group] = clean_rows
+    for group in ("validated_learnings", "challenged_learnings", "decision_recommendations", "unknowns"):
+        clean = []
+        for value in data.get(group) or []:
+            text = _sanitize_semantic_text(value, flags)
+            if text:
+                clean.append(text)
+        data[group] = clean
+    return data
+
+
 def analyze_project_snapshot(
     *,
     snapshot: Mapping[str, Any],
@@ -786,9 +939,11 @@ def analyze_project_snapshot(
     if not raw_text:
         raise RuntimeError("O Gemini não devolveu a síntese semântica do projeto.")
     try:
-        return ProjectSemanticSynthesis.model_validate_json(raw_text)
+        parsed = ProjectSemanticSynthesis.model_validate_json(raw_text)
     except Exception:
-        return ProjectSemanticSynthesis.model_validate(_json_object(raw_text))
+        parsed = ProjectSemanticSynthesis.model_validate(_json_object(raw_text))
+    safe_payload = sanitize_semantic_payload(parsed.model_dump(), snapshot)
+    return ProjectSemanticSynthesis.model_validate(safe_payload)
 
 
 def semantic_synthesis_findings(synthesis: ProjectSemanticSynthesis) -> list[dict[str, Any]]:
@@ -860,10 +1015,29 @@ def derive_advanced_project_insights(
         if proposal_total and top_categories else None
     )
     audience, audience_scope, audience_source = _briefing_audience_reference(snapshot)
+    # Uma claim antiga pode ter marcado o número como participants mesmo quando o
+    # pós-evento comprova que ele é público do evento hospedeiro. A verdade
+    # consolidada mais específica prevalece sobre o rótulo genérico da claim.
+    unified = snapshot.get("unified_intelligence") if isinstance(snapshot.get("unified_intelligence"), Mapping) else {}
+    unified_results = unified.get("results") if isinstance(unified.get("results"), Mapping) else {}
+    report_audience = _safe_float(unified_results.get("participants_count"))
+    report_scope = str(unified_results.get("participants_scope") or "")
+    if (
+        audience is not None
+        and report_audience is not None
+        and abs(float(audience) - float(report_audience)) < 0.01
+        and report_scope in {"festival_event", "event_or_report_scope"}
+    ):
+        audience_scope = "festival_event"
+        audience_source = "unified_post_event_scope"
+
     # Público de festival/evento hospedeiro não é automaticamente público da ativação.
+    # Só calculamos custo por participante quando a fonte prova uma contagem
+    # específica de participantes/convidados da própria ativação/projeto. Público
+    # genérico ou audiência do evento hospedeiro não é denominador válido.
     cost_per_attendee = (
         proposal_total / audience
-        if proposal_total and audience and audience_scope != "festival_event"
+        if proposal_total and audience and audience_scope == "project_attendees"
         else None
     )
 
@@ -924,11 +1098,23 @@ def derive_advanced_project_insights(
     if budget_amount is not None and proposal_total is not None and budget_amount > 0:
         delta = proposal_total - budget_amount
         if delta > 0:
-            findings.append({
-                "level": "warning", "title": "Aderência financeira",
-                "text": f"A proposta excede o budget comprovado em R$ {delta:,.2f} ({delta / budget_amount:.1%}).",
-            })
-            recommendations.append("Atacar primeiro os maiores drivers de custo e preservar as soluções que receberam validação qualitativa do cliente.")
+            unified_financial = unified.get("financial_context") if isinstance(unified.get("financial_context"), Mapping) else {}
+            direct_payment_signal = bool(unified_financial.get("direct_payment_signal"))
+            if direct_payment_signal:
+                findings.append({
+                    "level": "warning", "title": "Diferença bruta a reconciliar",
+                    "text": (
+                        f"A proposta bruta supera o budget nominal em R$ {delta:,.2f} ({delta / budget_amount:.1%}), "
+                        "mas há indicação de pagamento direto pelo cliente. A aderência financeira só pode ser "
+                        "classificada após separar responsabilidades de pagamento."
+                    ),
+                })
+            else:
+                findings.append({
+                    "level": "warning", "title": "Aderência financeira",
+                    "text": f"A proposta excede o budget comprovado em R$ {delta:,.2f} ({delta / budget_amount:.1%}).",
+                })
+            recommendations.append("Atacar primeiro os maiores drivers de custo depois de reconciliar quais parcelas pertencem ao envelope efetivamente administrado pela agência.")
     if top_categories:
         lead = top_categories[0]
         share = lead.get("share")

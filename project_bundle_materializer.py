@@ -31,7 +31,7 @@ from project_analyst import (
 )
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.4.0"
+WORKFLOW_VERSION = "28.5.0"
 LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0", "28.2.1", "28.2.2", "28.2.2.1", "28.2.2.2"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250

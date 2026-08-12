@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Unified Project Intelligence Snapshot — NAVE V28.4.
+"""Unified Project Intelligence Snapshot — NAVE V28.5.
 
 Esta camada não substitui as fontes nem o Intelligence Graph. Ela reconcilia o que
 já existe em ambos para produzir UMA verdade operacional consumida por workspace,
@@ -43,7 +43,11 @@ _ACTIVATION_TERMS = {
 }
 _GIFT_TERMS = {"brinde", "press kit", "presskit", "gift", "chaveiro", "pelucia", "meia", "kit", "seeding"}
 _JOURNEY_TERMS = {"jornada", "journey", "cronograma", "timeline", "operacao", "fluxo", "agenda", "recreadores", "uniformes"}
-_COMMUNICATION_TERMS = {"comunicacao", "communication", "convite", "save the date", "social", "conteudo", "foto", "video"}
+_COMMUNICATION_TERMS = {
+    "comunicacao", "communication", "convite", "save the date", "social media",
+    "conteudo digital", "peca digital", "email marketing", "e-mail marketing",
+    "sinalizacao", "identidade visual", "key visual",
+}
 _EXECUTION_MARKERS = {
     "presentes no evento", "produzidas", "distribuidas", "sobras", "fotos",
     "after movie", "realizado", "executado", "visao geral", "recap",
@@ -511,12 +515,6 @@ def build_unified_project_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any
     recommendations: list[dict[str, Any]] = []
     connections: list[dict[str, Any]] = []
 
-    if stage == "executed":
-        diagnostics.append({
-            "kind": "fact", "importance": "high", "title": "Projeto com evidência de execução",
-            "text": "Há fonte pós-evento e evidências posteriores suficientes para analisar o projeto como executado, não apenas como proposta.",
-            "evidence": (domains.get("execution") or [])[:4],
-        })
     if execution_matches:
         results_findings.append({
             "kind": "fact", "importance": "high", "title": "Proposta materializada em execução",
@@ -529,17 +527,21 @@ def build_unified_project_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any
             "evidence": [row["evidence"] for row in execution_matches[:8]],
         })
     if briefing_matches:
+        matched_titles = [str(row.get("requirement_title") or "Demanda").strip() for row in briefing_matches if str(row.get("requirement_title") or "").strip()]
+        preview = "; ".join(matched_titles[:6])
         diagnostics.append({
-            "kind": "inference", "importance": "high", "title": "Briefing possui respostas identificáveis na proposta",
-            "text": f"A NAVE encontrou evidência de resposta para {len(briefing_matches)} demanda(s) do briefing na apresentação, embora os links legados ainda possam estar incompletos.",
+            "kind": "inference", "importance": "high", "title": "Respostas do briefing identificadas na proposta",
+            "text": f"{len(briefing_matches)} demanda(s) possuem evidência de resposta na apresentação" + (f": {preview}." if preview else "."),
             "evidence": [row["evidence"] for row in briefing_matches[:8]],
         })
 
     # Strategy → execution connection.
     if domains.get("strategy") and execution_matches:
+        executed_names = [str(row.get("item_title") or "").strip() for row in execution_matches if str(row.get("item_title") or "").strip()]
+        names_text = ", ".join(executed_names[:5])
         connections.append({
             "kind": "inference", "importance": "high", "title": "Estratégia ↔ materialização",
-            "text": "O projeto contém uma camada estratégica explícita e soluções posteriormente registradas no pós-evento. O Project Analyst deve avaliar se a execução preservou os princípios estratégicos, e não apenas se itens físicos apareceram.",
+            "text": "A proposta possui uma camada estratégica explícita e há evidência posterior de execução de soluções apresentadas" + (f", como {names_text}." if names_text else ".") + " Isso comprova continuidade entre intenção e materialização; as fontes atuais não permitem inferir performance sem métricas específicas.",
             "evidence": [*(domains.get("strategy") or [])[:4], *[row["evidence"] for row in execution_matches[:4]]],
         })
 
@@ -568,7 +570,7 @@ def build_unified_project_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any
         top_share = top_value / proposal_total if proposal_total else 0.0
         diagnostics.append({
             "kind": "fact", "importance": "medium", "title": "Principal driver de custo",
-            "text": f"{top_category.get('category') or 'Categoria principal'} concentra {top_share:.1%} do valor proposto ({top_value:.2f}).",
+            "text": f"{top_category.get('category') or 'Categoria principal'} concentra {top_share:.1%} do valor proposto (R$ {top_value:,.2f}).".replace(",", "X").replace(".", ",").replace("X", "."),
             "evidence": [],
         })
         brief_text = " ".join(str(row.get("content_text") or "") for row in graph.get("evidence_units") or [] if "briefing_original" in roles.get(str(row.get("source_asset_id") or ""), set()))

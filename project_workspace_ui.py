@@ -40,6 +40,7 @@ from project_workspace_intelligence import (
 )
 from project_intelligence_unified import build_unified_project_snapshot
 from project_intelligence_report import build_project_intelligence_pdf
+from project_analyst import sanitize_semantic_payload
 
 
 
@@ -1120,6 +1121,13 @@ def _render_briefing(
 
     structured = snapshot.get("briefing_documents", [])
     generic = _role_rows(snapshot, "briefing_original")
+    unified = snapshot.get("unified_intelligence") or build_unified_project_snapshot(snapshot)
+    unified_budget = ((unified.get("project_truth") or {}).get("budget_amount"))
+    matched_requirement_ids = {
+        str(row.get("requirement_id") or "")
+        for row in (unified.get("briefing_matches") or [])
+        if row.get("requirement_id")
+    }
 
     st.markdown("#### Arquivo original")
     if generic:
@@ -1151,23 +1159,32 @@ def _render_briefing(
     st.markdown("#### Briefings já estruturados pela NAVE")
 
     if structured:
-        structured_df = pd.DataFrame(structured)
-        view = pd.DataFrame()
-        if "title" in structured_df.columns:
-            view["Briefing"] = structured_df["title"].fillna(structured_df.get("file_name"))
-        elif "file_name" in structured_df.columns:
-            view["Briefing"] = structured_df["file_name"]
-        if "requirements_count" in structured_df.columns:
-            view["Demandas"] = structured_df["requirements_count"]
-        if "budget_amount" in structured_df.columns:
-            view["Budget"] = pd.to_numeric(structured_df["budget_amount"], errors="coerce")
-        st.dataframe(
-            view,
-            hide_index=True,
-            width="stretch",
-            column_config={
-                "Budget": st.column_config.NumberColumn("Budget", format="R$ %.2f"),
-            },
+        cards = []
+        for row in structured:
+            title = str(row.get("title") or row.get("file_name") or "Briefing").strip()
+            count = row.get("requirements_count")
+            budget_value = row.get("budget_amount")
+            if budget_value in (None, ""):
+                budget_value = unified_budget
+            count_text = f"{int(count)} demandas" if count not in (None, "") else "Demandas ainda não contabilizadas"
+            budget_text = _format_money(budget_value) if budget_value not in (None, "") else "Budget não informado"
+            cards.append(
+                '<article class="nave-briefing-summary-card">'
+                f'<div class="nave-briefing-summary-title">{escape(title)}</div>'
+                f'<div class="nave-briefing-summary-meta">{escape(count_text)} · {escape(budget_text)}</div>'
+                '</article>'
+            )
+        st.markdown(
+            """
+            <style>
+            .nave-briefing-summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:.35rem 0 1rem}
+            .nave-briefing-summary-card{border:1px solid #E1E6EF;border-radius:13px;background:#F8FAFC;padding:14px 15px;min-width:0}
+            .nave-briefing-summary-title{font-weight:800;color:#121B42;line-height:1.35;overflow-wrap:anywhere}
+            .nave-briefing-summary-meta{font-size:.78rem;color:#69758B;margin-top:6px;line-height:1.4}
+            @media(max-width:850px){.nave-briefing-summary-grid{grid-template-columns:1fr}}
+            </style>
+            <div class="nave-briefing-summary-grid">""" + "".join(cards) + "</div>",
+            unsafe_allow_html=True,
         )
     else:
         st.markdown(
@@ -1181,7 +1198,6 @@ def _render_briefing(
     st.markdown("#### Demandas e obrigatoriedades")
 
     if requirements:
-        req_df = pd.DataFrame(requirements)
         type_labels = {
             "objective": "Objetivo", "deliverable": "Entregável", "mandatory": "Obrigatoriedade",
             "restriction": "Restrição", "audience": "Público", "logistics": "Logística",
@@ -1197,18 +1213,48 @@ def _render_briefing(
             "removed_budget": "Retirada por budget", "removed_timeline": "Retirada por prazo",
             "not_applicable": "Não aplicável", "unproven": "Não comprovada",
         }
-        view = pd.DataFrame({
-            "Tipo": req_df.get("requirement_type", pd.Series(dtype=str)).map(type_labels).fillna(req_df.get("requirement_type", "")),
-            "Demanda": req_df.get("title", ""),
-            "Prioridade": req_df.get("priority", pd.Series(dtype=str)).map(priority_labels).fillna(""),
-            "Obrigatória": req_df.get("mandatory", False),
-            "Aderência": req_df.get("adherence_status", pd.Series(dtype=str)).map(adherence_labels).fillna(""),
-        })
-        st.dataframe(view, hide_index=True, width="stretch")
+        req_cards = []
+        for row in requirements:
+            raw_status = str(row.get("adherence_status") or "not_assessed")
+            if raw_status == "not_assessed":
+                status = (
+                    "Resposta identificada" if str(row.get("id") or "") in matched_requirement_ids
+                    else "Ainda sem evidência"
+                )
+            else:
+                status = adherence_labels.get(raw_status, raw_status)
+            req_type = type_labels.get(str(row.get("requirement_type") or ""), str(row.get("requirement_type") or "").replace("_", " ").title())
+            priority = priority_labels.get(str(row.get("priority") or "not_informed"), "")
+            mandatory = bool(row.get("mandatory"))
+            title = str(row.get("title") or row.get("description") or "Demanda sem título").strip()
+            meta_parts = [part for part in (req_type, priority, "Obrigatória" if mandatory else "") if part]
+            status_class = "ok" if status in {"Resposta identificada", "Cumprida", "Superada"} else "warn" if status in {"Ainda sem evidência", "Não comprovada", "Não cumprida"} else "neutral"
+            req_cards.append(
+                '<article class="nave-requirement-card">'
+                f'<div class="nave-requirement-meta">{escape(" · ".join(meta_parts) or "Demanda")}</div>'
+                f'<div class="nave-requirement-title">{escape(title)}</div>'
+                f'<div class="nave-requirement-status {status_class}">{escape(status)}</div>'
+                '</article>'
+            )
+        st.markdown(
+            """
+            <style>
+            .nave-requirement-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:.35rem 0 1rem}
+            .nave-requirement-card{border:1px solid #E1E6EF;border-radius:13px;background:#fff;padding:13px 14px;min-width:0}
+            .nave-requirement-meta{font-size:.69rem;text-transform:uppercase;letter-spacing:.035em;color:#748096;font-weight:750;line-height:1.3}
+            .nave-requirement-title{color:#121B42;font-weight:760;line-height:1.42;margin:.35rem 0 .55rem;overflow-wrap:anywhere}
+            .nave-requirement-status{display:inline-block;border-radius:999px;padding:4px 8px;font-size:.70rem;font-weight:760;line-height:1.2}
+            .nave-requirement-status.ok{background:#EAF8EF;color:#176A3A}.nave-requirement-status.warn{background:#FFF4D9;color:#805B00}.nave-requirement-status.neutral{background:#EEF2F7;color:#566277}
+            @media(max-width:850px){.nave-requirement-grid{grid-template-columns:1fr}}
+            </style>
+            <div class="nave-requirement-grid">""" + "".join(req_cards) + "</div>",
+            unsafe_allow_html=True,
+        )
     else:
         st.caption(
             "As demandas aparecerão aqui após a análise estruturada do briefing."
         )
+
 
 
 def _render_recommendations(
@@ -1269,8 +1315,16 @@ def _render_memory_cards(
         )
 
 
+def _normalise_file_key(value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    text = re.sub(r"\.[a-z0-9]{2,5}$", "", text)
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
 def _evidence_page_visual(snapshot: dict[str, Any], row: dict[str, Any]) -> dict[str, Any] | None:
-    source_name = str(row.get("source_name") or "").strip().casefold()
+    """Resolve evidência textual para a página visual preservada, tolerando nomes legados."""
+    source_name = str(row.get("source_name") or "").strip()
+    source_key = _normalise_file_key(source_name)
     locator = str(row.get("locator_text") or "").strip().casefold()
     match = re.search(r"(?:page|slide|pagina|página)\s*(\d+)", locator)
     if not match:
@@ -1279,23 +1333,29 @@ def _evidence_page_visual(snapshot: dict[str, Any], row: dict[str, Any]) -> dict
     docs = snapshot.get("memory_documents") or []
     doc_ids: set[str] = set()
     for doc in docs:
-        names = {
-            str(doc.get("file_name") or "").strip().casefold(),
-            str(doc.get("title") or "").strip().casefold(),
-            str(doc.get("source_file") or "").strip().casefold(),
-        }
-        names.discard("")
-        if not source_name or any(name == source_name or name in source_name or source_name in name for name in names):
+        names = [doc.get("file_name"), doc.get("title"), doc.get("source_file")]
+        keys = {_normalise_file_key(name) for name in names if str(name or "").strip()}
+        if not source_key or any(key and (key == source_key or key in source_key or source_key in key) for key in keys):
             if doc.get("id"):
                 doc_ids.add(str(doc.get("id")))
+
+    candidates = []
     for page in snapshot.get("memory_pages") or []:
-        if int(page.get("page_number") or 0) != page_number:
+        if int(page.get("page_number") or 0) != page_number or not page.get("storage_path"):
             continue
         if doc_ids and str(page.get("document_id") or "") not in doc_ids:
             continue
-        if page.get("storage_path"):
-            return dict(page)
-    return None
+        candidates.append(dict(page))
+    if candidates:
+        return candidates[0]
+
+    # Fallback seguro: se o nome da fonte não conseguiu resolver o documento,
+    # só usa a página quando existe uma única candidata naquele número.
+    generic = [
+        dict(page) for page in snapshot.get("memory_pages") or []
+        if int(page.get("page_number") or 0) == page_number and page.get("storage_path")
+    ]
+    return generic[0] if len(generic) == 1 else None
 
 
 def _render_unified_evidence_cards(
@@ -1305,49 +1365,51 @@ def _render_unified_evidence_cards(
     *,
     intro: str,
     limit: int = 10,
-) -> None:
-    """Projeta evidência ainda não consolidada sem expor provenance como produto final.
+) -> int:
+    """Projeta apenas evidência visual no caminho principal.
 
-    Quando uma página visual já está preservada, a interface mostra a imagem e usa
-    arquivo/página apenas como fonte discreta. Sem visual disponível, mantém um
-    expander textual auditável.
+    Filename, página e confiança ficam como provenance discreto. Evidência somente
+    textual não vira uma longa lista de arquivos no produto final.
     """
     if not rows:
-        return
-    st.info(intro)
-    for row in rows[:limit]:
+        return 0
+    visual_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    seen: set[tuple[str, int]] = set()
+    for row in rows:
+        visual = _evidence_page_visual(snapshot, row)
+        if not visual:
+            continue
+        key = (str(visual.get("document_id") or ""), int(visual.get("page_number") or 0))
+        if key in seen:
+            continue
+        seen.add(key)
+        visual_rows.append((row, visual))
+    if not visual_rows:
+        return 0
+    if intro:
+        st.info(intro)
+    for row, visual in visual_rows[:limit]:
+        image_url = create_storage_signed_url(
+            client,
+            bucket_name=visual.get("storage_bucket"),
+            storage_path=visual.get("storage_path"),
+        )
+        if not image_url:
+            continue
         source = str(row.get("source_name") or "Fonte")
         locator = str(row.get("locator_text") or "").strip()
-        visual = _evidence_page_visual(snapshot, row)
-        text = str(row.get("text") or "Evidência sem texto extraído.")
-        if visual:
-            with st.container(border=True):
-                image_url = create_storage_signed_url(
-                    client,
-                    bucket_name=visual.get("storage_bucket"),
-                    storage_path=visual.get("storage_path"),
-                )
-                if image_url:
-                    image_col, text_col = st.columns([0.42, 0.58], gap="large", vertical_alignment="center")
-                    with image_col:
-                        st.image(image_url, width="stretch")
-                    with text_col:
-                        st.markdown(f"**{str(visual.get('slide_title') or row.get('domain') or 'Evidência visual').strip()}**")
-                        st.write(text)
-                        st.caption(source + (f" · {locator}" if locator else ""))
-                else:
+        text = str(row.get("text") or visual.get("slide_summary") or "").strip()
+        with st.container(border=True):
+            image_col, text_col = st.columns([0.42, 0.58], gap="large", vertical_alignment="center")
+            with image_col:
+                st.image(image_url, width="stretch")
+            with text_col:
+                title = str(visual.get("slide_title") or row.get("domain") or "Material visual").strip()
+                st.markdown(f"**{title}**")
+                if text:
                     st.write(text)
-                    st.caption(source + (f" · {locator}" if locator else ""))
-        else:
-            title = source + (f" · {locator}" if locator else "")
-            with st.expander(title, expanded=False):
-                st.write(text)
-                confidence = row.get("confidence")
-                if confidence not in (None, ""):
-                    try:
-                        st.caption(f"Confiança de extração: {float(confidence):.0%}")
-                    except Exception:
-                        pass
+                st.caption(source + (f" · {locator}" if locator else ""))
+    return min(len(visual_rows), limit)
 
 
 def _render_strategy(
@@ -1372,7 +1434,7 @@ def _render_strategy(
         metrics = stored.get("metrics") if isinstance(stored.get("metrics"), dict) else {}
         candidate = metrics.get("semantic_synthesis")
         if isinstance(candidate, dict) and (candidate.get("strategic_reading") or candidate.get("strategy_framework")):
-            semantic = candidate
+            semantic = sanitize_semantic_payload(candidate, snapshot)
             break
 
     framework = (semantic or {}).get("strategy_framework") if isinstance((semantic or {}).get("strategy_framework"), dict) else {}
@@ -1405,15 +1467,14 @@ def _render_strategy(
                 empty_message="",
             )
     elif evidence:
-        st.markdown("#### Evidências estratégicas encontradas nas fontes")
-        _render_unified_evidence_cards(
-            client, snapshot, evidence,
-            intro=(
-                "A NAVE encontrou evidências estratégicas no Intelligence Graph. "
-                "Elas ficam visíveis como fonte enquanto as fichas canônicas são consolidadas."
-            ),
-            limit=12,
-        )
+        with st.expander("Fontes visuais que sustentam a leitura estratégica", expanded=False):
+            shown = _render_unified_evidence_cards(
+                client, snapshot, evidence,
+                intro="",
+                limit=12,
+            )
+            if not shown:
+                st.caption("A leitura estratégica está sustentada por fontes textuais; não há página visual adicional para exibir aqui.")
     elif not semantic:
         st.markdown(
             '<div class="nave-workspace-empty">Nenhuma evidência de estratégia ou conceito foi encontrada nas fontes atuais.</div>',
@@ -1439,28 +1500,21 @@ def _render_scenography(
     ]
     unified = snapshot.get("unified_intelligence") or build_unified_project_snapshot(snapshot)
     scenography_evidence = (unified.get("domain_evidence") or {}).get("scenography") or []
-    if scenography_rows:
-        render_visual_section(
-            client,
-            project_id=project_id,
-            snapshot=snapshot,
-            section_keys=["scenography"],
-            empty_message="Nenhum ambiente ou solução cenográfica foi identificado.",
-        )
-    elif scenography_evidence:
-        _render_unified_evidence_cards(
+    visual_count = render_visual_section(
+        client,
+        project_id=project_id,
+        snapshot=snapshot,
+        section_keys=["scenography"],
+        empty_message="Nenhuma ficha visual de cenografia foi consolidada.",
+    )
+    if not visual_count and scenography_evidence:
+        visual_count = _render_unified_evidence_cards(
             client, snapshot, scenography_evidence,
-            intro=(
-                "A NAVE encontrou evidências de cenografia/ambientes nas fontes, embora ainda não existam fichas legadas consolidadas. "
-                "O conteúdo abaixo impede um falso vazio enquanto a materialização é aprimorada."
-            ),
+            intro="Visuais de cenografia encontrados nas fontes do projeto.",
             limit=10,
         )
-    else:
-        st.markdown(
-            '<div class="nave-workspace-empty">Nenhuma evidência de ambiente ou solução cenográfica foi encontrada.</div>',
-            unsafe_allow_html=True,
-        )
+    if not visual_count and scenography_evidence:
+        st.caption("Há referências textuais de cenografia nas fontes, mas nenhuma imagem confiável foi vinculada a esta seção ainda.")
 
     st.markdown("#### Ativações e experiências")
     activation_rows = [
@@ -1483,17 +1537,13 @@ def _render_scenography(
             with st.expander("Outras evidências visuais de ativações", expanded=False):
                 _render_unified_evidence_cards(
                     client, snapshot, activation_evidence,
-                    intro=(
-                        "A apresentação contém outras evidências relacionadas a ativações que ainda não foram separadas em fichas canônicas."
-                    ),
+                    intro="Outros visuais de ativações encontrados na apresentação.",
                     limit=12,
                 )
     elif activation_evidence:
         _render_unified_evidence_cards(
             client, snapshot, activation_evidence,
-            intro=(
-                "A NAVE encontrou ativações/experiências nas fontes. As evidências visuais ficam disponíveis enquanto as fichas canônicas são consolidadas."
-            ),
+            intro="Visuais de ativações e experiências encontrados nas fontes do projeto.",
             limit=12,
         )
     else:
@@ -1523,7 +1573,7 @@ def _render_scenography(
     elif communication_evidence:
         _render_unified_evidence_cards(
             client, snapshot, communication_evidence,
-            intro="A NAVE encontrou evidências de comunicação e materiais nas fontes atuais.",
+            intro="Materiais visuais relacionados a comunicação encontrados nas fontes.",
             limit=8,
         )
     else:
@@ -1545,7 +1595,7 @@ def _render_scenography(
     elif journey_evidence:
         _render_unified_evidence_cards(
             client, snapshot, journey_evidence,
-            intro="A NAVE encontrou evidências de jornada/operação nas fontes atuais.",
+            intro="Materiais visuais relacionados a jornada e operação encontrados nas fontes.",
             limit=8,
         )
     else:
@@ -1584,16 +1634,13 @@ def _render_gifts(
             with st.expander("Outras evidências visuais de brindes e press kits", expanded=False):
                 _render_unified_evidence_cards(
                     client, snapshot, gift_evidence,
-                    intro="Há outras evidências visuais de brindes/press kits ainda não consolidadas em fichas canônicas.",
+                    intro="Outros visuais de brindes e press kits encontrados nas fontes.",
                     limit=10,
                 )
     elif gift_evidence:
         _render_unified_evidence_cards(
             client, snapshot, gift_evidence,
-            intro=(
-                "A NAVE encontrou evidências visuais de brindes/press kits, mas as fichas canônicas ainda não foram consolidadas. "
-                "As fontes abaixo permanecem visíveis para evitar falso vazio."
-            ),
+            intro="Visuais de brindes e press kits encontrados nas fontes do projeto.",
             limit=12,
         )
     else:
@@ -1677,31 +1724,34 @@ def _render_budget(
     budget_value = _format_money(budget_amount) if budget_amount is not None else "—"
     proposal_value = _format_money(proposal_total) if proposal_total is not None else "—"
     usage_value = f"{usage:.1%}" if usage is not None else "—"
-    attendee_value = _format_money(cost_per_attendee) if cost_per_attendee is not None else "—"
-    if audience_scope == "festival_event" and audience_quantity:
-        attendee_detail = f"{int(audience_quantity)} = público do evento; não usar como visitantes da ativação"
-    elif audience_quantity:
-        attendee_detail = f"Base comprovada: {int(audience_quantity)} pessoas"
-    else:
-        attendee_detail = "Não calculável com as fontes atuais"
-
+    # Só exibimos custo por participante quando existe denominador específico da
+    # própria ativação/projeto. Público do Festivalzinho não vira métrica da Casa.
+    if audience_scope != "project_attendees":
+        cost_per_attendee = None
+    fin_cards = [
+        ("Budget do briefing", budget_value, "Teto comprovado na fonte"),
+        ("Total da proposta", proposal_value, "Total final estruturado"),
+        (delta_label, delta_value, delta_detail),
+        ("Uso do budget", usage_value, "Proposta ÷ budget"),
+    ]
+    if cost_per_attendee is not None:
+        fin_cards.append(("Custo por participante", _format_money(cost_per_attendee), f"Base comprovada: {int(audience_quantity)} participantes" if audience_quantity else "Base específica da ativação"))
+    cards_html = "".join(
+        f'<div class="nave-fin-card"><div class="nave-fin-label">{escape(str(label))}</div><div class="nave-fin-value">{escape(str(value))}</div><div class="nave-fin-detail">{escape(str(detail))}</div></div>'
+        for label, value, detail in fin_cards
+    )
+    grid_cols = len(fin_cards)
     st.markdown(
         f"""
         <style>
-        .nave-fin-grid {{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:.5rem 0 1rem 0;}}
+        .nave-fin-grid {{display:grid;grid-template-columns:repeat({grid_cols},minmax(0,1fr));gap:10px;margin:.5rem 0 1rem 0;}}
         .nave-fin-card {{background:#F7F9FC;border:1px solid #E1E6EF;border-radius:14px;padding:14px 15px;min-width:0;}}
-        .nave-fin-label {{font-size:.72rem;color:#667188;font-weight:700;margin-bottom:6px;}}
+        .nave-fin-label {{font-size:.72rem;color:#667188;font-weight:700;margin-bottom:6px;white-space:normal;overflow-wrap:anywhere;}}
         .nave-fin-value {{font-size:1.30rem;line-height:1.18;color:#121B42;font-weight:850;overflow-wrap:anywhere;}}
         .nave-fin-detail {{font-size:.68rem;color:#7C879D;margin-top:5px;line-height:1.25;}}
         @media (max-width: 1100px) {{.nave-fin-grid {{grid-template-columns:repeat(2,minmax(0,1fr));}}}}
         </style>
-        <div class="nave-fin-grid">
-          <div class="nave-fin-card"><div class="nave-fin-label">Budget do briefing</div><div class="nave-fin-value">{budget_value}</div><div class="nave-fin-detail">Teto comprovado na fonte</div></div>
-          <div class="nave-fin-card"><div class="nave-fin-label">Total da proposta</div><div class="nave-fin-value">{proposal_value}</div><div class="nave-fin-detail">Total final estruturado</div></div>
-          <div class="nave-fin-card"><div class="nave-fin-label">{delta_label}</div><div class="nave-fin-value">{delta_value}</div><div class="nave-fin-detail">{delta_detail}</div></div>
-          <div class="nave-fin-card"><div class="nave-fin-label">Uso do budget</div><div class="nave-fin-value">{usage_value}</div><div class="nave-fin-detail">Proposta ÷ budget</div></div>
-          <div class="nave-fin-card"><div class="nave-fin-label">Custo por participante</div><div class="nave-fin-value">{attendee_value}</div><div class="nave-fin-detail">{attendee_detail}</div></div>
-        </div>
+        <div class="nave-fin-grid">{cards_html}</div>
         """,
         unsafe_allow_html=True,
     )
@@ -1753,16 +1803,10 @@ def _render_budget(
                 for row in top_categories[:6]:
                     category_rows.append({
                         "Categoria": row.get("category") or "Sem categoria",
-                        "Valor": float(row.get("value") or 0),
-                        "% da proposta": float(row.get("share") or 0) if row.get("share") is not None else None,
+                        "Valor": _format_money(row.get("value") or 0),
+                        "% da proposta": f"{float(row.get('share') or 0):.1%}" if row.get("share") is not None else "—",
                     })
-                st.dataframe(
-                    pd.DataFrame(category_rows), hide_index=True, width="stretch",
-                    column_config={
-                        "Valor": st.column_config.NumberColumn(format="R$ %.2f"),
-                        "% da proposta": st.column_config.NumberColumn(format="%.1f%%"),
-                    },
-                )
+                st.dataframe(pd.DataFrame(category_rows), hide_index=True, width="stretch")
                 concentration = advanced.get("top4_category_share")
                 if concentration is not None:
                     st.caption(f"As 4 maiores categorias concentram {float(concentration):.1%} do total.")
@@ -1775,16 +1819,10 @@ def _render_budget(
                     top_rows.append({
                         "Item": row.get("name") or "Item",
                         "Categoria": row.get("category") or "Sem categoria",
-                        "Valor": float(row.get("value") or 0),
-                        "%": share,
+                        "Valor": _format_money(row.get("value") or 0),
+                        "%": f"{share:.1%}" if share is not None else "—",
                     })
-                st.dataframe(
-                    pd.DataFrame(top_rows), hide_index=True, width="stretch",
-                    column_config={
-                        "Valor": st.column_config.NumberColumn(format="R$ %.2f"),
-                        "%": st.column_config.NumberColumn(format="%.1f%%"),
-                    },
-                )
+                st.dataframe(pd.DataFrame(top_rows), hide_index=True, width="stretch")
 
     if additional_cost_sheets:
         st.markdown("#### Escopos financeiros apartados")
@@ -2243,7 +2281,7 @@ def _render_feedbacks(
             for text in report_feedback[:12]:
                 st.markdown(f"- {text}")
         else:
-            st.caption("Nenhum feedback explícito do cliente foi identificado nas fontes atuais.")
+            st.caption("Nenhum feedback explícito do cliente foi identificado nas fontes atuais. O relatório pós-evento é tratado em Resultados e aprendizados; ele só alimenta esta aba quando contém comentário, aprovação ou crítica atribuível ao cliente.")
 
     st.markdown("#### Arquivos de feedback e aprovação")
     files = [
@@ -2374,7 +2412,7 @@ def _render_results(
         metrics = stored.get("metrics") if isinstance(stored.get("metrics"), dict) else {}
         candidate = metrics.get("semantic_synthesis")
         if isinstance(candidate, dict):
-            semantic = candidate
+            semantic = sanitize_semantic_payload(candidate, snapshot)
             break
     if semantic:
         validated = [str(v).strip() for v in semantic.get("validated_learnings") or [] if str(v).strip()]
