@@ -88,3 +88,27 @@ python scripts/run_iq_bench.py \
   --fixtures /caminho/seguro/fixtures \
   --pipeline-version file-analyst-v1
 ```
+
+
+## V28.3 — Unified Project Intelligence
+
+Pipelines que já implementam o Unified Snapshot podem também devolver:
+
+```json
+{
+  "unified": {
+    "project_truth": {"stage": "executed", "budget_amount": 400000},
+    "coverage": {
+      "strategy": {"state": "evidence_found_not_consolidated"},
+      "scenography": {"state": "evidence_found_not_consolidated"}
+    },
+    "execution_matches": [{"item_title": "Amarelinha"}],
+    "decision_intelligence": {
+      "diagnostic": [], "results": [], "learnings": [],
+      "recommendations": [], "connections": []
+    }
+  }
+}
+```
+
+`false_empty_count` mede áreas que o Golden comprova possuir evidência, mas que o pipeline ainda declara vazias. `unified_truth_accuracy` mede a verdade consolidada (por exemplo, executado versus proposta). `execution_link_recall` mede a capacidade de ligar proposta a evidência pós-evento.

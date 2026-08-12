@@ -738,6 +738,72 @@ def evaluate_chambinho_forbidden(case: Mapping[str, Any], candidate: Mapping[str
     return [MetricResult("forbidden_inference_count", float(violations))]
 
 
+
+def evaluate_unified_project_truth(case: Mapping[str, Any], candidate: Mapping[str, Any]) -> list[MetricResult]:
+    """V28.3+: mede se a NAVE consolidou uma única verdade e evitou falsos vazios."""
+    expected = case.get("expected", {}) if isinstance(case.get("expected"), Mapping) else {}
+    truth_expected = expected.get("project_truth") if isinstance(expected.get("project_truth"), Mapping) else {}
+    required_domains = _list(expected.get("coverage_nonempty"))
+    required_exec = [normalize_text(v) for v in _list(expected.get("execution_matches_required")) if normalize_text(v)]
+    required_decision = [normalize_text(v) for v in _list(expected.get("decision_sections_required")) if normalize_text(v)]
+    if not truth_expected and not required_domains and not required_exec and not required_decision:
+        return []
+
+    unified = candidate.get("unified") if isinstance(candidate.get("unified"), Mapping) else {}
+    if not unified and isinstance(candidate.get("unified_intelligence"), Mapping):
+        unified = candidate.get("unified_intelligence")
+    truth = unified.get("project_truth") if isinstance(unified.get("project_truth"), Mapping) else {}
+    metrics: list[MetricResult] = []
+
+    if truth_expected:
+        checks: list[bool] = []
+        for key, value in truth_expected.items():
+            actual = truth.get(key)
+            if isinstance(value, (int, float)) and isinstance(actual, (int, float)):
+                checks.append(approx_equal(float(actual), float(value), 0.02))
+            else:
+                checks.append(normalize_text(actual) == normalize_text(value))
+        metrics.append(MetricResult("unified_truth_accuracy", sum(checks) / len(checks) if checks else None, status="scored" if checks else "not_evaluated"))
+
+    if required_domains:
+        coverage = unified.get("coverage") if isinstance(unified.get("coverage"), Mapping) else {}
+        false_empty = 0
+        for domain in required_domains:
+            row = coverage.get(domain)
+            state = row.get("state") if isinstance(row, Mapping) else row
+            state_n = normalize_text(state)
+            if not state_n or state_n in {"none", "empty", "no evidence", "not found", "missing"}:
+                false_empty += 1
+        metrics.append(MetricResult("false_empty_count", float(false_empty)))
+
+    if required_exec:
+        matches = unified.get("execution_matches") if isinstance(unified.get("execution_matches"), list) else []
+        observed = {normalize_text(_first(row, "item_title", "title", "name")) for row in matches if isinstance(row, Mapping)}
+        found = sum(1 for value in required_exec if any(value == got or value in got or got in value for got in observed if got))
+        metrics.append(MetricResult("execution_link_recall", found / len(required_exec)))
+
+    if required_decision:
+        decision = unified.get("decision_intelligence") if isinstance(unified.get("decision_intelligence"), Mapping) else {}
+        aliases = {
+            "conexoes": "connections", "conexões": "connections", "connections": "connections",
+            "diagnostico": "diagnostic", "diagnóstico": "diagnostic", "diagnostic": "diagnostic",
+            "resultados": "results", "results": "results",
+            "aprendizados": "learnings", "learnings": "learnings",
+            "recomendacoes": "recommendations", "recomendações": "recommendations", "recommendations": "recommendations",
+        }
+        found = 0
+        for section in required_decision:
+            key = aliases.get(section, section)
+            value = decision.get(key)
+            if isinstance(value, list) and value:
+                found += 1
+            elif isinstance(value, Mapping) and value:
+                found += 1
+            elif isinstance(value, str) and value.strip():
+                found += 1
+        metrics.append(MetricResult("decision_intelligence_coverage", found / len(required_decision)))
+    return metrics
+
 def evaluate_case(case: Mapping[str, Any], candidate: Mapping[str, Any]) -> tuple[list[MetricResult], dict[str, Any]]:
     metrics: list[MetricResult] = []
     sr = evaluate_source_roles(case, candidate)
@@ -758,6 +824,7 @@ def evaluate_case(case: Mapping[str, Any], candidate: Mapping[str, Any]) -> tupl
         evaluate_retrieval,
         evaluate_jovi_forbidden,
         evaluate_chambinho_forbidden,
+        evaluate_unified_project_truth,
     ):
         metrics.extend(fn(case, candidate))
 
@@ -781,6 +848,10 @@ def evaluate_case(case: Mapping[str, Any], candidate: Mapping[str, Any]) -> tupl
         "lost_project_solution_overgeneralization": by_name.get("lost_project_solution_overgeneralization").value if by_name.get("lost_project_solution_overgeneralization") else None,
         "critical_relation_precision": by_name.get("critical_relation_precision").value if by_name.get("critical_relation_precision") else None,
         "exact_numeric_accuracy": by_name.get("exact_numeric_accuracy").value if by_name.get("exact_numeric_accuracy") else None,
+        "false_empty_count": by_name.get("false_empty_count").value if by_name.get("false_empty_count") else None,
+        "unified_truth_accuracy": by_name.get("unified_truth_accuracy").value if by_name.get("unified_truth_accuracy") else None,
+        "execution_link_recall": by_name.get("execution_link_recall").value if by_name.get("execution_link_recall") else None,
+        "decision_intelligence_coverage": by_name.get("decision_intelligence_coverage").value if by_name.get("decision_intelligence_coverage") else None,
         "retrieval_recall_at_20": None,  # dataset v1 ainda só mede recall@3.
     }
     return collapsed, signals
@@ -818,6 +889,10 @@ METRIC_DIMENSIONS: dict[str, str] = {
     "false_executed_without_evidence": "uncertainty_calibration",
     "lost_project_solution_overgeneralization": "outcome_granularity",
     "forbidden_inference_count": "generalization",
+    "unified_truth_accuracy": "cross_source_reasoning",
+    "false_empty_count": "source_understanding",
+    "execution_link_recall": "cross_source_reasoning",
+    "decision_intelligence_coverage": "recommendation_quality",
 }
 
 ERROR_METRICS = {
@@ -825,6 +900,7 @@ ERROR_METRICS = {
     "false_executed_without_evidence",
     "lost_project_solution_overgeneralization",
     "forbidden_inference_count",
+    "false_empty_count",
 }
 
 
@@ -913,6 +989,22 @@ def evaluate_gates(
         gates.append(GateResult("critical_relation_precision_min", "pass" if actual >= expected else "fail", actual, expected))
     else:
         gates.append(GateResult("critical_relation_precision_min", "not_evaluated"))
+
+    vals = _aggregate_signal(case_results, "false_empty_count", lambda c: c.case_type == "golden_real_project")
+    if vals:
+        actual = sum(float(v) for v in vals)
+        expected = float(cfg.get("false_empty_count_max", 0))
+        gates.append(GateResult("false_empty_count_max", "pass" if actual <= expected else "fail", actual, expected))
+    else:
+        gates.append(GateResult("false_empty_count_max", "not_evaluated"))
+
+    vals = _aggregate_signal(case_results, "unified_truth_accuracy", lambda c: c.case_type == "golden_real_project")
+    if vals:
+        actual = min(float(v) for v in vals)
+        expected = float(cfg.get("unified_truth_accuracy_min", 1.0))
+        gates.append(GateResult("unified_truth_accuracy_min", "pass" if actual >= expected else "fail", actual, expected))
+    else:
+        gates.append(GateResult("unified_truth_accuracy_min", "not_evaluated"))
 
     vals = _aggregate_signal(case_results, "retrieval_recall_at_20")
     if vals:

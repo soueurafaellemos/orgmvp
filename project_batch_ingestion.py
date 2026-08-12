@@ -20,7 +20,7 @@ from nave_storage import (
 )
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.2.2.2"
+WORKFLOW_VERSION = "28.3.0"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_MB = 300
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
@@ -1166,22 +1166,25 @@ def save_project_bundle(
             if str(warning).strip()
         ]
 
-        # V28.2.2 — a análise de arquivos termina com uma rodada única por projeto
-        # para resolver aliases/duplicatas e conectar solução ↔ custo ↔ execução.
-        # Continua fail-open: o lote e o workspace não são invalidados se a nova
-        # camada de inteligência estiver indisponível.
+        # V28.3 — um lote só termina quando as fontes disponíveis foram consolidadas
+        # no mesmo cérebro: relatório pós-evento, Cross-Source Linker, Unified
+        # Snapshot e Project Analyst. Isso elimina o antigo cenário em que o Graph
+        # sabia algo que o workspace ainda ignorava.
         cross_source_intelligence: dict[str, Any] | None = None
+        project_intelligence_finalization: dict[str, Any] | None = None
         try:
-            from cross_source_linker import run_project_cross_source_intelligence
+            from project_intelligence_pipeline import finalize_project_intelligence
 
-            cross_source_intelligence = run_project_cross_source_intelligence(client, project_id)
-            if str(cross_source_intelligence.get("status") or "") == "error":
-                workspace_warnings.append(
-                    f"Cross-Source Linker não concluiu: {cross_source_intelligence.get('error') or 'erro não detalhado'}"
-                )
+            project_intelligence_finalization = finalize_project_intelligence(client, project_id)
+            cross_source_intelligence = project_intelligence_finalization.get("cross_source")
+            workspace_warnings.extend(
+                str(value)[:900]
+                for value in (project_intelligence_finalization.get("warnings") or [])[:20]
+                if str(value).strip()
+            )
         except Exception as exc:
             workspace_warnings.append(
-                f"Entity Resolution/Cross-Source Linker não pôde ser executado nesta rodada: {exc}"
+                f"Finalização do Intelligence Core não pôde ser executada nesta rodada: {exc}"
             )
 
         import_warnings = []
@@ -1236,6 +1239,7 @@ def save_project_bundle(
             "workspace_warnings": workspace_warnings[:40],
             "materialization_results": materialization_results,
             "cross_source_intelligence": cross_source_intelligence,
+            "project_intelligence_finalization": project_intelligence_finalization,
         }
 
     except Exception as exc:

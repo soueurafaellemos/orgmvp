@@ -76,7 +76,10 @@ class SemanticConnection(BaseModel):
 class ProjectSemanticSynthesis(BaseModel):
     executive_summary: str
     strategic_reading: str | None = None
+    diagnostic: list[SemanticConnection] = Field(default_factory=list)
+    results: list[SemanticConnection] = Field(default_factory=list)
     strongest_connections: list[SemanticConnection] = Field(default_factory=list)
+    discovered_connections: list[SemanticConnection] = Field(default_factory=list)
     contradictions_or_gaps: list[SemanticConnection] = Field(default_factory=list)
     validated_learnings: list[str] = Field(default_factory=list)
     challenged_learnings: list[str] = Field(default_factory=list)
@@ -124,6 +127,21 @@ hipótese útil que deve ser validada.
 A resposta deve priorizar aquilo que mudaria uma decisão de pré-produção no próximo
 projeto: o que preservar, o que corrigir, onde otimizar, que risco antecipar e que
 repertório merece ser reutilizado.
+
+O OURO DA NAVE são cinco saídas diferentes:
+1. diagnostic: o que aconteceu e o que isso significa;
+2. results: o que está comprovado como resultado/execução/pendência;
+3. strongest_connections + discovered_connections: o que só aparece quando fontes são cruzadas;
+4. validated_learnings/challenged_learnings: conhecimento reutilizável para a memória VOE;
+5. decision_recommendations: decisões melhores e específicas, nunca tarefas burocráticas genéricas.
+
+Não escreva como recomendação "revisar planilha" ou "validar matriz" se você puder
+fazer a análise com as evidências recebidas. Só peça ação humana para uma ambiguidade
+real que a NAVE não consegue resolver com as fontes atuais.
+
+Se o unified_snapshot disser que há evidência pós-evento, NÃO trate o projeto como
+mera proposta. Se uma área possui evidence_found_not_consolidated, NÃO conclua que o
+conteúdo não existe: trate como falha de consolidação da NAVE.
 
 Retorne SOMENTE JSON válido no schema solicitado.
 """.strip()
@@ -549,7 +567,66 @@ def build_project_evidence_packet(snapshot: Mapping[str, Any]) -> dict[str, Any]
             "objective": _compact_text(row.get("objective") or row.get("summary"), 1200),
         })
 
+    graph = snapshot.get("intelligence_graph") if isinstance(snapshot.get("intelligence_graph"), Mapping) else {}
+    unified = snapshot.get("unified_intelligence") if isinstance(snapshot.get("unified_intelligence"), Mapping) else {}
+    assets = {str(row.get("id")): row for row in (graph.get("source_assets") or []) if row.get("id")}
+    contexts = graph.get("contexts") or []
+    roles_by_asset: dict[str, list[str]] = defaultdict(list)
+    for row in contexts:
+        asset_id = str(row.get("source_asset_id") or "")
+        role = str(row.get("context_role") or "")
+        if asset_id and role and role not in roles_by_asset[asset_id]:
+            roles_by_asset[asset_id].append(role)
+    graph_evidence = []
+    for row in (graph.get("evidence_units") or [])[:220]:
+        asset_id = str(row.get("source_asset_id") or "")
+        asset = assets.get(asset_id) or {}
+        graph_evidence.append({
+            "ref": f"EVID:{row.get('id')}",
+            "source": asset.get("canonical_file_name"),
+            "source_roles": roles_by_asset.get(asset_id, []),
+            "unit_type": row.get("unit_type"),
+            "ordinal": row.get("ordinal"),
+            "locator": row.get("locator") or {},
+            "text": _compact_text(row.get("content_text"), 1500),
+            "confidence": row.get("extraction_confidence"),
+        })
+    graph_claims = []
+    for row in (graph.get("claims") or [])[:180]:
+        value = row.get("value_text")
+        if value in (None, ""):
+            value = row.get("value_numeric")
+        if value in (None, ""):
+            value = row.get("value_boolean")
+        if value in (None, ""):
+            value = row.get("value_date")
+        graph_claims.append({
+            "ref": f"CLAIM:{row.get('id')}",
+            "subject_entity_id": row.get("subject_entity_id"),
+            "predicate": row.get("predicate"),
+            "value": value,
+            "kind": row.get("claim_kind"),
+            "confidence": row.get("model_confidence"),
+            "authority": row.get("authority_score"),
+            "status": row.get("status"),
+        })
+    graph_relations = [
+        {
+            "ref": f"REL:{row.get('id')}",
+            "source_entity_id": row.get("source_entity_id"),
+            "relation_type": row.get("relation_type"),
+            "target_entity_id": row.get("target_entity_id"),
+            "confidence": row.get("confidence"),
+            "status": row.get("status"),
+        }
+        for row in (graph.get("relations") or [])[:180]
+    ]
+
     return {
+        "unified_snapshot": unified,
+        "graph_evidence": graph_evidence,
+        "graph_claims": graph_claims,
+        "graph_relations": graph_relations,
         "project": {
             "ref": f"PROJECT:{project.get('id')}",
             "name": project.get("project_name"),
@@ -632,18 +709,25 @@ def analyze_project_snapshot(
 
 def semantic_synthesis_findings(synthesis: ProjectSemanticSynthesis) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    contradiction_ids = {id(row) for row in synthesis.contradictions_or_gaps}
-    for connection in [*synthesis.strongest_connections, *synthesis.contradictions_or_gaps]:
-        rows.append({
-            "level": "warning" if id(connection) in contradiction_ids else "info",
-            "title": connection.title,
-            "text": connection.analysis,
-            "source": "semantic_project_analyst",
-            "connection_type": connection.connection_type,
-            "evidence_refs": list(connection.evidence_refs),
-            "confidence": connection.confidence,
-            "recommended_action": connection.recommended_action,
-        })
+    groups = [
+        (synthesis.diagnostic, "info", "diagnostic"),
+        (synthesis.results, "info", "result"),
+        (synthesis.strongest_connections, "info", "connection"),
+        (synthesis.discovered_connections, "info", "discovered_connection"),
+        (synthesis.contradictions_or_gaps, "warning", "contradiction"),
+    ]
+    for values, level, default_type in groups:
+        for connection in values:
+            rows.append({
+                "level": level,
+                "title": connection.title,
+                "text": connection.analysis,
+                "source": "semantic_project_analyst",
+                "connection_type": connection.connection_type or default_type,
+                "evidence_refs": list(connection.evidence_refs),
+                "confidence": connection.confidence,
+                "recommended_action": connection.recommended_action,
+            })
     return rows
 
 

@@ -581,6 +581,133 @@ def fetch_projects_workspace(client: Client) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+
+def _safe_in_rows(
+    client: Client,
+    table_name: str,
+    *,
+    field: str,
+    values: Iterable[Any],
+    columns: str = "*",
+    chunk_size: int = 180,
+) -> list[dict[str, Any]]:
+    """Consulta ``IN`` em lotes e falha aberto quando a Intelligence Foundation não existe."""
+    clean = [value for value in dict.fromkeys(values) if value not in (None, "")]
+    if not clean:
+        return []
+    rows: list[dict[str, Any]] = []
+    for start in range(0, len(clean), chunk_size):
+        chunk = clean[start:start + chunk_size]
+        try:
+            response = client.table(table_name).select(columns).in_(field, chunk).execute()
+            rows.extend(list(response.data or []))
+        except Exception:
+            # Compatibilidade: a NAVE continua funcionando sem a Foundation SQL.
+            return rows
+    return rows
+
+
+def _fetch_intelligence_graph_for_project(
+    client: Client,
+    *,
+    project_id: str,
+) -> dict[str, Any]:
+    """Carrega a camada conectada do Intelligence Graph para o workspace.
+
+    A UI antiga não pode mais ignorar conhecimento que já existe no Graph. O
+    carregamento é deliberadamente limitado ao escopo do projeto e fail-open.
+    """
+    project_entity = _safe_one(
+        client,
+        "knowledge_entities",
+        equals={"domain_table": "projects", "domain_id": project_id},
+    )
+    if not project_entity:
+        return {
+            "project_entity": None,
+            "contexts": [], "source_assets": [], "evidence_units": [],
+            "entities": [], "mentions": [], "aliases": [], "claims": [],
+            "claim_evidence": [], "relations": [], "findings": [],
+            "finding_evidence": [], "finding_entities": [],
+        }
+
+    project_entity_id = str(project_entity.get("id") or "")
+    contexts = _safe_rows(
+        client, "source_asset_contexts",
+        equals={"context_entity_id": project_entity_id}, limit=600,
+    )
+    asset_ids = [str(row.get("source_asset_id")) for row in contexts if row.get("source_asset_id")]
+    source_assets = _safe_in_rows(
+        client, "source_assets", field="id", values=asset_ids, columns="*",
+    )
+    evidence_units = _safe_in_rows(
+        client, "evidence_units", field="source_asset_id", values=asset_ids, columns="*",
+    )
+    evidence_units = [row for row in evidence_units if row.get("is_current") is not False][:1800]
+    evidence_ids = [str(row.get("id")) for row in evidence_units if row.get("id")]
+    mentions = _safe_in_rows(
+        client, "entity_mentions", field="evidence_unit_id", values=evidence_ids, columns="*",
+    )
+
+    scoped_entities = _safe_rows(
+        client, "knowledge_entities",
+        equals={"scope_entity_id": project_entity_id}, limit=1800,
+    )
+    entity_ids = {project_entity_id}
+    entity_ids.update(str(row.get("id")) for row in scoped_entities if row.get("id"))
+    entity_ids.update(str(row.get("entity_id")) for row in mentions if row.get("entity_id"))
+    entities = _safe_in_rows(
+        client, "knowledge_entities", field="id", values=list(entity_ids), columns="*",
+    )
+    aliases = _safe_in_rows(
+        client, "entity_aliases", field="entity_id", values=list(entity_ids), columns="*",
+    )
+
+    # Claims e relações usam ``scope_entity_id`` como fronteira canônica do projeto.
+    claims = _safe_rows(
+        client, "knowledge_claims",
+        equals={"scope_entity_id": project_entity_id}, order_by="created_at", descending=True, limit=2200,
+    )
+    project_claims = _safe_rows(
+        client, "knowledge_claims",
+        equals={"subject_entity_id": project_entity_id}, order_by="created_at", descending=True, limit=500,
+    )
+    by_claim_id = {str(row.get("id")): row for row in [*claims, *project_claims] if row.get("id")}
+    claims = list(by_claim_id.values())
+    claim_evidence = _safe_in_rows(
+        client, "claim_evidence", field="claim_id", values=list(by_claim_id), columns="*",
+    )
+    relations = _safe_rows(
+        client, "knowledge_relations",
+        equals={"scope_entity_id": project_entity_id}, order_by="created_at", descending=True, limit=2200,
+    )
+    findings = _safe_rows(
+        client, "intelligence_findings",
+        equals={"scope_entity_id": project_entity_id}, order_by="created_at", descending=True, limit=900,
+    )
+    finding_ids = [str(row.get("id")) for row in findings if row.get("id")]
+    finding_evidence = _safe_in_rows(
+        client, "finding_evidence", field="finding_id", values=finding_ids, columns="*",
+    )
+    finding_entities = _safe_in_rows(
+        client, "finding_entities", field="finding_id", values=finding_ids, columns="*",
+    )
+    return {
+        "project_entity": project_entity,
+        "contexts": contexts,
+        "source_assets": source_assets,
+        "evidence_units": evidence_units,
+        "entities": entities,
+        "mentions": mentions,
+        "aliases": aliases,
+        "claims": claims,
+        "claim_evidence": claim_evidence,
+        "relations": relations,
+        "findings": findings,
+        "finding_evidence": finding_evidence,
+        "finding_entities": finding_entities,
+    }
+
 def fetch_project_workspace_snapshot(
     client: Client,
     *,
@@ -621,6 +748,13 @@ def fetch_project_workspace_snapshot(
         client,
         "memory_project_outcomes",
         equals={"project_id": project_id},
+    )
+
+    # V28.3: o workspace passa a enxergar o mesmo Intelligence Graph alimentado
+    # pelo File Analyst/Cross-Source Linker. Sem isso, a NAVE podia saber algo no
+    # Graph e simultaneamente mostrar uma aba vazia no workspace.
+    snapshot["intelligence_graph"] = _fetch_intelligence_graph_for_project(
+        client, project_id=project_id
     )
 
     return snapshot

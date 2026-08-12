@@ -30,8 +30,8 @@ from project_analyst import (
 )
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.2.2"
-LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0", "28.2.1", "28.2.2"}
+WORKFLOW_VERSION = "28.3.0"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0", "28.2.1", "28.2.2", "28.2.2.1", "28.2.2.2"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -2142,70 +2142,27 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
     actual_errors = sum(1 for r in results if r.get("status") == "error")
     all_warnings = repair_warnings + [w for r in results for w in (r.get("warnings") or [])] + post_warnings
 
-    # V28.2.2 — antes da síntese do Project Analyst, resolve identidades e cria
-    # os vínculos cross-source que permitem raciocinar sobre a MESMA entidade ao
-    # longo de briefing, proposta, custos, feedback e relatório pós-evento.
+    # V28.3 — reprocessamento e importação nova passam pelo MESMO fechamento de
+    # inteligência. Isso evita resultados diferentes dependendo de como o projeto
+    # entrou na NAVE.
     cross_source_intelligence: dict[str, Any] | None = None
+    semantic_project_analysis: dict[str, Any] | None = None
+    project_intelligence_finalization: dict[str, Any] | None = None
     if actual_errors == 0:
         try:
-            from cross_source_linker import run_project_cross_source_intelligence
+            from project_intelligence_pipeline import finalize_project_intelligence
 
-            cross_source_intelligence = run_project_cross_source_intelligence(client, project_id)
-            if str(cross_source_intelligence.get("status") or "") == "error":
-                all_warnings.append(
-                    f"Cross-Source Linker não concluiu esta rodada: {cross_source_intelligence.get('error') or 'erro não detalhado'}"
-                )
+            project_intelligence_finalization = finalize_project_intelligence(client, project_id)
+            cross_source_intelligence = project_intelligence_finalization.get("cross_source")
+            semantic_project_analysis = project_intelligence_finalization.get("semantic_project_analysis")
+            all_warnings.extend(
+                str(value)[:900]
+                for value in (project_intelligence_finalization.get("warnings") or [])[:30]
+                if str(value).strip()
+            )
         except Exception as exc:
             all_warnings.append(
-                f"A materialização foi concluída, mas Entity Resolution/Cross-Source Linker não pôde ser executado: {exc}"
-            )
-
-    # V28.2 — depois que as fontes foram materializadas, a NAVE faz uma segunda
-    # leitura: agora do PROJETO como sistema. Ela conecta briefing, soluções,
-    # custos, feedbacks e outcome em vez de analisar cada arquivo isoladamente.
-    semantic_project_analysis: dict[str, Any] | None = None
-    if not post_warnings and actual_errors == 0 and counts.get("briefings", 0) and counts.get("presentations", 0):
-        try:
-            from project_workspace_db import fetch_project_workspace_snapshot
-            from project_workspace_intelligence import (
-                build_project_intelligence,
-                ensure_automatic_briefing_links,
-                ensure_automatic_cost_links,
-                persist_project_intelligence,
-            )
-
-            snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
-            ensure_automatic_cost_links(client, project_id=project_id, snapshot=snapshot)
-            ensure_automatic_briefing_links(client, project_id=project_id, snapshot=snapshot)
-            propagated = _propagate_feedback_outcomes_to_briefing_links(client, project_id)
-            if propagated:
-                snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
-            deterministic = build_project_intelligence(snapshot)
-            api_key, model = _ai_settings()
-            if api_key:
-                synthesis = analyze_project_snapshot(
-                    snapshot=snapshot,
-                    api_key=api_key,
-                    model=model,
-                )
-                semantic_project_analysis = synthesis.model_dump()
-                deterministic["semantic_synthesis"] = semantic_project_analysis
-                deterministic.setdefault("metrics", {})["semantic_synthesis"] = semantic_project_analysis
-                deterministic.setdefault("findings", []).extend(semantic_synthesis_findings(synthesis))
-                deterministic.setdefault("recommendations", []).extend(synthesis.decision_recommendations)
-                deterministic["recommendations"] = list(dict.fromkeys(
-                    str(row).strip() for row in deterministic.get("recommendations") or [] if str(row).strip()
-                ))
-                persist_project_intelligence(
-                    client, project_id=project_id, intelligence=deterministic
-                )
-            else:
-                all_warnings.append(
-                    "Project Analyst semântico não executado porque GEMINI_API_KEY não está configurada; a análise determinística continua disponível."
-                )
-        except Exception as exc:
-            all_warnings.append(
-                f"A materialização foi concluída, mas a síntese semântica do projeto não pôde ser gerada nesta rodada: {exc}"
+                f"A materialização foi concluída, mas a finalização do Intelligence Core não pôde ser executada: {exc}"
             )
 
     return {
@@ -2219,6 +2176,7 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
         "resolved_roles": sorted(resolved_roles),
         "semantic_project_analysis": semantic_project_analysis,
         "cross_source_intelligence": cross_source_intelligence,
+        "project_intelligence_finalization": project_intelligence_finalization,
     }
 
 def materialize_source_file(
@@ -2238,8 +2196,10 @@ def materialize_source_file(
 
     warnings: list[str] = []
     created: dict[str, int] = {}
-    _sync_project_file(client, source_file_id, warnings)
+    # O papel deve existir ANTES de qualquer RPC legado. Caso contrário a RPC
+    # antiga pode tentar inserir project_files com file_role nulo.
     _ensure_project_file_role(client, source_file, warnings)
+    _sync_project_file(client, source_file_id, warnings)
     text = _clean_text(text_override if text_override is not None else source_file.get("text_excerpt"))
     if source_bytes is None and role in {
         "briefing_original", "detailed_costs", "preliminary_budget",

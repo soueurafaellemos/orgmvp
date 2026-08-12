@@ -1,5 +1,5 @@
 suite_id: nave_iq_bench_v1
-version: 1.0.0
+version: 1.1.0
 description: Primeiro benchmark multiescala da inteligência da NAVE. Casos reais viram
   avaliação, nunca regras no core.
 dimensions:
@@ -25,6 +25,8 @@ gates:
   critical_relation_precision_min: 0.9
   retrieval_recall_at_20_min: 0.95
   blind_project_regression_allowed: false
+  false_empty_count_max: 0
+  unified_truth_accuracy_min: 1.0
 cases:
 - golden_jovi_x300_multisource
 - golden_chambinho_festivalzinho_2026_full_cycle

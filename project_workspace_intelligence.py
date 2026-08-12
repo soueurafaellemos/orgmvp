@@ -665,6 +665,21 @@ def _source_signature(snapshot: dict[str, Any]) -> str:
             })
         compact[key] = rows
     compact["outcome"] = snapshot.get("outcome") or {}
+    graph = snapshot.get("intelligence_graph") if isinstance(snapshot.get("intelligence_graph"), dict) else {}
+    compact["intelligence_graph"] = {
+        "evidence": [
+            (row.get("id"), row.get("source_asset_id"), row.get("content_sha256"), row.get("created_at"))
+            for row in (graph.get("evidence_units") or [])
+        ],
+        "claims": [
+            (row.get("id"), row.get("predicate"), row.get("value_text"), row.get("value_numeric"), row.get("status"), row.get("updated_at"))
+            for row in (graph.get("claims") or [])
+        ],
+        "relations": [
+            (row.get("id"), row.get("relation_type"), row.get("source_entity_id"), row.get("target_entity_id"), row.get("status"), row.get("updated_at"))
+            for row in (graph.get("relations") or [])
+        ],
+    }
     compact["relevance_classifier_version"] = RELEVANCE_CLASSIFIER_VERSION
     payload = json.dumps(compact, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -818,6 +833,12 @@ def _financial_scope(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
+    from project_intelligence_unified import build_unified_project_snapshot
+
+    unified = snapshot.get("unified_intelligence")
+    if not isinstance(unified, dict):
+        unified = build_unified_project_snapshot(snapshot)
+        snapshot["unified_intelligence"] = unified
     current_signature = _source_signature(snapshot)
     prior_semantic: dict[str, Any] | None = None
     for stored in snapshot.get("intelligence_snapshots", []) or []:
@@ -841,8 +862,20 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         "report": _coverage_state(len(snapshot.get("report_analyses", [])), role_count["post_execution_report"] + role_count["closure_report"], "Pós-evento / encerramento"),
         "feedback": _coverage_state(len(snapshot.get("feedback_entries", [])), role_count["feedback"] + role_count["approval"], "Feedbacks"),
     }
+    unified_truth = unified.get("project_truth") or {}
+    if unified_truth.get("has_post_event_source") and (unified.get("domain_evidence") or {}).get("execution"):
+        coverage["report"] = {
+            "state": "structured" if unified_truth.get("report_structured") else "evidence_found",
+            "label": "Pós-evento / encerramento",
+            "detail": (
+                f"{len(snapshot.get('report_analyses', []))} leitura(s) estruturada(s)"
+                if unified_truth.get("report_structured")
+                else f"{len((unified.get('domain_evidence') or {}).get('execution') or [])} evidência(s) pós-evento no Intelligence Graph"
+            ),
+        }
 
-    stage_key, stage_label = project_stage(snapshot)
+    stage_key = str(unified_truth.get("stage") or "") or project_stage(snapshot)[0]
+    stage_label = str(unified_truth.get("stage_label") or "") or project_stage(snapshot)[1]
     proposal_stage = stage_key in {"proposal", "no_return", "won"}
 
     items = []
@@ -893,6 +926,11 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         if requirement:
             requirements_by_item[str(link.get("memory_item_id"))].append({"link": link, "requirement": requirement})
 
+    execution_match_by_item = {
+        str(row.get("item_id") or ""): row
+        for row in (unified.get("execution_matches") or [])
+        if row.get("item_id")
+    }
     matrix: list[dict[str, Any]] = []
     executed_count = 0
     explicit_not_executed = 0
@@ -902,7 +940,11 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         item_id = str(item.get("id") or "")
         outcome = outcomes.get(item_id) or {}
         outcome_status = str(outcome.get("outcome_status") or "unassessed")
-        if proposal_stage:
+        unified_execution = execution_match_by_item.get(item_id)
+        if unified_execution:
+            execution_reading = "Executado com evidência pós-evento"
+            executed_count += 1
+        elif proposal_stage:
             execution_reading = "Ainda não aplicável — projeto em proposta"
         elif outcome_status in EXECUTED_STATUSES:
             execution_reading = "Executado com evidência"
@@ -945,7 +987,10 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "Sem linha direta"
             ),
             "Execução": execution_reading,
-            "Evidência / resultado": outcome.get("feedback_summary") or outcome.get("execution_notes") or outcome.get("decision_reason") or "—",
+            "Evidência / resultado": (
+                (unified_execution or {}).get("evidence", {}).get("text")
+                or outcome.get("feedback_summary") or outcome.get("execution_notes") or outcome.get("decision_reason") or "—"
+            ),
             "item_id": item_id,
             "section_key": item.get("inferred_section"),
         })
@@ -988,11 +1033,28 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         })
 
     linked_requirement_ids = {str(row.get("requirement_id")) for row in active_brief_links if row.get("requirement_id")}
+    unified_requirement_matches = {
+        str(row.get("requirement_id") or ""): row
+        for row in (unified.get("briefing_matches") or [])
+        if row.get("requirement_id")
+    }
+    briefing_unconsolidated = []
     briefing_gaps = []
     for requirement in snapshot.get("briefing_requirements", []):
         req_id = str(requirement.get("id") or "")
         status = str(requirement.get("adherence_status") or "not_assessed")
         if req_id in linked_requirement_ids and status in POSITIVE_ADHERENCE:
+            continue
+        unified_match = unified_requirement_matches.get(req_id)
+        if unified_match:
+            briefing_unconsolidated.append({
+                "Demanda do briefing": requirement.get("title") or "Sem título",
+                "Tipo": requirement.get("requirement_type") or "Não informado",
+                "Obrigatória": "Sim" if requirement.get("mandatory") else "Não",
+                "Aderência": "Evidência encontrada",
+                "Leitura": "A proposta contém evidência semanticamente relacionada, mas o vínculo ainda não foi consolidado numa solução estruturada.",
+                "Confiança": f"{float(unified_match.get('score') or 0):.0%}",
+            })
             continue
         briefing_gaps.append({
             "Demanda do briefing": requirement.get("title") or "Sem título",
@@ -1018,6 +1080,9 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         budget_amount = float(budget_amount) if budget_amount not in (None, "") else None
     except (TypeError, ValueError):
         budget_amount = None
+    unified_budget = _safe_float((unified.get("project_truth") or {}).get("budget_amount"))
+    if unified_budget is not None:
+        budget_amount = unified_budget
     if budget_amount is None:
         briefing_budgets = []
         for document in snapshot.get("briefing_documents", []):
@@ -1048,6 +1113,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         "cost_only_items": len(cost_only),
         "report_only_items": len(report_only),
         "briefing_gaps": len(briefing_gaps),
+        "briefing_evidence_unconsolidated": len(briefing_unconsolidated),
         "cost_total": cost_total,
         "linked_cost_total": linked_cost_total,
         "budget_amount": budget_amount,
@@ -1129,11 +1195,17 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
             "title": "Entregas adicionais",
             "text": f"O relatório registra {len(report_only)} entrega(s) sem correspondência clara na apresentação final.",
         })
+    if briefing_unconsolidated:
+        findings.append({
+            "level": "info",
+            "title": "Briefing × proposta · evidências ainda não consolidadas",
+            "text": f"A NAVE encontrou evidência relacionada para {len(briefing_unconsolidated)} demanda(s) do briefing; elas não devem ser tratadas como ausência de resposta apenas porque os links legados ainda estão incompletos.",
+        })
     if briefing_gaps:
         findings.append({
             "level": "warning",
             "title": "Briefing × evidências",
-            "text": f"{len(briefing_gaps)} demanda(s) do briefing ainda não possuem evidência consolidada de atendimento.",
+            "text": f"{len(briefing_gaps)} demanda(s) do briefing ainda não possuem evidência identificada de atendimento nas fontes atuais.",
         })
     for key, source in coverage.items():
         if source["state"] == "attached":
@@ -1143,7 +1215,35 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "text": "O arquivo está salvo no projeto, mas seu conteúdo ainda não entrou no cruzamento inteligente.",
             })
 
-    recommendations: list[str] = []
+    # Unified Decision Intelligence entra antes das recomendações legadas. O
+    # workspace deixa de depender apenas das tabelas memory_* para saber o que o
+    # projeto realmente contém.
+    for issue in unified.get("consistency_issues") or []:
+        findings.append({
+            "level": "warning",
+            "title": issue.get("title") or "Inconsistência entre fontes",
+            "text": issue.get("text") or "",
+            "source": "consistency_engine",
+            "severity": issue.get("severity"),
+        })
+    decision = unified.get("decision_intelligence") or {}
+    for group in ("diagnostic", "results", "connections", "learnings"):
+        for row in decision.get(group) or []:
+            findings.append({
+                "level": "warning" if row.get("kind") in {"contradiction", "risk"} else "info",
+                "title": row.get("title") or "Leitura NAVE",
+                "text": row.get("text") or "",
+                "source": f"unified_{group}",
+                "kind": row.get("kind"),
+                "importance": row.get("importance"),
+                "evidence": row.get("evidence") or [],
+            })
+
+    recommendations: list[str] = [
+        str(row.get("text") or "").strip()
+        for row in decision.get("recommendations") or []
+        if str(row.get("text") or "").strip()
+    ]
     if cost_only:
         recommendations.append("Revisar as linhas de custo sem correspondência e confirmar se representam entregas adicionais, custos transversais ou itens omitidos da apresentação.")
     if proposed_without_cost:
@@ -1194,7 +1294,13 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
     if prior_semantic:
         metrics["semantic_synthesis"] = prior_semantic
         semantic_rows = []
-        for group_name, level in (("strongest_connections", "info"), ("contradictions_or_gaps", "warning")):
+        for group_name, level in (
+            ("diagnostic", "info"),
+            ("results", "info"),
+            ("strongest_connections", "info"),
+            ("discovered_connections", "info"),
+            ("contradictions_or_gaps", "warning"),
+        ):
             for row in prior_semantic.get(group_name) or []:
                 if not isinstance(row, dict):
                     continue
@@ -1222,16 +1328,20 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         recommendations = list(dict.fromkeys(recommendations))
 
     latest_report = snapshot.get("report_analyses", [None])[0] if snapshot.get("report_analyses") else None
+    unified_results = unified.get("results") or {}
     result_summary = {
-        "executive_summary": (latest_report or {}).get("executive_summary"),
-        "highlights": (latest_report or {}).get("highlights") or [],
-        "issues": (latest_report or {}).get("issues") or [],
-        "learnings": (latest_report or {}).get("learnings") or [],
-        "recommendations": (latest_report or {}).get("recommendations") or [],
-        "kpis": (latest_report or {}).get("kpis") or [],
-        "participants_count": (latest_report or {}).get("participants_count"),
+        "executive_summary": (latest_report or {}).get("executive_summary") or unified_results.get("executive_summary"),
+        "highlights": (latest_report or {}).get("highlights") or unified_results.get("highlights") or [],
+        "issues": list(dict.fromkeys([*((latest_report or {}).get("issues") or []), *(unified_results.get("issues") or []), *(unified_results.get("data_quality") or [])])),
+        "learnings": (latest_report or {}).get("learnings") or unified_results.get("learnings") or [],
+        "recommendations": list(dict.fromkeys([*((latest_report or {}).get("recommendations") or []), *(unified_results.get("recommendations") or [])])),
+        "kpis": (latest_report or {}).get("kpis") or unified_results.get("kpis") or [],
+        "participants_count": (latest_report or {}).get("participants_count") or unified_results.get("participants_count"),
+        "participants_scope": unified_results.get("participants_scope"),
         "planned_cost": (latest_report or {}).get("planned_cost"),
         "actual_cost": (latest_report or {}).get("actual_cost"),
+        "activation_results": (latest_report or {}).get("activation_results") or unified_results.get("activation_results") or [],
+        "pending": unified_results.get("pending") or [],
     }
 
     return {
@@ -1245,10 +1355,12 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
             "cost_only": cost_only,
             "report_only": report_only,
             "briefing_gaps": briefing_gaps,
+            "briefing_evidence_unconsolidated": briefing_unconsolidated,
             "proposed_without_cost": proposed_without_cost,
         },
         "result_summary": result_summary,
         "advanced_insights": advanced,
+        "unified": unified,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1282,6 +1394,7 @@ def persist_project_intelligence(
 def _render_source_card(source: dict[str, Any]) -> str:
     state_label = {
         "structured": "Estruturado e cruzado",
+        "evidence_found": "Evidência encontrada no Intelligence Graph",
         "attached": "Anexado, aguardando leitura",
         "missing": "Pendente",
     }.get(source.get("state"), "Pendente")
@@ -1433,9 +1546,40 @@ def render_project_intelligence(
                 width="stretch",
             )
 
+    unified = intelligence.get("unified") or {}
+    decision = unified.get("decision_intelligence") or {}
+    consistency_issues = unified.get("consistency_issues") or []
+    if any(decision.get(key) for key in ("diagnostic", "results", "learnings", "recommendations", "connections")) or consistency_issues:
+        st.markdown("#### Decision Intelligence · o ouro da NAVE")
+        st.caption(
+            "Diagnóstico, resultados, aprendizados, recomendações e conexões são projeções da mesma verdade consolidada do projeto — com evidência, incerteza e contradições explícitas."
+        )
+        if consistency_issues:
+            for issue in consistency_issues[:5]:
+                severity = str(issue.get("severity") or "high")
+                text = f"**{issue.get('title') or 'Inconsistência'}** — {issue.get('text') or ''}"
+                st.error(text) if severity in {"critical", "high"} else st.warning(text)
+        gold_tabs = st.tabs(["Diagnóstico", "Resultados", "Aprendizados", "Recomendações", "Conexões descobertas"])
+        for tab, key in zip(gold_tabs, ("diagnostic", "results", "learnings", "recommendations", "connections")):
+            with tab:
+                rows = decision.get(key) or []
+                if not rows:
+                    st.caption("Nenhuma conclusão consolidada nesta categoria com as fontes atuais.")
+                    continue
+                for row in rows[:16]:
+                    kind = str(row.get("kind") or "inference").upper()
+                    title = str(row.get("title") or "Leitura NAVE")
+                    text = str(row.get("text") or "")
+                    if key == "recommendations":
+                        st.success(f"**{title}**\n\n{text}")
+                    elif str(row.get("kind") or "") in {"contradiction", "risk"}:
+                        st.warning(f"**{title}**\n\n{text}")
+                    else:
+                        st.info(f"**{title}** · `{kind}`\n\n{text}")
+
     left, right = st.columns(2, gap="large")
     with left:
-        st.markdown("#### Diagnóstico")
+        st.markdown("#### Diagnóstico detalhado")
         for finding in intelligence["findings"]:
             css_class = "nave-diagnostic-alert" if finding.get("level") == "warning" else "nave-diagnostic-callout"
             st.markdown(
@@ -1443,7 +1587,7 @@ def render_project_intelligence(
                 unsafe_allow_html=True,
             )
     with right:
-        st.markdown("#### Recomendações")
+        st.markdown("#### Recomendações detalhadas")
         for index, recommendation in enumerate(intelligence["recommendations"], start=1):
             st.markdown(f"**{index}.** {recommendation}")
 
@@ -1497,16 +1641,25 @@ def render_project_intelligence(
             st.caption("Nenhuma entrega adicional foi identificada no relatório atual.")
 
     with tabs[3]:
-        rows = discrepancies["briefing_gaps"]
-        if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-        else:
+        evidence_rows = discrepancies.get("briefing_evidence_unconsolidated") or []
+        gap_rows = discrepancies["briefing_gaps"]
+        if evidence_rows:
+            st.info("Há demandas com evidência encontrada na proposta que ainda não viraram vínculos estruturados. Elas não são tratadas como ausência de resposta.")
+            st.dataframe(pd.DataFrame(evidence_rows), hide_index=True, width="stretch")
+        if gap_rows:
+            st.markdown("**Demandas ainda sem evidência identificada**")
+            st.dataframe(pd.DataFrame(gap_rows), hide_index=True, width="stretch")
+        if not evidence_rows and not gap_rows:
             st.success("Não foram identificadas demandas sem evidência consolidada.")
 
     with tabs[4]:
         result = intelligence["result_summary"]
-        if not result.get("executive_summary"):
-            st.caption("O relatório pós-evento ainda não possui leitura estruturada.")
+        has_result_evidence = bool(
+            result.get("executive_summary") or result.get("activation_results")
+            or result.get("participants_count") is not None or result.get("pending")
+        )
+        if not has_result_evidence:
+            st.caption("Nenhuma evidência pós-evento consolidada foi encontrada nas fontes atuais.")
         else:
             result_metrics = st.columns(4)
             result_metrics[0].metric("Participantes", result.get("participants_count") or "—")
@@ -1514,7 +1667,15 @@ def render_project_intelligence(
             result_metrics[2].metric("Custo realizado", _money(result.get("actual_cost")))
             variation = _safe_float(result.get("actual_cost")) - _safe_float(result.get("planned_cost"))
             result_metrics[3].metric("Variação", _money(variation) if result.get("actual_cost") is not None and result.get("planned_cost") is not None else "—")
-            st.info(str(result.get("executive_summary")))
+            if result.get("executive_summary"):
+                st.info(str(result.get("executive_summary")))
+            if result.get("participants_scope") == "festival_event" and result.get("participants_count") is not None:
+                st.caption("O público informado é do evento/festival; não é convertido automaticamente em visitantes da ativação.")
+            if result.get("activation_results"):
+                st.markdown("**Execução por entrega / ativação**")
+                st.dataframe(pd.DataFrame(result.get("activation_results")), hide_index=True, width="stretch")
+            for value in result.get("pending") or []:
+                st.warning(value)
             two = st.columns(2)
             with two[0]:
                 st.markdown("**Destaques**")

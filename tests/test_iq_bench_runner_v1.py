@@ -232,3 +232,40 @@ def test_blind_regression_gate_detects_material_drop(tmp_path: Path):
     result = run_suite(SUITE, ResponseDirectoryAdapter(responses), baseline=baseline, regression_tolerance=0.03)
     gate = next(g for g in result.gates if g.name == "blind_project_regression_allowed")
     assert gate.status == "fail"
+
+
+def test_chambinho_unified_snapshot_metrics_detect_false_empty_and_execution_links():
+    case = _case("golden_chambinho_festivalzinho_2026_full_cycle")
+    candidate = {
+        "unified": {
+            "project_truth": {"stage": "executed", "budget_amount": 400000.0},
+            "coverage": {
+                "strategy": {"state": "evidence_found_not_consolidated"},
+                "scenography": {"state": "evidence_found_not_consolidated"},
+                "activations": {"state": "structured"},
+                "gifts": {"state": "evidence_found_not_consolidated"},
+                "journey_operation": {"state": "evidence_found_not_consolidated"},
+                "communication": {"state": "evidence_found_not_consolidated"},
+            },
+            "execution_matches": [
+                {"item_title": "Jogo da memória"},
+                {"item_title": "Amarelinha"},
+                {"item_title": "Pescaria"},
+            ],
+            "decision_intelligence": {
+                "diagnostic": [{"text": "x"}],
+                "results": [{"text": "x"}],
+                "learnings": [{"text": "x"}],
+                "recommendations": [{"text": "x"}],
+                "connections": [{"text": "x"}],
+            },
+        }
+    }
+    metrics, signals = evaluate_case(case, candidate)
+    by_name = {m.name: m.value for m in metrics}
+    assert by_name["unified_truth_accuracy"] == 1.0
+    assert by_name["false_empty_count"] == 0.0
+    assert by_name["execution_link_recall"] == 1.0
+    assert by_name["decision_intelligence_coverage"] == 1.0
+    assert signals["false_empty_count"] == 0.0
+    assert signals["unified_truth_accuracy"] == 1.0

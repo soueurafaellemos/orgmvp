@@ -26,6 +26,26 @@ expected:
     proposal: proposal_presentation
     budget: cost_sheet
     report: post_event_report
+  project_truth:
+    stage: executed
+    budget_amount: 400000.0
+  coverage_nonempty:
+    - strategy
+    - scenography
+    - activations
+    - gifts
+    - journey_operation
+    - communication
+  execution_matches_required:
+    - Jogo da Memória
+    - Amarelinha
+    - Pescaria
+  decision_sections_required:
+    - diagnostic
+    - results
+    - learnings
+    - recommendations
+    - connections
   claims:
     - subject: project
       predicate: budget_max

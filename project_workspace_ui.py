@@ -36,6 +36,8 @@ from project_workspace_intelligence import (
     proposal_cost_items,
     render_project_intelligence,
 )
+from project_intelligence_unified import build_unified_project_snapshot
+from project_intelligence_report import build_project_intelligence_pdf
 
 
 PROJECT_SECTIONS = [
@@ -320,12 +322,19 @@ def _business_state(project: dict[str, Any], outcome: dict[str, Any]) -> str:
     return "proposal"
 
 
-def _project_header(project: dict[str, Any], outcome: dict[str, Any] | None = None) -> None:
+def _project_header(
+    project: dict[str, Any],
+    outcome: dict[str, Any] | None = None,
+    unified: dict[str, Any] | None = None,
+) -> None:
     title = project.get("project_name") or "Projeto sem nome"
     client = project.get("client_brand") or "Cliente não informado"
     event = project.get("event_name") or "Evento não informado"
     business_state = _business_state(project, outcome or {})
     status = BUSINESS_STATE_LABELS.get(business_state, "Não informado")
+    truth = (unified or {}).get("project_truth") if isinstance(unified, dict) else {}
+    if isinstance(truth, dict) and truth.get("stage_label"):
+        status = str(truth.get("stage_label"))
     process_type = str((outcome or {}).get("process_type") or "")
     if business_state == "lost" and process_type == "competition":
         status = "Concorrência perdida / proposta não aprovada"
@@ -1229,23 +1238,80 @@ def _render_memory_cards(
         )
 
 
+def _render_unified_evidence_cards(
+    rows: list[dict[str, Any]],
+    *,
+    intro: str,
+    limit: int = 10,
+) -> None:
+    if not rows:
+        return
+    st.info(intro)
+    for row in rows[:limit]:
+        source = str(row.get("source_name") or "Fonte")
+        locator = str(row.get("locator_text") or "").strip()
+        title = source + (f" · {locator}" if locator else "")
+        with st.expander(title, expanded=False):
+            st.write(row.get("text") or "Evidência sem texto extraído.")
+            confidence = row.get("confidence")
+            if confidence not in (None, ""):
+                try:
+                    st.caption(f"Confiança de extração: {float(confidence):.0%}")
+                except Exception:
+                    pass
+
+
 def _render_strategy(
     client: Client,
     *,
     project_id: str,
+    snapshot: dict[str, Any],
 ) -> None:
     _section_title(
         "Estratégia e conceito",
         "Direcionais estratégicos, conceitos criativos e racional do projeto.",
     )
-    _render_memory_cards(
-        client,
-        project_id=project_id,
-        section_keys=["strategy"],
-        empty_message=(
-            "Nenhum conteúdo de estratégia ou conceito foi estruturado."
-        ),
-    )
+    strategy_rows = [
+        row for row in snapshot.get("memory_items", [])
+        if str(row.get("section_key") or "") == "strategy"
+    ]
+    if strategy_rows:
+        _render_memory_cards(
+            client,
+            project_id=project_id,
+            section_keys=["strategy"],
+            empty_message="",
+        )
+        return
+
+    unified = snapshot.get("unified_intelligence") or build_unified_project_snapshot(snapshot)
+    evidence = (unified.get("domain_evidence") or {}).get("strategy") or []
+    semantic_snapshots = snapshot.get("intelligence_snapshots") or []
+    semantic = None
+    for stored in semantic_snapshots:
+        metrics = stored.get("metrics") if isinstance(stored.get("metrics"), dict) else {}
+        candidate = metrics.get("semantic_synthesis")
+        if isinstance(candidate, dict) and candidate.get("strategic_reading"):
+            semantic = candidate
+            break
+    if semantic and semantic.get("strategic_reading"):
+        st.markdown("#### Leitura estratégica consolidada")
+        st.info(str(semantic.get("strategic_reading")))
+    if evidence:
+        st.markdown("#### Evidências estratégicas encontradas nas fontes")
+        _render_unified_evidence_cards(
+            evidence,
+            intro=(
+                "A estrutura legada ainda não criou fichas de estratégia, mas a NAVE encontrou "
+                f"{len(evidence)} evidência(s) estratégicas no Intelligence Graph. Isto é uma falha de consolidação, não ausência de conteúdo."
+            ),
+            limit=12,
+        )
+    else:
+        st.markdown(
+            '<div class="nave-workspace-empty">Nenhuma evidência de estratégia ou conceito foi encontrada nas fontes atuais.</div>',
+            unsafe_allow_html=True,
+        )
 
 
 
@@ -1261,13 +1327,34 @@ def _render_scenography(
     )
 
     st.markdown("#### Cenografia e ambientes")
-    render_visual_section(
-        client,
-        project_id=project_id,
-        snapshot=snapshot,
-        section_keys=["scenography"],
-        empty_message="Nenhum ambiente ou solução cenográfica foi identificado.",
-    )
+    scenography_rows = [
+        row for row in snapshot.get("memory_items", [])
+        if str(row.get("section_key") or "") == "scenography"
+    ]
+    unified = snapshot.get("unified_intelligence") or build_unified_project_snapshot(snapshot)
+    scenography_evidence = (unified.get("domain_evidence") or {}).get("scenography") or []
+    if scenography_rows:
+        render_visual_section(
+            client,
+            project_id=project_id,
+            snapshot=snapshot,
+            section_keys=["scenography"],
+            empty_message="Nenhum ambiente ou solução cenográfica foi identificado.",
+        )
+    elif scenography_evidence:
+        _render_unified_evidence_cards(
+            scenography_evidence,
+            intro=(
+                "A NAVE encontrou evidências de cenografia/ambientes nas fontes, embora ainda não existam fichas legadas consolidadas. "
+                "O conteúdo abaixo impede um falso vazio enquanto a materialização é aprimorada."
+            ),
+            limit=10,
+        )
+    else:
+        st.markdown(
+            '<div class="nave-workspace-empty">Nenhuma evidência de ambiente ou solução cenográfica foi encontrada.</div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("#### Ativações e experiências")
     render_visual_section(
@@ -1984,7 +2071,9 @@ def _render_results(
     project = snapshot["project"]
     status = str(project.get("status") or "")
     outcome = snapshot.get("outcome") or {}
-    business_state = _business_state(project, outcome)
+    unified = snapshot.get("unified_intelligence") or build_unified_project_snapshot(snapshot)
+    truth = unified.get("project_truth") or {}
+    business_state = str(truth.get("stage") or "") or _business_state(project, outcome)
 
     if business_state in {"proposal", "no_return"}:
         _section_title(
@@ -2013,6 +2102,29 @@ def _render_results(
     )
     _section_title(title, intro)
     render_report_analyses(snapshot)
+    unified_results = unified.get("results") or {}
+    if not snapshot.get("report_analyses") and (
+        unified_results.get("activation_results") or unified_results.get("participants_count") is not None
+    ):
+        st.markdown("#### Leitura consolidada a partir das evidências pós-evento")
+        if unified_results.get("participants_count") is not None:
+            scope_note = (
+                "Público do evento/festival — não equivale automaticamente a visitantes da ativação."
+                if unified_results.get("participants_scope") == "festival_event"
+                else "Escopo conforme o relatório."
+            )
+            st.metric("Público registrado", int(float(unified_results.get("participants_count"))))
+            st.caption(scope_note)
+        if unified_results.get("activation_results"):
+            st.dataframe(
+                pd.DataFrame(unified_results.get("activation_results")),
+                hide_index=True,
+                width="stretch",
+            )
+        for value in unified_results.get("pending") or []:
+            st.warning(value)
+        for value in unified_results.get("data_quality") or []:
+            st.warning(f"Qualidade de dado: {value}")
 
     with st.expander("Ajustar informações manualmente", expanded=not bool(snapshot.get("report_analyses"))):
         with st.form(f"outcome_form_{project_id}"):
@@ -2471,7 +2583,31 @@ def render_project_workspace(
         st.error("O projeto selecionado não foi encontrado.")
         return
 
-    _project_header(project, snapshot.get("outcome") or {})
+    unified = build_unified_project_snapshot(snapshot)
+    snapshot["unified_intelligence"] = unified
+    _project_header(project, snapshot.get("outcome") or {}, unified)
+
+    # O Dossiê é uma projeção do MESMO cérebro consumido pelo workspace — nunca
+    # uma impressão das abas. Assim PDF e interface não podem chegar a verdades
+    # diferentes sobre o projeto.
+    try:
+        dossier_intelligence = build_project_intelligence(snapshot)
+        dossier_bytes = build_project_intelligence_pdf(
+            snapshot=snapshot,
+            intelligence=dossier_intelligence,
+        )
+        file_stub = re.sub(r"[^A-Za-z0-9_-]+", "_", str(project.get("project_name") or "projeto")).strip("_") or "projeto"
+        st.download_button(
+            "↓ Baixar Dossiê Inteligente — PDF",
+            data=dossier_bytes,
+            file_name=f"NAVE_Dossie_Inteligente_{file_stub}_{str(dossier_intelligence.get('source_signature') or '')[:8]}.pdf",
+            mime="application/pdf",
+            width="stretch",
+            key=f"download_intelligence_dossier_{project_id}",
+        )
+    except Exception as exc:
+        st.caption(f"Dossiê Inteligente temporariamente indisponível: {exc}")
+
     _status_selector(
         client,
         project=project,
@@ -2516,6 +2652,7 @@ def render_project_workspace(
             _render_strategy(
                 client,
                 project_id=project_id,
+                snapshot=snapshot,
             )
         elif selected_section == "Cenografia e ativações":
             _render_scenography(

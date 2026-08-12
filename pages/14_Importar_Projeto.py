@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.2.2.2",
+    eyebrow="NAVE by VOE · V28.3.0",
 )
 
 client = get_nave_client()
@@ -79,7 +79,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     f"{outcome.get('errors', 0)} erro(s). A NAVE não considera a correção concluída enquanto briefing/apresentação esperados continuarem zerados."
                 )
             else:
-                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.2.2.")
+                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.3.0.")
                 st.session_state["nave_project_hub_focus_id"] = repair_options[repair_label]
 
             if counts:
@@ -114,7 +114,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     c3.metric("Evidências de execução", int(cross.get("execution_claims") or 0))
                     c4.metric("Revisões sugeridas", int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0))
                     st.caption(
-                        "A V28.2.2 conecta aliases e entidades equivalentes entre briefing, proposta, custos, feedback e relatório. "
+                        "A V28.3.0 consolida evidências, relatório pós-evento, conexões cross-source e uma verdade única do projeto. "
                         "Vínculos ambíguos não são forçados: viram revisão/finding auditável."
                     )
 
