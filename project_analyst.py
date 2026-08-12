@@ -73,9 +73,20 @@ class SemanticConnection(BaseModel):
     recommended_action: str | None = None
 
 
+class StrategyFramework(BaseModel):
+    territory: str | None = None
+    tension: str | None = None
+    pillars: list[str] = Field(default_factory=list)
+    strategic_direction: str | None = None
+    concept: str | None = None
+    experience_role: str | None = None
+    briefing_adherence: str | None = None
+
+
 class ProjectSemanticSynthesis(BaseModel):
     executive_summary: str
     strategic_reading: str | None = None
+    strategy_framework: StrategyFramework | None = None
     diagnostic: list[SemanticConnection] = Field(default_factory=list)
     results: list[SemanticConnection] = Field(default_factory=list)
     strongest_connections: list[SemanticConnection] = Field(default_factory=list)
@@ -127,6 +138,17 @@ hipótese útil que deve ser validada.
 A resposta deve priorizar aquilo que mudaria uma decisão de pré-produção no próximo
 projeto: o que preservar, o que corrigir, onde otimizar, que risco antecipar e que
 repertório merece ser reutilizado.
+
+ESTRATÉGIA E CONCEITO
+Quando houver camada estratégica explícita, além de strategic_reading preencha strategy_framework:
+- territory: território estratégico central;
+- tension: problema/tensão que a estratégia resolve;
+- pillars: 2 a 6 pilares explícitos ou fortemente sustentados;
+- strategic_direction: como a proposta decide responder ao briefing;
+- concept: conceito/POV central, se existir;
+- experience_role: papel da experiência na vida/jornada do público;
+- briefing_adherence: síntese de como a estratégia responde ao briefing.
+Não copie blocos de slide. Sintetize sem inventar e preserve os termos relevantes da fonte.
 
 O OURO DA NAVE são cinco saídas diferentes:
 1. diagnostic: o que aconteceu e o que isso significa;
@@ -436,28 +458,90 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def _briefing_audience_quantity(snapshot: Mapping[str, Any]) -> float | None:
-    candidates: list[Any] = []
+def _parse_people_quantity(text: Any) -> tuple[float | None, str | None]:
+    raw = str(text or "")
+    normalized = normalize_text(raw)
+    if not raw.strip():
+        return None, None
+
+    # Idades são atributos do público, não quantidade de participantes.
+    cleaned = re.sub(r"\b(?:entre\s+)?\d{1,3}\s*(?:a|e|ate|[-–])\s*\d{1,3}\s*anos?\b", " ", normalized)
+    cleaned = re.sub(r"\b\d{1,3}\s*anos?\b", " ", cleaned)
+
+    scope = None
+    if any(token in cleaned for token in ("festival", "publico do evento", "publico do festival")):
+        scope = "festival_event"
+    elif any(token in cleaned for token in ("convidados", "guest list", "guests", "participantes", "attendees")):
+        scope = "project_attendees"
+    elif "pessoas" in cleaned or "publico" in cleaned:
+        scope = "project_audience"
+
+    # Faixas em milhares: 6 a 8 mil pessoas -> usa o teto como capacidade/audiência
+    # de referência, preservando o escopo para não confundir festival com ativação.
+    range_mil = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(?:a|ate|[-–])\s*(\d+(?:[.,]\d+)?)\s*mil\b", cleaned)
+    if range_mil:
+        high = float(range_mil.group(2).replace(",", ".")) * 1000
+        if 10 <= high <= 1000000:
+            return high, scope
+    single_mil = re.search(r"\b(\d+(?:[.,]\d+)?)\s*mil\s+(?:pessoas|participantes|convidados|visitantes|publico)\b", cleaned)
+    if single_mil:
+        value = float(single_mil.group(1).replace(",", ".")) * 1000
+        if 10 <= value <= 1000000:
+            return value, scope
+
+    if not any(token in cleaned for token in ("pessoa", "publico", "convid", "participant", "guest", "attendee")):
+        return None, scope
+    values = []
+    for token in re.findall(r"\b([1-9][0-9]{1,6})\b", cleaned.replace(".", "")):
+        value = float(token)
+        if 10 <= value <= 1000000:
+            values.append(value)
+    return (max(values), scope) if values else (None, scope)
+
+
+def _briefing_audience_reference(snapshot: Mapping[str, Any]) -> tuple[float | None, str | None, str | None]:
+    # 1. Claim explícito do Intelligence Graph.
+    graph = snapshot.get("intelligence_graph") if isinstance(snapshot.get("intelligence_graph"), Mapping) else {}
+    project_entity = graph.get("project_entity") if isinstance(graph.get("project_entity"), Mapping) else {}
+    project_entity_id = str(project_entity.get("id") or "")
+    claims = [
+        row for row in (graph.get("claims") or [])
+        if str(row.get("predicate") or "") == "expected_attendees"
+        and (not project_entity_id or str(row.get("subject_entity_id") or "") == project_entity_id)
+        and str(row.get("status") or "active") in {"active", "review_required"}
+    ]
+    claims.sort(key=lambda row: (float(row.get("authority_score") or 0), float(row.get("model_confidence") or 0)), reverse=True)
+    for row in claims:
+        value = _safe_float(row.get("value_numeric"))
+        if value and 10 <= value <= 1000000:
+            return value, str((row.get("value_json") or {}).get("scope") or "project_audience") if isinstance(row.get("value_json"), Mapping) else "project_audience", "graph_claim"
+
+    # 2. Requisitos do briefing preservam o contexto semântico melhor do que um
+    # número isolado em metadata (que pode ser idade, capacidade parcial etc.).
+    scoped_candidates: list[tuple[float, str | None, str]] = []
+    for req in snapshot.get("briefing_requirements", []) or []:
+        text = " ".join(str(req.get(key) or "") for key in ("title", "description", "source_quote", "requirement_type"))
+        value, scope = _parse_people_quantity(text)
+        if value is not None:
+            scoped_candidates.append((value, scope, "briefing_requirement"))
+    if scoped_candidates:
+        # Preferimos escopo específico de participantes; em empate, a maior
+        # quantidade explícita é a referência operacional mais conservadora.
+        rank = {"project_attendees": 3, "project_audience": 2, "festival_event": 1, None: 0}
+        scoped_candidates.sort(key=lambda row: (rank.get(row[1], 0), row[0]), reverse=True)
+        return scoped_candidates[0]
+
+    # 3. Campos estruturados do documento somente depois da validação contextual.
     for doc in snapshot.get("briefing_documents", []) or []:
-        metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
-        # audience_quantity é evidência estruturada e tem prioridade absoluta.
-        direct = metadata.get("audience_quantity")
-        if direct not in (None, ""):
-            candidates.insert(0, direct)
-        candidates.append(doc.get("audience"))
-    patterns = ("convid", "guest", "participant", "pessoa", "attendee", "publico")
-    for prefer_context in (True, False):
-        for value in candidates:
-            norm = str(value or "")
-            normalized = normalize_text(norm)
-            if prefer_context and not any(token in normalized for token in patterns):
-                continue
-            numbers = re.findall(r"\b([1-9][0-9]{1,5})\b", norm.replace(".", ""))
-            if numbers:
-                parsed = [float(n) for n in numbers if 10 <= float(n) <= 100000]
-                if parsed:
-                    return max(parsed)
-    return None
+        for value in (doc.get("audience"), (doc.get("metadata") or {}).get("audience_quantity") if isinstance(doc.get("metadata"), Mapping) else None):
+            parsed, scope = _parse_people_quantity(value)
+            if parsed is not None:
+                return parsed, scope, "briefing_document"
+    return None, None, None
+
+
+def _briefing_audience_quantity(snapshot: Mapping[str, Any]) -> float | None:
+    return _briefing_audience_reference(snapshot)[0]
 
 
 def _compact_text(value: Any, limit: int = 900) -> str | None:
@@ -775,8 +859,13 @@ def derive_advanced_project_insights(
         sum(row["value"] for row in top_categories[:4]) / proposal_total
         if proposal_total and top_categories else None
     )
-    audience = _briefing_audience_quantity(snapshot)
-    cost_per_attendee = proposal_total / audience if proposal_total and audience else None
+    audience, audience_scope, audience_source = _briefing_audience_reference(snapshot)
+    # Público de festival/evento hospedeiro não é automaticamente público da ativação.
+    cost_per_attendee = (
+        proposal_total / audience
+        if proposal_total and audience and audience_scope != "festival_event"
+        else None
+    )
 
     item_by_id = {str(row.get("id")): row for row in memory_items if row.get("id")}
     cost_by_id = {str(row.get("id")): row for row in cost_items if row.get("id")}
@@ -892,6 +981,8 @@ def derive_advanced_project_insights(
         "top5_item_share": top5_share,
         "top4_category_share": top4_category_share,
         "audience_quantity": audience,
+        "audience_scope": audience_scope,
+        "audience_source": audience_source,
         "cost_per_attendee": cost_per_attendee,
         "validated_items": validated,
         "challenged_items": challenged,

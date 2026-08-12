@@ -62,6 +62,16 @@ Não agrupe todos os entregáveis em uma única ficha quando o briefing
 listar entregas diferentes. Exemplo: geladeiras, depósito, brindes,
 sampling, mascote e cobertura devem ser requisitos separados.
 
+DISTINÇÃO ENTRE FORMULÁRIO E DEMANDA:
+- cabeçalhos, nomes de campo, opções de formulário e respostas administrativas
+  não são automaticamente requisitos;
+- frases como "presencialmente / videoconferência / e-mail", "tipo de campanha"
+  ou rótulos de tabela só viram requisito quando o conteúdo estabelece uma decisão
+  real de produção, restrição, entrega, objetivo ou responsabilidade;
+- separe o rótulo do formulário do valor preenchido; não concatene linhas/colunas
+  vizinhas em uma demanda sem sentido;
+- prefira menos requisitos corretos a fichas artificiais criadas por ruído estrutural.
+
 COBERTURA EXAUSTIVA:
 - percorra todas as páginas do lote;
 - cada ambiente, equipamento, serviço, brinde, quantidade, requisito
@@ -424,14 +434,10 @@ def _fallback_extraction(
             )
         )
 
+    # O fallback não infere cliente/evento por nomes de projetos conhecidos.
+    # Identidade é resolvida pelo classificador/semantic extractor ou permanece desconhecida.
     client_brand = None
     event_name = None
-
-    if "chambinho" in normalized:
-        client_brand = "Chambinho"
-
-    if "festivalzinho" in normalized:
-        event_name = "Festivalzinho"
 
     warnings = []
 

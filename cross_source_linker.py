@@ -32,9 +32,9 @@ from entity_resolution import (
     resolve_entities,
 )
 
-CROSS_SOURCE_LINKER_VERSION = "cross-source-linker-v1"
+CROSS_SOURCE_LINKER_VERSION = "cross-source-linker-v1.1"
 CROSS_SOURCE_SCHEMA_VERSION = "1"
-CROSS_SOURCE_PROMPT_VERSION = "deterministic-2026-08-12.v1"
+CROSS_SOURCE_PROMPT_VERSION = "deterministic-2026-08-12.v1.1"
 
 _LINKABLE_COST_SOURCE_TYPES = {
     "activation", "solution", "venue", "venue_space", "product", "gift",
@@ -85,7 +85,10 @@ def _norm(value: Any) -> str:
 
 
 def _tokens(value: Any) -> set[str]:
-    return {token for token in _norm(value).split() if len(token) > 1 and token not in _STOP}
+    return {
+        token for token in _norm(value).split()
+        if len(token) > 1 and token not in _STOP and not token.isdigit()
+    }
 
 
 def _select_in(client: Any, table: str, column: str, values: Sequence[str], columns: str = "*") -> list[dict[str, Any]]:

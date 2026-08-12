@@ -3,6 +3,7 @@ from __future__ import annotations
 """Dossiê Inteligente NAVE — projeção PDF do mesmo Unified Snapshot do workspace."""
 
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from reportlab.lib import colors
@@ -15,6 +16,7 @@ from reportlab.platypus import (
     Frame,
     KeepTogether,
     PageTemplate,
+    Image,
     Paragraph,
     Spacer,
     Table,
@@ -31,6 +33,19 @@ SOFT = colors.HexColor("#F5F7FA")
 WARN = colors.HexColor("#FFF6DD")
 GOOD = colors.HexColor("#EAF8EF")
 
+
+def _logo_flowable():
+    """Logo institucional discreto apenas na abertura do dossiê."""
+    path = Path(__file__).resolve().parent / "assets" / "nave_lockup.png"
+    if not path.exists():
+        return None
+    # Lockup horizontal discreto, alinhado à margem editorial como nos demais
+    # PDFs da NAVE. A marca assina; o projeto continua protagonista.
+    width = 24 * mm
+    height = width * (1187 / 4064)
+    image = Image(str(path), width=width, height=height)
+    image.hAlign = "LEFT"
+    return image
 
 def _money(value: Any) -> str:
     try:
@@ -137,7 +152,11 @@ def build_project_intelligence_pdf(
     result_summary = intelligence.get("result_summary") or {}
 
     story: list[Any] = []
-    story.append(Paragraph("NAVE BY VOE / INTELIGÊNCIA DE PROJETO", styles["eyebrow"]))
+    logo = _logo_flowable()
+    if logo is not None:
+        story.append(logo)
+        story.append(Spacer(1, 3.5 * mm))
+    story.append(Paragraph("DOSSIÊ INTELIGENTE / INTELIGÊNCIA DE PROJETO", styles["eyebrow"]))
     story.append(Paragraph(_safe(project.get("project_name") or "Projeto"), styles["title"]))
     story.append(Paragraph(
         f"{_safe(project.get('client_brand') or 'Cliente não informado')} | {_safe(project.get('event_name') or 'Evento não informado')} | {_safe(truth.get('stage_label') or metrics.get('stage_label') or 'Situação não informada')}",
@@ -158,14 +177,46 @@ def build_project_intelligence_pdf(
     if semantic.get("strategic_reading"):
         story.append(Paragraph("Leitura estratégica", styles["h2"]))
         story.append(Paragraph(_safe(semantic.get("strategic_reading")), styles["body"]))
+    framework = semantic.get("strategy_framework") if isinstance(semantic.get("strategy_framework"), Mapping) else {}
+    if framework:
+        story.append(Paragraph("Estrutura estratégica", styles["h2"]))
+        for label, key in (
+            ("Território", "territory"),
+            ("Tensão", "tension"),
+            ("Direção estratégica", "strategic_direction"),
+            ("Conceito / POV", "concept"),
+            ("Papel da experiência", "experience_role"),
+            ("Aderência ao briefing", "briefing_adherence"),
+        ):
+            if framework.get(key):
+                story.append(Paragraph(f"<b>{label}:</b> {_safe(framework.get(key))}", styles["body"]))
+        pillars = [_safe(v) for v in framework.get("pillars") or [] if _safe(v)]
+        if pillars:
+            story.append(Paragraph("<b>Pilares:</b> " + " · ".join(pillars), styles["body"]))
 
-    # Snapshot financeiro
+    # Snapshot financeiro: o dossiê usa a mesma nuance da interface. Um total
+    # bruto acima do budget não vira automaticamente "estouro" quando o briefing
+    # prevê pagamento direto pelo cliente.
     _section(story, "Inteligência financeira", styles)
+    financial_context = unified.get("financial_context") if isinstance(unified.get("financial_context"), Mapping) else {}
+    direct_payment = bool(financial_context.get("direct_payment_signal"))
+    delta_raw = metrics.get("budget_delta")
+    delta_label = "Diferença"
+    delta_value = "-"
+    if delta_raw is not None:
+        delta_number = float(delta_raw)
+        delta_value = _money(abs(delta_number))
+        if delta_number < 0 and direct_payment:
+            delta_label = "Diferença bruta a reconciliar"
+        elif delta_number < 0:
+            delta_label = "Acima do teto"
+        else:
+            delta_label = "Folga no budget"
     fin_data = [
         ["Budget / referência", _money(metrics.get("budget_amount"))],
         ["Total da proposta", _money(metrics.get("cost_total"))],
-        ["Diferença", _money(metrics.get("budget_delta")) if metrics.get("budget_delta") is not None else "-"],
-        ["Uso do budget", f"{float(metrics.get('budget_usage_pct')):.1%}" if metrics.get("budget_usage_pct") is not None else "-"],
+        [delta_label, delta_value],
+        ["Uso bruto do budget", f"{float(metrics.get('budget_usage_pct')):.1%}" if metrics.get("budget_usage_pct") is not None else "-"],
     ]
     table = Table(fin_data, colWidths=[65 * mm, 55 * mm], hAlign="LEFT")
     table.setStyle(TableStyle([
@@ -176,6 +227,11 @@ def build_project_intelligence_pdf(
         ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
     story.append(table)
+    if direct_payment and delta_raw is not None and float(delta_raw) < 0:
+        story.append(Paragraph(
+            "A comparação acima é bruta. Há evidência de pagamento direto pelo cliente; a NAVE exige reconciliar responsabilidades financeiras antes de classificar o projeto como acima do envelope.",
+            styles["small"],
+        ))
     top_categories = (intelligence.get("advanced_insights") or {}).get("top_categories") or []
     if top_categories:
         story.append(Paragraph("Maiores categorias", styles["h2"]))
@@ -236,14 +292,18 @@ def build_project_intelligence_pdf(
         story.append(Paragraph("Nenhuma evidência estratégica consolidada.", styles["small"]))
 
     _section(story, "Riscos, conflitos e incertezas", styles)
-    consistency = unified.get("consistency_issues") or []
-    for row in consistency[:15]:
-        story.append(_finding_block({"kind": "contradiction", **dict(row)}, styles))
+    # Erros de pipeline/legado pertencem à Saúde da leitura NAVE, não ao diagnóstico
+    # de negócio. Aqui entram apenas contradições/risks já consolidados como decisão.
+    business_risks = [
+        row for row in (decision.get("diagnostic") or [])
+        if str(row.get("kind") or "") in {"contradiction", "risk", "unknown"}
+    ]
+    for row in business_risks[:15]:
+        story.append(_finding_block(row, styles))
         story.append(Spacer(1, 2 * mm))
     unknowns = semantic.get("unknowns") or []
     _bullets(story, unknowns[:15], styles, empty="Nenhuma incerteza adicional registrada pelo Project Analyst.")
 
-    _section(story, "Apêndice de fontes e proveniência", styles)
     graph = snapshot.get("intelligence_graph") if isinstance(snapshot.get("intelligence_graph"), Mapping) else {}
     contexts = graph.get("contexts") or []
     assets = {str(row.get("id")): row for row in graph.get("source_assets") or [] if row.get("id")}
@@ -256,6 +316,7 @@ def build_project_intelligence_pdf(
             Paragraph(_safe(asset.get("content_sha256"))[:12], styles["small"]),
         ])
     if source_rows:
+        _section(story, "Apêndice de fontes e proveniência", styles)
         source_table = Table([["Fonte", "Papel", "SHA-256"]] + source_rows, colWidths=[95 * mm, 48 * mm, 25 * mm], repeatRows=1)
         source_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), NAVY), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),

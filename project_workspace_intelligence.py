@@ -1127,6 +1127,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
     findings: list[dict[str, str]] = []
+    technical_health: list[dict[str, Any]] = []
     if items and proposal_stage:
         findings.append({
             "level": "info",
@@ -1209,55 +1210,45 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         })
     for key, source in coverage.items():
         if source["state"] == "attached":
-            findings.append({
+            technical_health.append({
                 "level": "warning",
+                "code": f"attached_not_structured_{key}",
                 "title": f"{source['label']} sem estruturação",
-                "text": "O arquivo está salvo no projeto, mas seu conteúdo ainda não entrou no cruzamento inteligente.",
+                "text": "O arquivo está salvo no projeto, mas seu conteúdo ainda não entrou na leitura estruturada principal.",
             })
 
     # Unified Decision Intelligence entra antes das recomendações legadas. O
     # workspace deixa de depender apenas das tabelas memory_* para saber o que o
     # projeto realmente contém.
     for issue in unified.get("consistency_issues") or []:
-        findings.append({
+        technical_health.append({
             "level": "warning",
-            "title": issue.get("title") or "Inconsistência entre fontes",
+            "code": issue.get("code") or "consistency_issue",
+            "title": issue.get("title") or "Inconsistência da leitura NAVE",
             "text": issue.get("text") or "",
             "source": "consistency_engine",
             "severity": issue.get("severity"),
+            "recommended_action": issue.get("recommended_action"),
         })
     decision = unified.get("decision_intelligence") or {}
-    for group in ("diagnostic", "results", "connections", "learnings"):
-        for row in decision.get(group) or []:
-            findings.append({
-                "level": "warning" if row.get("kind") in {"contradiction", "risk"} else "info",
-                "title": row.get("title") or "Leitura NAVE",
-                "text": row.get("text") or "",
-                "source": f"unified_{group}",
-                "kind": row.get("kind"),
-                "importance": row.get("importance"),
-                "evidence": row.get("evidence") or [],
-            })
+    for row in decision.get("diagnostic") or []:
+        findings.append({
+            "level": "warning" if row.get("kind") in {"contradiction", "risk"} else "info",
+            "title": row.get("title") or "Leitura NAVE",
+            "text": row.get("text") or "",
+            "source": "unified_diagnostic",
+            "kind": row.get("kind"),
+            "importance": row.get("importance"),
+            "evidence": row.get("evidence") or [],
+        })
 
+    # Recomendações exibidas ao usuário devem ser decisões de projeto, não tarefas
+    # de manutenção do pipeline. Os avisos de estruturação vivem em technical_health.
     recommendations: list[str] = [
         str(row.get("text") or "").strip()
         for row in decision.get("recommendations") or []
         if str(row.get("text") or "").strip()
     ]
-    if cost_only:
-        recommendations.append("Revisar as linhas de custo sem correspondência e confirmar se representam entregas adicionais, custos transversais ou itens omitidos da apresentação.")
-    if proposed_without_cost:
-        recommendations.append("Revisar as propostas sem custo direto: algumas podem estar agrupadas em linhas cenográficas ou operacionais e precisam de confirmação humana.")
-    if no_execution_evidence and not proposal_stage:
-        recommendations.append("Validar as entregas sem evidência no relatório. Ausência de evidência não significa que o item não foi executado.")
-    if report_only:
-        recommendations.append("Classificar as entregas identificadas apenas no pós-evento como adaptações de produção, escopo adicional ou substituições da proposta.")
-    if briefing_gaps:
-        recommendations.append("Revisar a matriz de aderência do briefing e registrar evidência, justificativa ou retirada por budget/prazo para cada lacuna.")
-    if budget_amount is not None and cost_total is None and snapshot.get("cost_documents"):
-        recommendations.append("Reprocessar ou revisar a estrutura da planilha de custos para transformar o budget do briefing em uma análise financeira comparável.")
-    if not snapshot.get("feedback_entries") and stage_key not in {"executed", "lost", "cancelled"}:
-        recommendations.append("Quando houver retorno do cliente, registrar o resultado comercial para atualizar automaticamente a leitura do projeto.")
     advanced = derive_advanced_project_insights(
         snapshot,
         proposal_total=cost_total,
@@ -1282,6 +1273,8 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
     metrics.update({
         "cost_per_attendee": advanced.get("cost_per_attendee"),
         "audience_quantity": advanced.get("audience_quantity"),
+        "audience_scope": advanced.get("audience_scope"),
+        "audience_source": advanced.get("audience_source"),
         "top4_category_share": advanced.get("top4_category_share"),
         "top5_item_share": advanced.get("top5_item_share"),
         "validated_items_count": len(advanced.get("validated_items") or []),
@@ -1296,7 +1289,6 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         semantic_rows = []
         for group_name, level in (
             ("diagnostic", "info"),
-            ("results", "info"),
             ("strongest_connections", "info"),
             ("discovered_connections", "info"),
             ("contradictions_or_gaps", "warning"),
@@ -1360,6 +1352,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         },
         "result_summary": result_summary,
         "advanced_insights": advanced,
+        "technical_health": technical_health,
         "unified": unified,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1435,10 +1428,10 @@ def render_project_intelligence(
             client, project_id=project_id, intelligence=intelligence
         )
 
-    st.subheader("Diagnóstico, recomendações, resultados e aprendizados")
+    st.subheader("Diagnóstico e recomendações")
     st.caption(
-        "Leitura cumulativa do projeto. O diagnóstico é recalculado sempre que briefing, "
-        "apresentação, planilha, relatório ou feedback recebe uma nova informação."
+        "Leitura executiva do projeto: aderência, riscos, oportunidades e decisões. "
+        "Resultados pós-evento e aprendizados permanecem em uma área própria do workspace."
     )
 
     semantic = (intelligence.get("metrics") or {}).get("semantic_synthesis")
@@ -1548,19 +1541,14 @@ def render_project_intelligence(
 
     unified = intelligence.get("unified") or {}
     decision = unified.get("decision_intelligence") or {}
-    consistency_issues = unified.get("consistency_issues") or []
-    if any(decision.get(key) for key in ("diagnostic", "results", "learnings", "recommendations", "connections")) or consistency_issues:
+    if any(decision.get(key) for key in ("diagnostic", "recommendations", "connections")):
         st.markdown("#### Decision Intelligence · o ouro da NAVE")
         st.caption(
-            "Diagnóstico, resultados, aprendizados, recomendações e conexões são projeções da mesma verdade consolidada do projeto — com evidência, incerteza e contradições explícitas."
+            "Diagnóstico, recomendações e conexões são a leitura de negócio consolidada do projeto. "
+            "Saúde técnica da leitura fica separada e não contamina a análise executiva."
         )
-        if consistency_issues:
-            for issue in consistency_issues[:5]:
-                severity = str(issue.get("severity") or "high")
-                text = f"**{issue.get('title') or 'Inconsistência'}** — {issue.get('text') or ''}"
-                st.error(text) if severity in {"critical", "high"} else st.warning(text)
-        gold_tabs = st.tabs(["Diagnóstico", "Resultados", "Aprendizados", "Recomendações", "Conexões descobertas"])
-        for tab, key in zip(gold_tabs, ("diagnostic", "results", "learnings", "recommendations", "connections")):
+        gold_tabs = st.tabs(["Diagnóstico", "Recomendações", "Conexões descobertas"])
+        for tab, key in zip(gold_tabs, ("diagnostic", "recommendations", "connections")):
             with tab:
                 rows = decision.get(key) or []
                 if not rows:
@@ -1607,7 +1595,6 @@ def render_project_intelligence(
         "Custos sem proposta",
         "Entregas fora da apresentação",
         "Briefing sem evidência",
-        "Resultados e aprendizados",
     ])
 
     with tabs[0]:
@@ -1652,48 +1639,20 @@ def render_project_intelligence(
         if not evidence_rows and not gap_rows:
             st.success("Não foram identificadas demandas sem evidência consolidada.")
 
-    with tabs[4]:
-        result = intelligence["result_summary"]
-        has_result_evidence = bool(
-            result.get("executive_summary") or result.get("activation_results")
-            or result.get("participants_count") is not None or result.get("pending")
-        )
-        if not has_result_evidence:
-            st.caption("Nenhuma evidência pós-evento consolidada foi encontrada nas fontes atuais.")
-        else:
-            result_metrics = st.columns(4)
-            result_metrics[0].metric("Participantes", result.get("participants_count") or "—")
-            result_metrics[1].metric("Custo previsto", _money(result.get("planned_cost")))
-            result_metrics[2].metric("Custo realizado", _money(result.get("actual_cost")))
-            variation = _safe_float(result.get("actual_cost")) - _safe_float(result.get("planned_cost"))
-            result_metrics[3].metric("Variação", _money(variation) if result.get("actual_cost") is not None and result.get("planned_cost") is not None else "—")
-            if result.get("executive_summary"):
-                st.info(str(result.get("executive_summary")))
-            if result.get("participants_scope") == "festival_event" and result.get("participants_count") is not None:
-                st.caption("O público informado é do evento/festival; não é convertido automaticamente em visitantes da ativação.")
-            if result.get("activation_results"):
-                st.markdown("**Execução por entrega / ativação**")
-                st.dataframe(pd.DataFrame(result.get("activation_results")), hide_index=True, width="stretch")
-            for value in result.get("pending") or []:
-                st.warning(value)
-            two = st.columns(2)
-            with two[0]:
-                st.markdown("**Destaques**")
-                for value in result.get("highlights") or []:
-                    st.markdown(f"- {value}")
-                st.markdown("**Aprendizados**")
-                for value in result.get("learnings") or []:
-                    st.markdown(f"- {value}")
-            with two[1]:
-                st.markdown("**Ocorrências**")
-                for value in result.get("issues") or []:
-                    st.markdown(f"- {value}")
-                st.markdown("**Recomendações do relatório**")
-                for value in result.get("recommendations") or []:
-                    st.markdown(f"- {value}")
-            if result.get("kpis"):
-                st.markdown("**KPIs extraídos**")
-                st.dataframe(pd.DataFrame(result["kpis"]), hide_index=True, width="stretch")
+
+    technical_health = intelligence.get("technical_health") or []
+    if technical_health:
+        with st.expander("Saúde da leitura NAVE · diagnóstico técnico", expanded=False):
+            st.caption(
+                "Esta área descreve a qualidade do processamento e não faz parte do diagnóstico de negócio do projeto."
+            )
+            for row in technical_health[:20]:
+                severity = str(row.get("severity") or row.get("level") or "warning")
+                message = f"**{row.get('title') or 'Aviso técnico'}** — {row.get('text') or ''}"
+                if severity in {"critical", "high", "error"}:
+                    st.error(message)
+                else:
+                    st.warning(message)
 
     history = snapshot.get("recommendation_queries", [])
     if history:

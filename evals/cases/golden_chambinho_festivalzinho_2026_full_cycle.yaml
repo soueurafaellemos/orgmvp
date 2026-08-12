@@ -127,6 +127,9 @@ expected:
     - tratar referências a 2025 como data do projeto 2026
     - concluir que o after movie foi entregue quando o relatório diz AGUARDANDO
     - concluir que uma solução foi executada apenas porque foi apresentada/orçada, sem evidência no relatório
+    - usar apenas o token/ano 2026 como evidência de correspondência entre uma solução apresentada e execução
+    - calcular custo por participante usando a faixa etária 30–45 anos ou usando os 8 mil visitantes do festival como visitantes comprovados da ativação
+    - inferir que a proposta foi integralmente aprovada ou que o projeto foi comercialmente ganho apenas porque existe relatório pós-execução
 metrics:
   - exact_numeric_accuracy
   - claim_precision

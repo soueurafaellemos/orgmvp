@@ -1041,11 +1041,33 @@ def save_project_report_analysis(
         notes_parts.append("Ocorrências: " + "; ".join(analysis.get("issues") or []))
     if analysis.get("recommendations"):
         notes_parts.append("Recomendações: " + "; ".join(analysis.get("recommendations") or []))
+    existing_source = str(existing_outcome.get("information_source") or "")
+    existing_confidence = str(existing_outcome.get("confidence_level") or "")
+    existing_is_confirmed = (
+        existing_confidence in {"client_confirmed", "voe_confirmed"}
+        or existing_source in {"client_feedback", "email", "meeting", "manual"}
+    )
+    # Um relatório pós-execução comprova execução, mas NÃO comprova por si só
+    # que o projeto foi comercialmente "ganho" nem que a proposta foi
+    # integralmente aprovada. Preservamos esses campos somente quando já há
+    # confirmação humana/cliente; qualquer outcome legado derivado apenas de
+    # documento volta a "not_informed" em vez de virar falsa certeza.
+    commercial_result = (
+        existing_outcome.get("commercial_result")
+        if existing_is_confirmed
+        else "not_informed"
+    ) or "not_informed"
+    proposal_result = (
+        existing_outcome.get("proposal_result")
+        if existing_is_confirmed
+        else "not_informed"
+    ) or "not_informed"
+
     outcome_payload = {
         "project_id": project_id,
         "process_type": existing_outcome.get("process_type") or "not_informed",
-        "commercial_result": analysis.get("commercial_result") or existing_outcome.get("commercial_result") or "not_informed",
-        "proposal_result": existing_outcome.get("proposal_result") or ("fully_approved" if report_type == "post_execution" else "not_approved"),
+        "commercial_result": commercial_result,
+        "proposal_result": proposal_result,
         "execution_result": analysis.get("execution_result") or existing_outcome.get("execution_result") or "not_informed",
         "result_date": analysis.get("event_date") or existing_outcome.get("result_date"),
         "execution_date": analysis.get("event_date") if report_type == "post_execution" else existing_outcome.get("execution_date"),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from html import escape
+import re
 from typing import Any, Iterable
 
 import pandas as pd
@@ -12,6 +13,7 @@ from project_workspace_db import (
     FILE_ROLE_LABELS,
     archive_project_file,
     create_project_file_signed_url,
+    create_storage_signed_url,
     fetch_memory_items_by_sections,
     fetch_project_files,
     fetch_project_linked_suppliers,
@@ -39,6 +41,25 @@ from project_workspace_intelligence import (
 from project_intelligence_unified import build_unified_project_snapshot
 from project_intelligence_report import build_project_intelligence_pdf
 
+
+
+_INTERNAL_NOTE_RE = re.compile(r"\[NAVE-V[^\]]+\]\s*[^\n:]+:\s*(?:documento anexado)?", re.IGNORECASE)
+
+def _clean_user_note(value: Any) -> str:
+    """Remove marcadores internos de provenance de campos editáveis do usuário."""
+    text = str(value or "")
+    text = _INTERNAL_NOTE_RE.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+def _trusted_outcome_default(outcome: dict[str, Any], field: str, allowed: set[str], fallback: str) -> str:
+    value = str(outcome.get(field) or "")
+    confidence = str(outcome.get("confidence_level") or "")
+    source = str(outcome.get("information_source") or "")
+    # Resultado comercial/proposta só deve aparecer pré-confirmado quando há uma
+    # fonte decisória confiável. Um relatório anexado ou estado legado não basta.
+    trusted = confidence in {"client_confirmed", "voe_confirmed"} or source in {"client_feedback", "email", "meeting"}
+    return value if trusted and value in allowed else fallback
 
 PROJECT_SECTIONS = [
     "Visão geral",
@@ -811,6 +832,8 @@ def _render_overview(
 
     intelligence = build_project_intelligence(snapshot)
     intel_metrics = intelligence.get("metrics") or {}
+    unified_financial = ((intelligence.get("unified") or {}).get("financial_context") or {})
+    overview_direct_payment = bool(unified_financial.get("direct_payment_signal"))
     st.markdown("#### Leitura atual do projeto")
     stage_label = intel_metrics.get("stage_label") or "Em proposta / concorrência"
     st.info(
@@ -828,10 +851,13 @@ def _render_overview(
     usage = intel_metrics.get("budget_usage_pct")
     if budget_delta is not None:
         delta_number = float(budget_delta)
-        delta_title = "Folga no budget" if delta_number >= 0 else "Acima do teto"
+        if delta_number < 0 and overview_direct_payment:
+            delta_title = "Diferença bruta a reconciliar"
+        else:
+            delta_title = "Folga no budget" if delta_number >= 0 else "Acima do teto"
         delta_value = _format_money(abs(delta_number))
         delta_detail = (
-            f"{abs(delta_number) / float(budget_amount):.2%} do budget"
+            ("Responsabilidades de pagamento pendentes" if delta_number < 0 and overview_direct_payment else f"{abs(delta_number) / float(budget_amount):.2%} do budget")
             if budget_amount not in (None, 0, "") else ""
         )
     else:
@@ -898,9 +924,14 @@ def _render_overview(
             f"Escopo(s) financeiro(s) apartado(s) do total principal: {readable}."
         )
     if intel_metrics.get("budget_delta") is not None and float(intel_metrics.get("budget_delta")) < 0:
-        observations.append(
-            f"A proposta detalhada excede o budget em {_format_money(abs(float(intel_metrics.get('budget_delta'))))}."
-        )
+        if overview_direct_payment:
+            observations.append(
+                f"O total bruto supera o budget nominal em {_format_money(abs(float(intel_metrics.get('budget_delta'))))}, mas há indicação de pagamento direto pelo cliente; a diferença precisa ser reconciliada antes de classificar aderência financeira."
+            )
+        else:
+            observations.append(
+                f"A proposta detalhada excede o budget em {_format_money(abs(float(intel_metrics.get('budget_delta'))))}."
+            )
     if intel_metrics.get("presentation_items", 0) == 0 and snapshot.get("memory_documents"):
         observations.append("A apresentação está preservada, mas a decupagem semântica ainda não gerou entregas confiáveis.")
     if intel_metrics.get("briefing_gaps", 0):
@@ -1238,27 +1269,85 @@ def _render_memory_cards(
         )
 
 
+def _evidence_page_visual(snapshot: dict[str, Any], row: dict[str, Any]) -> dict[str, Any] | None:
+    source_name = str(row.get("source_name") or "").strip().casefold()
+    locator = str(row.get("locator_text") or "").strip().casefold()
+    match = re.search(r"(?:page|slide|pagina|página)\s*(\d+)", locator)
+    if not match:
+        return None
+    page_number = int(match.group(1))
+    docs = snapshot.get("memory_documents") or []
+    doc_ids: set[str] = set()
+    for doc in docs:
+        names = {
+            str(doc.get("file_name") or "").strip().casefold(),
+            str(doc.get("title") or "").strip().casefold(),
+            str(doc.get("source_file") or "").strip().casefold(),
+        }
+        names.discard("")
+        if not source_name or any(name == source_name or name in source_name or source_name in name for name in names):
+            if doc.get("id"):
+                doc_ids.add(str(doc.get("id")))
+    for page in snapshot.get("memory_pages") or []:
+        if int(page.get("page_number") or 0) != page_number:
+            continue
+        if doc_ids and str(page.get("document_id") or "") not in doc_ids:
+            continue
+        if page.get("storage_path"):
+            return dict(page)
+    return None
+
+
 def _render_unified_evidence_cards(
+    client: Client,
+    snapshot: dict[str, Any],
     rows: list[dict[str, Any]],
     *,
     intro: str,
     limit: int = 10,
 ) -> None:
+    """Projeta evidência ainda não consolidada sem expor provenance como produto final.
+
+    Quando uma página visual já está preservada, a interface mostra a imagem e usa
+    arquivo/página apenas como fonte discreta. Sem visual disponível, mantém um
+    expander textual auditável.
+    """
     if not rows:
         return
     st.info(intro)
     for row in rows[:limit]:
         source = str(row.get("source_name") or "Fonte")
         locator = str(row.get("locator_text") or "").strip()
-        title = source + (f" · {locator}" if locator else "")
-        with st.expander(title, expanded=False):
-            st.write(row.get("text") or "Evidência sem texto extraído.")
-            confidence = row.get("confidence")
-            if confidence not in (None, ""):
-                try:
-                    st.caption(f"Confiança de extração: {float(confidence):.0%}")
-                except Exception:
-                    pass
+        visual = _evidence_page_visual(snapshot, row)
+        text = str(row.get("text") or "Evidência sem texto extraído.")
+        if visual:
+            with st.container(border=True):
+                image_url = create_storage_signed_url(
+                    client,
+                    bucket_name=visual.get("storage_bucket"),
+                    storage_path=visual.get("storage_path"),
+                )
+                if image_url:
+                    image_col, text_col = st.columns([0.42, 0.58], gap="large", vertical_alignment="center")
+                    with image_col:
+                        st.image(image_url, width="stretch")
+                    with text_col:
+                        st.markdown(f"**{str(visual.get('slide_title') or row.get('domain') or 'Evidência visual').strip()}**")
+                        st.write(text)
+                        st.caption(source + (f" · {locator}" if locator else ""))
+                else:
+                    st.write(text)
+                    st.caption(source + (f" · {locator}" if locator else ""))
+        else:
+            title = source + (f" · {locator}" if locator else "")
+            with st.expander(title, expanded=False):
+                st.write(text)
+                confidence = row.get("confidence")
+                if confidence not in (None, ""):
+                    try:
+                        st.caption(f"Confiança de extração: {float(confidence):.0%}")
+                    except Exception:
+                        pass
 
 
 def _render_strategy(
@@ -1275,15 +1364,6 @@ def _render_strategy(
         row for row in snapshot.get("memory_items", [])
         if str(row.get("section_key") or "") == "strategy"
     ]
-    if strategy_rows:
-        _render_memory_cards(
-            client,
-            project_id=project_id,
-            section_keys=["strategy"],
-            empty_message="",
-        )
-        return
-
     unified = snapshot.get("unified_intelligence") or build_unified_project_snapshot(snapshot)
     evidence = (unified.get("domain_evidence") or {}).get("strategy") or []
     semantic_snapshots = snapshot.get("intelligence_snapshots") or []
@@ -1291,28 +1371,54 @@ def _render_strategy(
     for stored in semantic_snapshots:
         metrics = stored.get("metrics") if isinstance(stored.get("metrics"), dict) else {}
         candidate = metrics.get("semantic_synthesis")
-        if isinstance(candidate, dict) and candidate.get("strategic_reading"):
+        if isinstance(candidate, dict) and (candidate.get("strategic_reading") or candidate.get("strategy_framework")):
             semantic = candidate
             break
-    if semantic and semantic.get("strategic_reading"):
+
+    framework = (semantic or {}).get("strategy_framework") if isinstance((semantic or {}).get("strategy_framework"), dict) else {}
+    if semantic and (semantic.get("strategic_reading") or framework):
         st.markdown("#### Leitura estratégica consolidada")
-        st.info(str(semantic.get("strategic_reading")))
-    if evidence:
+        if semantic.get("strategic_reading"):
+            st.info(str(semantic.get("strategic_reading")))
+        if framework:
+            fields = [
+                ("Território", framework.get("territory")),
+                ("Tensão", framework.get("tension")),
+                ("Direção estratégica", framework.get("strategic_direction")),
+                ("Conceito / POV", framework.get("concept")),
+                ("Papel da experiência", framework.get("experience_role")),
+                ("Aderência ao briefing", framework.get("briefing_adherence")),
+            ]
+            for label, value in fields:
+                if value:
+                    st.markdown(f"**{label}**  \n{value}")
+            pillars = [str(v).strip() for v in framework.get("pillars") or [] if str(v).strip()]
+            if pillars:
+                st.markdown("**Pilares**  \n" + " · ".join(pillars))
+
+    if strategy_rows:
+        with st.expander("Evidências e conteúdos estratégicos da apresentação", expanded=not bool(semantic)):
+            _render_memory_cards(
+                client,
+                project_id=project_id,
+                section_keys=["strategy"],
+                empty_message="",
+            )
+    elif evidence:
         st.markdown("#### Evidências estratégicas encontradas nas fontes")
         _render_unified_evidence_cards(
-            evidence,
+            client, snapshot, evidence,
             intro=(
-                "A estrutura legada ainda não criou fichas de estratégia, mas a NAVE encontrou "
-                f"{len(evidence)} evidência(s) estratégicas no Intelligence Graph. Isto é uma falha de consolidação, não ausência de conteúdo."
+                "A NAVE encontrou evidências estratégicas no Intelligence Graph. "
+                "Elas ficam visíveis como fonte enquanto as fichas canônicas são consolidadas."
             ),
             limit=12,
         )
-    else:
+    elif not semantic:
         st.markdown(
             '<div class="nave-workspace-empty">Nenhuma evidência de estratégia ou conceito foi encontrada nas fontes atuais.</div>',
             unsafe_allow_html=True,
         )
-
 
 
 def _render_scenography(
@@ -1343,7 +1449,7 @@ def _render_scenography(
         )
     elif scenography_evidence:
         _render_unified_evidence_cards(
-            scenography_evidence,
+            client, snapshot, scenography_evidence,
             intro=(
                 "A NAVE encontrou evidências de cenografia/ambientes nas fontes, embora ainda não existam fichas legadas consolidadas. "
                 "O conteúdo abaixo impede um falso vazio enquanto a materialização é aprimorada."
@@ -1357,13 +1463,44 @@ def _render_scenography(
         )
 
     st.markdown("#### Ativações e experiências")
-    render_visual_section(
-        client,
-        project_id=project_id,
-        snapshot=snapshot,
-        section_keys=["activations"],
-        empty_message="Nenhuma ativação ou experiência foi identificada.",
-    )
+    activation_rows = [
+        row for row in snapshot.get("memory_items", [])
+        if str(row.get("section_key") or "") == "activations"
+    ]
+    activation_evidence = (unified.get("domain_evidence") or {}).get("activations") or []
+    if activation_rows:
+        render_visual_section(
+            client,
+            project_id=project_id,
+            snapshot=snapshot,
+            section_keys=["activations"],
+            empty_message="",
+        )
+        # Quando a extração legada condensou várias mecânicas em uma única ficha,
+        # mantemos as páginas visuais complementares disponíveis. Isso evita que
+        # uma apresentação rica vire um card textual genérico.
+        if len(activation_evidence) > max(2, len(activation_rows) * 2):
+            with st.expander("Outras evidências visuais de ativações", expanded=False):
+                _render_unified_evidence_cards(
+                    client, snapshot, activation_evidence,
+                    intro=(
+                        "A apresentação contém outras evidências relacionadas a ativações que ainda não foram separadas em fichas canônicas."
+                    ),
+                    limit=12,
+                )
+    elif activation_evidence:
+        _render_unified_evidence_cards(
+            client, snapshot, activation_evidence,
+            intro=(
+                "A NAVE encontrou ativações/experiências nas fontes. As evidências visuais ficam disponíveis enquanto as fichas canônicas são consolidadas."
+            ),
+            limit=12,
+        )
+    else:
+        st.markdown(
+            '<div class="nave-workspace-empty">Nenhuma evidência de ativação ou experiência foi encontrada nas fontes atuais.</div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("#### Conteúdo, artístico e programação")
     _render_memory_cards(
@@ -1374,20 +1511,48 @@ def _render_scenography(
     )
 
     st.markdown("#### Comunicação e materiais")
-    _render_memory_cards(
-        client,
-        project_id=project_id,
-        section_keys=["communication"],
-        empty_message="Nenhum conteúdo de comunicação ou material foi estruturado.",
-    )
+    communication_rows = [
+        row for row in snapshot.get("memory_items", [])
+        if str(row.get("section_key") or "") == "communication"
+    ]
+    communication_evidence = (unified.get("domain_evidence") or {}).get("communication") or []
+    if communication_rows:
+        _render_memory_cards(
+            client, project_id=project_id, section_keys=["communication"], empty_message=""
+        )
+    elif communication_evidence:
+        _render_unified_evidence_cards(
+            client, snapshot, communication_evidence,
+            intro="A NAVE encontrou evidências de comunicação e materiais nas fontes atuais.",
+            limit=8,
+        )
+    else:
+        st.markdown(
+            '<div class="nave-workspace-empty">Nenhuma evidência de comunicação ou material foi encontrada nas fontes atuais.</div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("#### Jornada e operação")
-    _render_memory_cards(
-        client,
-        project_id=project_id,
-        section_keys=["journey_operation"],
-        empty_message="Nenhum conteúdo de jornada ou operação foi estruturado.",
-    )
+    journey_rows = [
+        row for row in snapshot.get("memory_items", [])
+        if str(row.get("section_key") or "") == "journey_operation"
+    ]
+    journey_evidence = (unified.get("domain_evidence") or {}).get("journey_operation") or []
+    if journey_rows:
+        _render_memory_cards(
+            client, project_id=project_id, section_keys=["journey_operation"], empty_message=""
+        )
+    elif journey_evidence:
+        _render_unified_evidence_cards(
+            client, snapshot, journey_evidence,
+            intro="A NAVE encontrou evidências de jornada/operação nas fontes atuais.",
+            limit=8,
+        )
+    else:
+        st.markdown(
+            '<div class="nave-workspace-empty">Nenhuma evidência de jornada ou operação foi encontrada nas fontes atuais.</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def _render_gifts(
@@ -1401,13 +1566,41 @@ def _render_gifts(
         "Conceitos, itens, composições, mockups, custos e referências.",
     )
 
-    render_visual_section(
-        client,
-        project_id=project_id,
-        snapshot=snapshot,
-        section_keys=["gifts"],
-        empty_message="Nenhum brinde, press kit ou material visual foi identificado.",
-    )
+    gift_rows = [
+        row for row in snapshot.get("memory_items", [])
+        if str(row.get("section_key") or "") == "gifts"
+    ]
+    unified = snapshot.get("unified_intelligence") or build_unified_project_snapshot(snapshot)
+    gift_evidence = (unified.get("domain_evidence") or {}).get("gifts") or []
+    if gift_rows:
+        render_visual_section(
+            client,
+            project_id=project_id,
+            snapshot=snapshot,
+            section_keys=["gifts"],
+            empty_message="Nenhum brinde, press kit ou material visual foi identificado.",
+        )
+        if len(gift_evidence) > max(2, len(gift_rows) * 2):
+            with st.expander("Outras evidências visuais de brindes e press kits", expanded=False):
+                _render_unified_evidence_cards(
+                    client, snapshot, gift_evidence,
+                    intro="Há outras evidências visuais de brindes/press kits ainda não consolidadas em fichas canônicas.",
+                    limit=10,
+                )
+    elif gift_evidence:
+        _render_unified_evidence_cards(
+            client, snapshot, gift_evidence,
+            intro=(
+                "A NAVE encontrou evidências visuais de brindes/press kits, mas as fichas canônicas ainda não foram consolidadas. "
+                "As fontes abaixo permanecem visíveis para evitar falso vazio."
+            ),
+            limit=12,
+        )
+    else:
+        st.markdown(
+            '<div class="nave-workspace-empty">Nenhuma evidência de brinde, press kit ou material visual foi encontrada nas fontes atuais.</div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("#### Referências e arquivos")
     rows = _role_rows(snapshot, "gift_presskit_reference")
@@ -1460,9 +1653,19 @@ def _render_budget(
     advanced = intelligence.get("advanced_insights") or {}
     cost_per_attendee = advanced.get("cost_per_attendee")
     audience_quantity = advanced.get("audience_quantity")
+    audience_scope = advanced.get("audience_scope")
+    graph_units = ((snapshot.get("intelligence_graph") or {}).get("evidence_units") or []) if isinstance(snapshot.get("intelligence_graph"), dict) else []
+    direct_payment_signal = any(
+        "pagamento direto" in str(row.get("content_text") or "").casefold()
+        or "forma direta" in str(row.get("content_text") or "").casefold()
+        for row in graph_units
+    )
     overage = (-float(delta)) if delta is not None and float(delta) < 0 else None
     headroom = float(delta) if delta is not None and float(delta) >= 0 else None
-    delta_label = "Acima do teto" if overage is not None else "Folga no budget" if headroom is not None else "Diferença"
+    if overage is not None and direct_payment_signal:
+        delta_label = "Diferença bruta a reconciliar"
+    else:
+        delta_label = "Acima do teto" if overage is not None else "Folga no budget" if headroom is not None else "Diferença"
     delta_value = _format_money(overage if overage is not None else headroom) if delta is not None else "—"
     delta_detail = (
         f"+{(overage / float(budget_amount)):.2%}"
@@ -1475,7 +1678,12 @@ def _render_budget(
     proposal_value = _format_money(proposal_total) if proposal_total is not None else "—"
     usage_value = f"{usage:.1%}" if usage is not None else "—"
     attendee_value = _format_money(cost_per_attendee) if cost_per_attendee is not None else "—"
-    attendee_detail = f"Base: {int(audience_quantity)} pessoas" if audience_quantity else "Audiência não identificada"
+    if audience_scope == "festival_event" and audience_quantity:
+        attendee_detail = f"{int(audience_quantity)} = público do evento; não usar como visitantes da ativação"
+    elif audience_quantity:
+        attendee_detail = f"Base comprovada: {int(audience_quantity)} pessoas"
+    else:
+        attendee_detail = "Não calculável com as fontes atuais"
 
     st.markdown(
         f"""
@@ -1517,10 +1725,16 @@ def _render_budget(
             )
         else:
             over_pct = (abs(float(delta)) / float(budget_amount)) if delta is not None and budget_amount else None
-            suffix = f" ({over_pct:.1%} acima)" if over_pct is not None else ""
-            st.warning(
-                f"A proposta detalhada está {_format_money(abs(float(delta or 0)))} acima do budget registrado no briefing{suffix}."
-            )
+            suffix = f" ({over_pct:.1%} na comparação bruta)" if over_pct is not None else ""
+            if direct_payment_signal:
+                st.warning(
+                    f"O total bruto da planilha supera o budget nominal em {_format_money(abs(float(delta or 0)))}{suffix}, "
+                    "mas o briefing contém indicação de pagamento direto pelo cliente. A NAVE não classifica esse valor como estouro definitivo até reconciliar responsabilidades financeiras."
+                )
+            else:
+                st.warning(
+                    f"A proposta detalhada está {_format_money(abs(float(delta or 0)))} acima do budget registrado no briefing{suffix}."
+                )
     elif budget_amount is not None and snapshot.get("cost_documents"):
         st.warning(
             "O budget foi identificado, mas a proposta detalhada ainda não possui um total financeiro comprovado. "
@@ -2015,7 +2229,21 @@ def _render_feedbacks(
                 if row.get("action_taken"):
                     st.markdown(f"**Aprendizado recomendado:** {row.get('action_taken')}")
     else:
-        st.caption("Nenhum feedback em texto foi registrado.")
+        report_feedback = []
+        for analysis in snapshot.get("report_analyses", []) or []:
+            for item in analysis.get("client_feedback") or []:
+                if isinstance(item, dict):
+                    text = str(item.get("text") or item.get("feedback") or "").strip()
+                else:
+                    text = str(item or "").strip()
+                if text:
+                    report_feedback.append(text)
+        if report_feedback:
+            st.markdown("**Feedback explícito identificado em relatório**")
+            for text in report_feedback[:12]:
+                st.markdown(f"- {text}")
+        else:
+            st.caption("Nenhum feedback explícito do cliente foi identificado nas fontes atuais.")
 
     st.markdown("#### Arquivos de feedback e aprovação")
     files = [
@@ -2087,7 +2315,7 @@ def _render_results(
         )
         if outcome.get("result_context"):
             st.markdown("#### Observações já registradas")
-            st.write(outcome.get("result_context"))
+            st.write(_clean_user_note(outcome.get("result_context")))
         return
 
     title = (
@@ -2126,7 +2354,62 @@ def _render_results(
         for value in unified_results.get("data_quality") or []:
             st.warning(f"Qualidade de dado: {value}")
 
-    with st.expander("Ajustar informações manualmente", expanded=not bool(snapshot.get("report_analyses"))):
+    # Resultados e aprendizados são uma experiência de fechamento própria. Eles
+    # compartilham a Unified Truth com o Diagnóstico, mas não ficam escondidos
+    # dentro da mesma seção de decisão.
+    decision = unified.get("decision_intelligence") or {}
+    result_findings = decision.get("results") or []
+    learning_findings = decision.get("learnings") or []
+    if result_findings:
+        st.markdown("#### O que a NAVE comprovou")
+        for row in result_findings[:12]:
+            st.info(f"**{row.get('title') or 'Resultado'}**\n\n{row.get('text') or ''}")
+    if learning_findings:
+        st.markdown("#### Aprendizados consolidados")
+        for row in learning_findings[:12]:
+            st.success(f"**{row.get('title') or 'Aprendizado'}**\n\n{row.get('text') or ''}")
+
+    semantic = None
+    for stored in snapshot.get("intelligence_snapshots") or []:
+        metrics = stored.get("metrics") if isinstance(stored.get("metrics"), dict) else {}
+        candidate = metrics.get("semantic_synthesis")
+        if isinstance(candidate, dict):
+            semantic = candidate
+            break
+    if semantic:
+        validated = [str(v).strip() for v in semantic.get("validated_learnings") or [] if str(v).strip()]
+        challenged = [str(v).strip() for v in semantic.get("challenged_learnings") or [] if str(v).strip()]
+        if validated or challenged:
+            st.markdown("#### Memória que este projeto deixa para a VOE")
+            columns = st.columns(2, gap="large")
+            with columns[0]:
+                st.markdown("**O que merece ser preservado**")
+                for value in validated[:8]:
+                    st.success(value)
+            with columns[1]:
+                st.markdown("**O que deve mudar em projetos futuros**")
+                for value in challenged[:8]:
+                    st.warning(value)
+
+    commercial_default = _trusted_outcome_default(
+        outcome, "commercial_result",
+        {"in_evaluation", "won", "lost", "cancelled", "suspended", "no_return", "not_applicable", "not_informed"},
+        "not_informed",
+    )
+    proposal_default = _trusted_outcome_default(
+        outcome, "proposal_result",
+        {"fully_approved", "partially_approved", "not_approved", "in_revision", "no_feedback", "not_informed"},
+        "not_informed",
+    )
+    execution_default = (
+        str(outcome.get("execution_result"))
+        if str(outcome.get("execution_result") or "") in {"executed", "partially_executed", "not_executed", "in_progress", "not_applicable", "not_informed"}
+        and str(outcome.get("confidence_level") or "") in {"client_confirmed", "voe_confirmed"}
+        else ("executed" if business_state == "executed" else "not_informed")
+    )
+
+    with st.expander("Ajustar informações manualmente", expanded=False):
+        st.caption("Campos não comprovados permanecem como 'Não informado'. A evidência de execução não implica aprovação integral da proposta nem resultado comercial ganho.")
         with st.form(f"outcome_form_{project_id}"):
             process_type = st.selectbox(
                 "Tipo de processo",
@@ -2187,19 +2470,7 @@ def _render_results(
                         "no_return",
                         "not_applicable",
                         "not_informed",
-                    ].index(outcome.get("commercial_result"))
-                    if outcome.get("commercial_result")
-                    in {
-                        "in_evaluation",
-                        "won",
-                        "lost",
-                        "cancelled",
-                        "suspended",
-                        "no_return",
-                        "not_applicable",
-                        "not_informed",
-                    }
-                    else 0
+                    ].index(commercial_default)
                 ),
                 format_func=lambda value: {
                     "in_evaluation": "Em avaliação",
@@ -2231,17 +2502,7 @@ def _render_results(
                         "in_revision",
                         "no_feedback",
                         "not_informed",
-                    ].index(outcome.get("proposal_result"))
-                    if outcome.get("proposal_result")
-                    in {
-                        "fully_approved",
-                        "partially_approved",
-                        "not_approved",
-                        "in_revision",
-                        "no_feedback",
-                        "not_informed",
-                    }
-                    else 5
+                    ].index(proposal_default)
                 ),
                 format_func=lambda value: {
                     "fully_approved": "Integralmente aprovada",
@@ -2271,17 +2532,7 @@ def _render_results(
                         "in_progress",
                         "not_applicable",
                         "not_informed",
-                    ].index(outcome.get("execution_result"))
-                    if outcome.get("execution_result")
-                    in {
-                        "executed",
-                        "partially_executed",
-                        "not_executed",
-                        "in_progress",
-                        "not_applicable",
-                        "not_informed",
-                    }
-                    else 5
+                    ].index(execution_default)
                 ),
                 format_func=lambda value: {
                     "executed": "Executado",
@@ -2321,18 +2572,18 @@ def _render_results(
             )
             result_context = st.text_area(
                 "Contexto e aprendizados",
-                value=str(outcome.get("result_context") or ""),
+                value=_clean_user_note(outcome.get("result_context")),
                 height=130,
             )
             execution_notes = st.text_area(
                 "Observações de execução",
-                value=str(outcome.get("execution_notes") or ""),
+                value=_clean_user_note(outcome.get("execution_notes")),
                 height=110,
             )
             budget_amount = st.number_input(
                 "Budget registrado",
                 min_value=0.0,
-                value=float(outcome.get("budget_amount") or 0),
+                value=float(outcome.get("budget_amount") or truth.get("budget_amount") or 0),
                 step=1000.0,
             )
             confidence_level = st.selectbox(

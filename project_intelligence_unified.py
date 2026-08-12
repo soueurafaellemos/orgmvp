@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Unified Project Intelligence Snapshot — NAVE V28.3.
+"""Unified Project Intelligence Snapshot — NAVE V28.4.
 
 Esta camada não substitui as fontes nem o Intelligence Graph. Ela reconcilia o que
 já existe em ambos para produzir UMA verdade operacional consumida por workspace,
@@ -207,18 +207,43 @@ def _domain_units(graph: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
     return domains
 
 
+def _distinctive_tokens(value: Any) -> set[str]:
+    generic = {
+        "2024", "2025", "2026", "2027", "2028", "apresenta", "apresentacao",
+        "proposta", "evento", "festival", "projeto", "material", "conteudo",
+        "execucao", "relatorio", "marca", "cliente",
+    }
+    return {
+        token for token in _tokens(value)
+        if token not in generic and not token.isdigit() and len(token) >= 4
+    }
+
+
 def _match_score(query: Any, candidate: Any) -> float:
+    """Similaridade conservadora para vínculos cross-source.
+
+    Ano, número, palavras genéricas ou trechos curtos nunca são evidência de que
+    uma solução apresentada é a mesma coisa registrada no pós-evento.
+    """
     left = _norm(query)
     right = _norm(candidate)
     if not left or not right:
         return 0.0
+    lt, rt = _distinctive_tokens(left), _distinctive_tokens(right)
+    shared = lt & rt
+    if not shared:
+        return 0.0
     if left in right or right in left:
-        return 0.96 if min(len(left), len(right)) >= 5 else 0.80
-    lt, rt = _tokens(left), _tokens(right)
-    jaccard = len(lt & rt) / max(1, len(lt | rt))
-    containment = len(lt & rt) / max(1, min(len(lt), len(rt)))
-    sequence = difflib.SequenceMatcher(None, left, right).ratio()
-    return max(jaccard, containment * 0.92, sequence * 0.78)
+        shorter = left if len(left) <= len(right) else right
+        if len(shorter) >= 6 and _distinctive_tokens(shorter):
+            return 0.97
+    jaccard = len(shared) / max(1, len(lt | rt))
+    containment = len(shared) / max(1, min(len(lt), len(rt)))
+    sequence = difflib.SequenceMatcher(None, " ".join(sorted(lt)), " ".join(sorted(rt))).ratio()
+    # Um token distintivo idêntico (ex.: AMARELINHA) pode ser suficiente quando
+    # ele é o nome da solução; termos compartilhados mais genéricos exigem densidade.
+    single_name_boost = 0.90 if len(shared) == 1 and next(iter(shared)) in {left, right} else 0.0
+    return max(single_name_boost, jaccard, containment * 0.94, sequence * 0.72)
 
 
 def _execution_matches(snapshot: Mapping[str, Any], domains: Mapping[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -574,15 +599,14 @@ def build_unified_project_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any
     for pending in results.get("pending") or []:
         results_findings.append({"kind": "fact", "importance": "medium", "title": "Entrega ainda pendente no pós-evento", "text": pending, "evidence": []})
 
-    if consistency:
-        recommendations.append({
-            "kind": "recommendation", "importance": "critical", "title": "Resolver inconsistências antes de decisões automáticas",
-            "text": "A NAVE deve consolidar uma única verdade do projeto antes de exibir status, lacunas ou recomendações; estados contraditórios não podem coexistir na interface.",
-            "evidence": [],
-        })
+    direct_payment_signal = any(
+        "pagamento direto" in _norm(row.get("content_text"))
+        or "forma direta" in _norm(row.get("content_text"))
+        for row in graph.get("evidence_units") or []
+        if "briefing_original" in roles.get(str(row.get("source_asset_id") or ""), set())
+    )
     if proposal_total and budget:
         if proposal_total > budget:
-            direct_payment_signal = any("pagamento direto" in _norm(row.get("content_text")) or "forma direta" in _norm(row.get("content_text")) for row in graph.get("evidence_units") or [] if "briefing_original" in roles.get(str(row.get("source_asset_id") or ""), set()))
             if direct_payment_signal:
                 recommendations.append({
                     "kind": "recommendation", "importance": "high", "title": "Reconciliar envelope antes de chamar de estouro",
@@ -619,6 +643,12 @@ def build_unified_project_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any
         "execution_matches": execution_matches,
         "briefing_matches": briefing_matches,
         "results": results,
+        "financial_context": {
+            "proposal_total": proposal_total,
+            "budget_amount": budget,
+            "direct_payment_signal": direct_payment_signal,
+            "requires_responsibility_reconciliation": bool(direct_payment_signal and proposal_total and budget and proposal_total > budget),
+        },
         "consistency_issues": consistency,
         "decision_intelligence": {
             "diagnostic": diagnostics,

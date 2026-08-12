@@ -19,6 +19,7 @@ from memory_db import save_memory_presentation
 from memory_extractor import extract_memory, merge_memory_batches
 from memory_learning_db import save_cost_document, update_project_budget
 from memory_learning_models import CostWorkbookResult
+from nave_storage import get_bytes
 from project_batch_ingestion import classify_document
 from project_analyst import (
     FeedbackAnalysis,
@@ -30,7 +31,7 @@ from project_analyst import (
 )
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.3.0"
+WORKFLOW_VERSION = "28.4.0"
 LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0", "28.2.1", "28.2.2", "28.2.2.1", "28.2.2.2"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
@@ -102,15 +103,102 @@ def _source_marker(source_file: Mapping[str, Any]) -> str:
     return f"NAVE-V28.1.1:{sha or sid}"
 
 
-def _download_bytes(client: Any, source_file: Mapping[str, Any]) -> bytes | None:
-    bucket = str(source_file.get("storage_bucket") or "").strip()
-    path = str(source_file.get("storage_path") or "").strip()
-    if not bucket or not path:
-        return None
-    try:
-        return get_bytes(client, bucket_name=bucket, path=path)
-    except Exception:
-        return None
+def _download_bytes(
+    client: Any,
+    source_file: Mapping[str, Any],
+    warnings: list[str] | None = None,
+) -> bytes | None:
+    """Recupera o master sem assumir que o endereço legado ainda é canônico.
+
+    Novos uploads vivem no R2, mas projetos criados durante a migração podem ter
+    ``source_files`` apontando para um endereço antigo enquanto ``source_assets`` ou
+    ``project_files`` já conhece o master correto. Reprocessamento não pode degradar
+    conhecimento por causa dessa divergência de ponteiro.
+    """
+    warnings = warnings if warnings is not None else []
+    project_id = str(source_file.get("project_id") or "").strip()
+    source_id = str(source_file.get("id") or "").strip()
+    sha = str(source_file.get("sha256") or "").strip()
+
+    candidates: list[tuple[str, str, str]] = []
+
+    def add(bucket: Any, path: Any, origin: str) -> None:
+        b = str(bucket or "").strip()
+        pth = str(path or "").strip()
+        if not b or not pth:
+            return
+        pair = (b, pth, origin)
+        if pair not in candidates:
+            candidates.append(pair)
+
+    add(source_file.get("storage_bucket"), source_file.get("storage_path"), "source_files")
+
+    if client is not None and callable(getattr(client, "table", None)) and sha:
+        lookups = [
+            ("source_assets", "content_sha256", sha, "intelligence source_asset"),
+        ]
+        if project_id:
+            lookups.extend([
+                ("project_files", "content_sha256", sha, "project_files"),
+                ("source_files", "sha256", sha, "source_files alternativo"),
+            ])
+        for table, field, value, origin in lookups:
+            try:
+                query = client.table(table).select("storage_bucket,storage_path")
+                if table in {"project_files", "source_files"} and project_id:
+                    query = query.eq("project_id", project_id)
+                rows = _rows(query.eq(field, value).limit(6).execute())
+            except Exception:
+                rows = []
+            for row in rows:
+                add(row.get("storage_bucket"), row.get("storage_path"), origin)
+
+    failures: list[str] = []
+    for bucket, path, origin in candidates:
+        try:
+            data = get_bytes(client, bucket_name=bucket, path=path)
+        except Exception as exc:
+            failures.append(f"{origin}: {exc}")
+            continue
+        if not data:
+            continue
+
+        # Cura o ponteiro legado quando o master foi encontrado em outra camada.
+        original = (
+            str(source_file.get("storage_bucket") or "").strip(),
+            str(source_file.get("storage_path") or "").strip(),
+        )
+        if (bucket, path) != original:
+            warnings.append(
+                f"Master recuperado via {origin}; o ponteiro de Storage legado foi reconciliado automaticamente."
+            )
+            if client is not None and callable(getattr(client, "table", None)):
+                if source_id:
+                    try:
+                        client.table("source_files").update({
+                            "storage_bucket": bucket,
+                            "storage_path": path,
+                        }).eq("id", source_id).execute()
+                    except Exception:
+                        pass
+                if project_id and sha:
+                    try:
+                        client.table("project_files").update({
+                            "storage_bucket": bucket,
+                            "storage_path": path,
+                        }).eq("project_id", project_id).eq("content_sha256", sha).execute()
+                    except Exception:
+                        pass
+            # O restante do mesmo ciclo de materialização deve enxergar o
+            # endereço curado, não apenas a próxima execução do app.
+            if isinstance(source_file, dict):
+                source_file["storage_bucket"] = bucket
+                source_file["storage_path"] = path
+        return bytes(data)
+
+    if failures:
+        warnings.append("Falha ao recuperar o master: " + " | ".join(failures[:3]))
+    return None
 
 
 def _table_select_one(client: Any, table: str, **filters: Any) -> dict[str, Any] | None:
@@ -1142,46 +1230,15 @@ def _materialize_feedback(
     }
 
 
-def _append_source(existing: str | None, marker: str, file_name: str, text: str) -> str:
-    current = str(existing or "").strip()
-    if marker in current:
-        return current
-    addition = f"[{marker}] {file_name}: {_clip(text, 3500) or 'documento anexado'}"
-    return (current + "\n\n" + addition).strip()[:12000]
-
-
 def _materialize_report(client: Any, source_file: Mapping[str, Any], text: str) -> dict[str, int]:
-    project_id = str(source_file.get("project_id") or "")
-    marker = _source_marker(source_file)
-    existing = _table_select_one(client, "memory_project_outcomes", project_id=project_id)
-    file_name = str(source_file.get("file_name") or "Relatório")
-    if existing:
-        payload = {
-            "result_context": _append_source(existing.get("result_context"), marker, file_name, text),
-            "execution_notes": _append_source(existing.get("execution_notes"), marker, file_name, text),
-        }
-        # Preserva qualquer status/resultado já confirmado. Só melhora a origem
-        # quando ainda não havia informação explícita.
-        if str(existing.get("information_source") or "not_informed") == "not_informed":
-            payload["information_source"] = "document"
-        client.table("memory_project_outcomes").update(_safe_json(payload)).eq("project_id", project_id).execute()
-        return {"project_outcomes": 0}
-    payload = {
-        "project_id": project_id,
-        "process_type": "not_informed",
-        "commercial_result": "in_evaluation",
-        "proposal_result": "not_informed",
-        "execution_result": "not_informed",
-        "result_reasons": [],
-        "result_context": _append_source(None, marker, file_name, text),
-        "execution_notes": _append_source(None, marker, file_name, text),
-        "currency": "BRL",
-        "confidence_level": "incomplete",
-        "information_source": "document",
-    }
-    inserted = _rows(client.table("memory_project_outcomes").insert(_safe_json(payload)).execute())
-    return {"project_outcomes": len(inserted)}
+    """Preserva o relatório como fonte sem fabricar outcome comercial em campos de usuário.
 
+    Provenance pertence a source_files / Intelligence Graph / project_report_analyses.
+    Um relatório pós-evento comprova que existe evidência posterior, mas não prova
+    sozinho que a proposta foi integralmente aprovada nem que houve um resultado
+    comercial "ganho".
+    """
+    return {"project_outcomes": 0}
 
 def _mark_source_file(
     client: Any,
@@ -1242,6 +1299,179 @@ def _legacy_marker(row: Mapping[str, Any], field: str) -> str:
     if not isinstance(payload, Mapping):
         return ""
     return str(payload.get("materialized_by") or "").strip()
+
+
+def _existing_structured_counts(client: Any, source_file: Mapping[str, Any]) -> dict[str, int]:
+    """Conta a leitura válida já existente para impedir regressão de conhecimento."""
+    if client is None or not callable(getattr(client, "table", None)):
+        return {}
+    project_id = str(source_file.get("project_id") or "").strip()
+    sha = str(source_file.get("sha256") or "").strip()
+    role = str(source_file.get("document_role") or "").strip()
+    if not project_id or not sha:
+        return {}
+    try:
+        if role == "briefing_original":
+            docs = _rows(client.table("memory_briefing_documents").select("id").eq("project_id", project_id).eq("content_sha256", sha).execute())
+            ids = [str(r.get("id")) for r in docs if r.get("id")]
+            reqs = []
+            for doc_id in ids:
+                reqs.extend(_rows(client.table("memory_briefing_requirements").select("id").eq("briefing_document_id", doc_id).execute()))
+            return {"briefing_documents": len(docs), "briefing_requirements": len(reqs)}
+        if role in {"detailed_costs", "preliminary_budget"}:
+            docs = _rows(client.table("memory_cost_documents").select("id").eq("project_id", project_id).eq("content_sha256", sha).execute())
+            ids = [str(r.get("id")) for r in docs if r.get("id")]
+            items = []
+            for doc_id in ids:
+                items.extend(_rows(client.table("memory_cost_items").select("id").eq("cost_document_id", doc_id).execute()))
+            return {"cost_documents": len(docs), "cost_items": len(items)}
+        if role in {"proposal_presentation", "final_presentation"}:
+            docs = _rows(client.table("memory_documents").select("id").eq("project_id", project_id).eq("content_sha256", sha).execute())
+            ids = [str(r.get("id")) for r in docs if r.get("id")]
+            items = []
+            pages = []
+            for doc_id in ids:
+                items.extend(_rows(client.table("memory_items").select("id").eq("document_id", doc_id).execute()))
+                pages.extend(_rows(client.table("memory_pages").select("id").eq("document_id", doc_id).execute()))
+            return {"memory_documents": len(docs), "memory_items": len(items), "memory_pages": len(pages)}
+    except Exception:
+        return {}
+    return {}
+
+
+def _validate_rebuild_quality(
+    role: str,
+    previous: Mapping[str, int],
+    current: Mapping[str, int],
+) -> tuple[bool, str | None]:
+    """Gate mínimo para impedir que uma reanálise aparentemente bem-sucedida degrade cobertura.
+
+    Quantidade não é sinônimo de qualidade: um briefing mais limpo pode ter menos
+    requisitos. Por isso o gate é rígido apenas onde cobertura estrutural deve ser
+    monotônica (linhas financeiras e páginas da apresentação) e contra zeramento.
+    """
+    if not previous:
+        return True, None
+    if role == "briefing_original":
+        old = int(previous.get("briefing_requirements") or 0)
+        new = int(current.get("briefing_requirements") or 0)
+        if old > 0 and new == 0:
+            return False, "a nova leitura zerou requisitos de um briefing anteriormente estruturado"
+    elif role in {"detailed_costs", "preliminary_budget"}:
+        old = int(previous.get("cost_items") or 0)
+        new = int(current.get("cost_items") or 0)
+        if old > 0 and new < max(1, int(old * 0.90)):
+            return False, f"a nova leitura financeira caiu de {old} para {new} linhas úteis"
+    elif role in {"proposal_presentation", "final_presentation"}:
+        old_pages = int(previous.get("memory_pages") or 0)
+        new_pages = int(current.get("memory_pages") or 0)
+        old_items = int(previous.get("memory_items") or 0)
+        new_items = int(current.get("memory_items") or 0)
+        if old_pages > 0 and new_pages < max(1, int(old_pages * 0.90)):
+            return False, f"a nova decupagem visual caiu de {old_pages} para {new_pages} páginas preservadas"
+        if old_items > 0 and new_items == 0:
+            return False, "a nova decupagem zerou todas as entidades de uma apresentação anteriormente estruturada"
+    return True, None
+
+
+def _capture_specialized_backup(client: Any, source_file: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Captura linhas estruturadas antes de uma substituição destrutiva.
+
+    É uma rede de segurança transacional em cima do schema atual. IDs originais
+    são preservados para que links existentes possam ser restaurados se a nova
+    leitura falhar no meio do processo.
+    """
+    backup: dict[str, list[dict[str, Any]]] = {}
+    if client is None or not callable(getattr(client, "table", None)):
+        return backup
+    project_id = str(source_file.get("project_id") or "").strip()
+    sha = str(source_file.get("sha256") or "").strip()
+    role = str(source_file.get("document_role") or "").strip()
+    if not project_id or not sha:
+        return backup
+
+    def fetch(table: str, **filters: Any) -> list[dict[str, Any]]:
+        try:
+            q = client.table(table).select("*")
+            for key, value in filters.items():
+                q = q.eq(key, value)
+            return _rows(q.execute())
+        except Exception:
+            return []
+
+    if role == "briefing_original":
+        parents = fetch("memory_briefing_documents", project_id=project_id, content_sha256=sha)
+        backup["memory_briefing_documents"] = parents
+        reqs: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        for parent in parents:
+            reqs.extend(fetch("memory_briefing_requirements", briefing_document_id=parent.get("id")))
+        for req in reqs:
+            links.extend(fetch("memory_briefing_links", requirement_id=req.get("id")))
+        backup["memory_briefing_requirements"] = reqs
+        backup["memory_briefing_links"] = links
+    elif role in {"detailed_costs", "preliminary_budget"}:
+        parents = fetch("memory_cost_documents", project_id=project_id, content_sha256=sha)
+        backup["memory_cost_documents"] = parents
+        items: list[dict[str, Any]] = []
+        links: list[dict[str, Any]] = []
+        for parent in parents:
+            items.extend(fetch("memory_cost_items", cost_document_id=parent.get("id")))
+        for item in items:
+            links.extend(fetch("memory_cost_links", cost_item_id=item.get("id")))
+        backup["memory_cost_items"] = items
+        backup["memory_cost_links"] = links
+    elif role in {"proposal_presentation", "final_presentation"}:
+        parents = fetch("memory_documents", project_id=project_id, content_sha256=sha)
+        backup["memory_documents"] = parents
+        pages: list[dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
+        cost_links: list[dict[str, Any]] = []
+        brief_links: list[dict[str, Any]] = []
+        outcomes: list[dict[str, Any]] = []
+        for parent in parents:
+            pages.extend(fetch("memory_pages", document_id=parent.get("id")))
+            items.extend(fetch("memory_items", document_id=parent.get("id")))
+        for item in items:
+            cost_links.extend(fetch("memory_cost_links", memory_item_id=item.get("id")))
+            brief_links.extend(fetch("memory_briefing_links", memory_item_id=item.get("id")))
+            outcomes.extend(fetch("memory_item_outcomes", item_id=item.get("id")))
+        backup["memory_pages"] = pages
+        backup["memory_items"] = items
+        backup["memory_cost_links"] = cost_links
+        backup["memory_briefing_links"] = brief_links
+        backup["memory_item_outcomes"] = outcomes
+    return backup
+
+
+def _restore_specialized_backup(client: Any, backup: Mapping[str, list[dict[str, Any]]], warnings: list[str]) -> None:
+    if not backup or client is None or not callable(getattr(client, "table", None)):
+        return
+    # Pais antes de filhos; links/outcomes por último.
+    order = [
+        "memory_briefing_documents", "memory_cost_documents", "memory_documents",
+        "memory_briefing_requirements", "memory_cost_items", "memory_pages", "memory_items",
+        "memory_cost_links", "memory_briefing_links", "memory_item_outcomes",
+    ]
+    restored = 0
+    for table in order:
+        rows = [dict(row) for row in (backup.get(table) or []) if isinstance(row, Mapping)]
+        if not rows:
+            continue
+        try:
+            client.table(table).insert(_safe_json(rows)).execute()
+            restored += len(rows)
+        except Exception as exc:
+            # Tenta linha a linha para que uma colisão parcial não impeça o restante.
+            for row in rows:
+                try:
+                    client.table(table).insert(_safe_json(row)).execute()
+                    restored += 1
+                except Exception:
+                    pass
+            warnings.append(f"Rollback de {table} exigiu recuperação parcial: {exc}")
+    if restored:
+        warnings.append(f"Knowledge Monotonicity: {restored} registro(s) anteriores foram restaurados após falha do reprocessamento.")
 
 
 def _delete_legacy_specialized_rows(client: Any, source_file: Mapping[str, Any]) -> dict[str, int]:
@@ -2103,7 +2333,6 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
     results: list[dict[str, Any]] = []
     processed_ids: set[str] = set()
     for row in relevant:
-        _delete_legacy_specialized_rows(client, row)
         result = materialize_source_file(client, row, force_semantic_reprocess=True)
         payload = result.as_dict()
         payload.update({
@@ -2201,14 +2430,39 @@ def materialize_source_file(
     _ensure_project_file_role(client, source_file, warnings)
     _sync_project_file(client, source_file_id, warnings)
     text = _clean_text(text_override if text_override is not None else source_file.get("text_excerpt"))
-    if source_bytes is None and role in {
+    critical_rebuild_roles = {
         "briefing_original", "detailed_costs", "preliminary_budget",
-        "proposal_presentation", "final_presentation", "feedback_approval",
+        "proposal_presentation", "final_presentation",
+    }
+    existing_counts = _existing_structured_counts(client, source_file) if force_semantic_reprocess else {}
+    if source_bytes is None and role in {
+        *critical_rebuild_roles, "feedback_approval",
     }:
-        source_bytes = _download_bytes(client, source_file)
+        source_bytes = _download_bytes(client, source_file, warnings)
+
+    # Knowledge Monotonicity: nunca trocamos uma leitura já válida por um fallback
+    # textual apenas porque o master ficou temporariamente indisponível.
+    if (
+        force_semantic_reprocess
+        and role in critical_rebuild_roles
+        and source_bytes is None
+        and any(int(v or 0) > 0 for v in existing_counts.values())
+    ):
+        warnings.append(
+            "Knowledge Monotonicity: o master não pôde ser recuperado; a materialização anterior foi preservada integralmente em vez de ser substituída por uma leitura inferior."
+        )
+        _mark_source_file(
+            client, source_file_id, status="preserved_existing",
+            notes=" | ".join(warnings[:12]), created=existing_counts,
+        )
+        return MaterializationResult(
+            source_file_id, project_id, role, "preserved_existing", dict(existing_counts), warnings
+        )
+
+    backup = _capture_specialized_backup(client, source_file) if (force_semantic_reprocess and role in critical_rebuild_roles) else {}
 
     try:
-        if force_semantic_reprocess:
+        if force_semantic_reprocess and role in critical_rebuild_roles:
             _delete_legacy_specialized_rows(client, source_file)
         if role == "briefing_original":
             if source_bytes is None:
@@ -2221,6 +2475,10 @@ def materialize_source_file(
                 try:
                     created.update(_materialize_briefing_semantic(client, source_file, source_bytes, warnings))
                 except Exception as semantic_exc:
+                    if backup:
+                        raise RuntimeError(
+                            f"A nova leitura especializada do briefing falhou; a versão anterior será restaurada: {semantic_exc}"
+                        ) from semantic_exc
                     if not text:
                         raise
                     warnings.append(f"A leitura especializada do briefing falhou; aplicada reconstrução textual de segurança: {semantic_exc}")
@@ -2240,6 +2498,10 @@ def materialize_source_file(
                 try:
                     created.update(_materialize_presentation_semantic(client, source_file, source_bytes, warnings))
                 except Exception as semantic_exc:
+                    if backup:
+                        raise RuntimeError(
+                            f"A nova decupagem visual especializada falhou; a versão anterior será restaurada: {semantic_exc}"
+                        ) from semantic_exc
                     if not text:
                         raise
                     warnings.append(f"A decupagem visual especializada falhou; aplicada materialização textual de segurança: {semantic_exc}")
@@ -2252,6 +2514,14 @@ def materialize_source_file(
             created.update(_materialize_report(client, source_file, text))
         # supplier_reference e complementary_document continuam visíveis em
         # Documentos via project_files/source_files, sem fabricar conteúdo legado.
+
+        if force_semantic_reprocess and backup and role in critical_rebuild_roles:
+            current_counts = _existing_structured_counts(client, source_file)
+            acceptable, reason = _validate_rebuild_quality(role, existing_counts, current_counts)
+            if not acceptable:
+                raise RuntimeError(
+                    "Knowledge Monotonicity bloqueou a promoção da nova leitura: " + str(reason or "cobertura inferior")
+                )
 
         # V28.2.1 — File Analyst + Intelligence Dual-Write.
         # O workspace legado continua sendo a camada operacional atual. Quando a
@@ -2295,6 +2565,22 @@ def materialize_source_file(
         return MaterializationResult(source_file_id, project_id, role, status, created, warnings)
     except Exception as exc:
         warnings.append(str(exc))
+        if backup:
+            # Remove qualquer leitura parcial da tentativa e volta exatamente ao
+            # conjunto anterior. O usuário nunca perde conhecimento por reprocessar.
+            try:
+                _delete_legacy_specialized_rows(client, source_file)
+            except Exception:
+                pass
+            _restore_specialized_backup(client, backup, warnings)
+            restored_counts = _existing_structured_counts(client, source_file) or existing_counts
+            _mark_source_file(
+                client, source_file_id, status="preserved_existing",
+                notes=" | ".join(warnings[:12]), created=restored_counts,
+            )
+            return MaterializationResult(
+                source_file_id, project_id, role, "preserved_existing", dict(restored_counts), warnings
+            )
         _mark_source_file(
             client,
             source_file_id,

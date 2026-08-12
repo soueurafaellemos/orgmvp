@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping, Sequence
 
-ENTITY_RESOLVER_VERSION = "entity-resolution-v1"
+ENTITY_RESOLVER_VERSION = "entity-resolution-v1.1"
 AUTO_MERGE_THRESHOLD = 0.91
 REVIEW_THRESHOLD = 0.74
 
@@ -90,6 +90,7 @@ def _tokens(value: Any, *, entity_type: str | None = None) -> list[str]:
     return [
         token for token in normalize_text(value).split()
         if token and token not in _STOPWORDS and token not in generic
+        and not token.isdigit()
     ]
 
 
@@ -133,8 +134,9 @@ def entity_match_score(left: ResolutionEntity, right: ResolutionEntity) -> Match
 
     left_aliases = _aliases(left)
     right_aliases = _aliases(right)
-    if left_aliases & right_aliases:
-        return MatchResult(left.id, right.id, 0.995, "AUTO_MERGE", ("nome/alias normalizado idêntico",))
+    exact = {value for value in (left_aliases & right_aliases) if re.search(r"[a-z]", value) and len(value) >= 3}
+    if exact:
+        return MatchResult(left.id, right.id, 0.995, "AUTO_MERGE", ("nome/alias normalizado idêntico e distintivo",))
 
     best = 0.0
     best_pair: tuple[str, str] | None = None
@@ -145,7 +147,11 @@ def entity_match_score(left: ResolutionEntity, right: ResolutionEntity) -> Match
             # Whole-name containment is a strong alias signal even when the short
             # name contains words normally treated as stopwords (e.g. "ON TOUR").
             short_raw, long_raw = (a, b) if len(a) <= len(b) else (b, a)
-            raw_phrase = bool(len(short_raw) >= 5 and re.search(rf"(?:^|\s){re.escape(short_raw)}(?:$|\s)", long_raw))
+            raw_phrase = bool(
+                len(short_raw) >= 5
+                and re.search(r"[a-z]", short_raw)
+                and re.search(rf"(?:^|\s){re.escape(short_raw)}(?:$|\s)", long_raw)
+            )
             ta = _tokens(a, entity_type=left.entity_type)
             tb = _tokens(b, entity_type=right.entity_type)
             if not ta or not tb:
