@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.1.7.3"
+WORKFLOW_VERSION = "28.2.0"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_MB = 300
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
@@ -106,15 +106,21 @@ MIME_BY_EXTENSION = {
 
 _ROLE_TERMS: dict[str, tuple[tuple[str, float], ...]] = {
     "briefing_original": (
-        ("briefing", 7.0), ("debriefing", 6.0), ("brief interno", 6.0),
+        ("briefing", 8.5), ("debriefing", 6.0), ("brief interno", 6.0),
         ("objetivo e desafio", 3.0), ("publico alvo", 2.5),
         ("entregaveis", 2.2), ("obrigatoriedades", 2.5),
         ("mandatorios", 2.4), ("restricoes", 1.6),
+        ("target audience", 2.2), ("deliverables", 2.2),
+        ("mandatory", 2.0), ("requirements", 1.8),
     ),
     "proposal_presentation": (
         ("apresentacao", 2.5), ("proposta", 5.2), ("conceito criativo", 3.2),
         ("estrategia", 2.0), ("cenografia", 2.0), ("ativacoes", 2.0),
         ("experiencias", 1.2), ("defesa", 2.5), ("paper", 2.3),
+        ("our approach", 3.4), ("creative concept", 3.4), ("concept", 1.4),
+        ("insight", 2.6), ("event journey", 2.8), ("activation", 1.8),
+        ("experience", 1.2), ("press kit", 1.8), ("product reveal", 2.2),
+        ("creator recommendation", 1.8), ("key visual", 1.8),
     ),
     "detailed_costs": (
         ("planilha de custos", 8.0), ("custos", 4.5), ("custo", 2.0),
@@ -141,13 +147,21 @@ _ROLE_TERMS: dict[str, tuple[tuple[str, float], ...]] = {
     "post_event_report": (
         ("pos evento", 7.0), ("pos-evento", 7.0), ("post event", 7.0),
         ("relatorio final", 6.0), ("relatorio de encerramento", 8.0),
-        ("report final", 7.0), ("resultados", 2.2), ("aprendizados", 3.0),
-        ("kpis", 2.5), ("executado", 1.5), ("realizado", 1.0),
+        ("report final", 7.0), ("post event report", 8.0),
+        # Termos abaixo são fracos isoladamente: briefings também pedem KPIs,
+        # resultados e aprendizados como ENTREGÁVEIS futuros.
+        ("resultados", 0.8), ("aprendizados", 0.9),
+        ("kpis", 0.8), ("executado", 1.0), ("realizado", 0.6),
+        ("actual results", 2.8), ("lessons learned", 2.8),
     ),
     "supplier_reference": (
         ("fornecedor", 4.0), ("cotacao", 4.0), ("proposta comercial", 5.0),
-        ("ficha tecnica", 5.0), ("catalogo", 4.0), ("portfolio", 3.0),
-        ("lead time", 2.0), ("prazo de entrega", 2.0), ("condicoes comerciais", 3.0),
+        ("ficha tecnica", 5.0), ("catalogo", 4.0),
+        # Portfolio sozinho é frequente em apresentações de agência e nunca deve
+        # definir a identidade documental.
+        ("portfolio", 0.8), ("lead time", 2.0), ("prazo de entrega", 2.0),
+        ("condicoes comerciais", 3.0), ("vendor", 2.0), ("quotation", 3.5),
+        ("commercial terms", 3.5), ("technical specification", 3.5),
     ),
 }
 
@@ -456,6 +470,85 @@ def _term_score(haystack: str, role: str) -> tuple[float, list[str]]:
     return score, reasons
 
 
+def _structural_document_identity(
+    *,
+    extension: str,
+    normalized_name: str,
+    full_haystack: str,
+) -> tuple[str | None, float, list[str]]:
+    """Resolve a FUNÇÃO do documento antes da contagem de palavras soltas.
+
+    A V28.1.x somava termos sem distinguir contexto. Assim, um briefing que
+    pedia "relatório pós-evento" virava relatório; uma proposta em inglês que
+    continha "portfolio" virava referência de fornecedor. A V28.2 usa sinais
+    estruturais, bilíngues e combinados.
+    """
+    if extension in {".docx", ".txt", ".md", ".pdf"}:
+        if any(token in normalized_name for token in ("briefing", "debriefing", "brief interno")):
+            return "briefing_original", 0.97, ["nome do arquivo identifica briefing"]
+
+    briefing_groups = (
+        ("job", "infos gerais", "concorrencia", "briefing"),
+        ("publico alvo", "target audience", "audience"),
+        ("objetivo", "objective", "our goal"),
+        ("entregaveis", "deliverables", "scope"),
+        ("obrigatoriedades", "mandatory", "requirements", "must have"),
+        ("financeiro", "budget", "orcamento", "payment terms"),
+    )
+    briefing_hits = sum(any(term in full_haystack for term in group) for group in briefing_groups)
+
+    report_strong = sum(term in full_haystack for term in (
+        "relatorio pos evento", "relatorio de encerramento", "post event report",
+        "resultados realizados", "actual results", "lessons learned",
+        "planned vs actual", "participantes realizados", "actual attendance",
+    ))
+
+    if extension in {".docx", ".txt", ".md"} and briefing_hits >= 4 and report_strong < 2:
+        return "briefing_original", 0.94, [
+            f"estrutura de briefing ({briefing_hits}/6 grupos identificados)"
+        ]
+
+    proposal_groups = (
+        ("our approach", "nossa abordagem", "estrategia", "strategy"),
+        ("insight", "creative concept", "conceito criativo", "concept"),
+        ("event journey", "jornada do evento", "journey"),
+        ("activation", "ativacao", "experience", "experiencia"),
+        ("scenography", "cenografia", "venue", "local"),
+        ("press kit", "gift", "brinde"),
+        ("product reveal", "welcome experience", "key visual", "kv"),
+        ("creator recommendation", "creator", "influencer"),
+    )
+    proposal_hits = sum(any(term in full_haystack for term in group) for group in proposal_groups)
+    proposal_story = any(term in full_haystack for term in (
+        "presents", "our challenge", "brief recap", "brand context",
+        "competitor landscape", "event journey", "our approach",
+    ))
+    if extension in {".pdf", ".pptx", ".ppt"} and proposal_hits >= 4 and proposal_story:
+        return "proposal_presentation", 0.94, [
+            f"estrutura bilíngue de proposta ({proposal_hits}/8 grupos identificados)"
+        ]
+
+    # Referência de fornecedor exige contexto comercial/técnico combinado.
+    supplier_groups = (
+        ("fornecedor", "vendor", "subcontractor"),
+        ("cotacao", "quotation", "price list"),
+        ("condicoes comerciais", "commercial terms", "payment terms"),
+        ("ficha tecnica", "technical specification", "lead time"),
+    )
+    supplier_hits = sum(any(term in full_haystack for term in group) for group in supplier_groups)
+    if supplier_hits >= 2 and proposal_hits < 3:
+        return "supplier_reference", 0.90, [
+            f"estrutura comercial/técnica de fornecedor ({supplier_hits}/4 grupos)"
+        ]
+
+    if report_strong >= 2 and briefing_hits < 3:
+        return "post_event_report", 0.92, [
+            "estrutura de relatório com evidências pós-evento/resultado realizado"
+        ]
+
+    return None, 0.0, []
+
+
 def classify_document(name: str, text_excerpt: str) -> tuple[str, float, list[str]]:
     normalized_name = normalize_text(Path(name).stem)
     normalized_text = normalize_text(text_excerpt[:MAX_TEXT_CHARS])
@@ -470,6 +563,14 @@ def classify_document(name: str, text_excerpt: str) -> tuple[str, float, list[st
     )
     if spreadsheet_role:
         return spreadsheet_role, 0.98, spreadsheet_reasons
+
+    structural_role, structural_confidence, structural_reasons = _structural_document_identity(
+        extension=extension,
+        normalized_name=normalized_name,
+        full_haystack=full_haystack,
+    )
+    if structural_role:
+        return structural_role, structural_confidence, structural_reasons
 
     scores: dict[str, float] = {role: 0.0 for role in ROLE_LABELS}
     reasons: dict[str, list[str]] = {role: [] for role in ROLE_LABELS}
@@ -494,7 +595,9 @@ def classify_document(name: str, text_excerpt: str) -> tuple[str, float, list[st
         presentation_anchors = (
             "conceito", "estrategia", "cenografia", "ativacao", "experiencia",
             "implantacao", "moodboard", "key visual", "comunicacao", "brindes",
-            "jornada", "proposta",
+            "jornada", "proposta", "our approach", "insight", "event journey",
+            "activation", "experience", "press kit", "product reveal",
+            "creator recommendation", "welcome experience",
         )
         briefing_anchors = (
             "objetivo", "desafio", "publico alvo", "entregaveis", "mandatorios",

@@ -16,54 +16,70 @@ from memory_learning_models import (
 
 
 HEADER_ALIASES = {
-    "code": {"#", "codigo", "cod", "item codigo"},
+    "code": {"#", "codigo", "cod", "item codigo", "no", "number"},
+    # V28.2 distingue categoria e nome do item. Em planilhas antigas ambos
+    # continuam aceitos pelo campo legado category_or_name.
+    "category": {
+        "categoria", "grupo", "secao", "centro de custo", "category",
+    },
+    "item_name": {
+        "item description", "item name", "nome do item", "descricao do item",
+        "produto servico", "service item",
+    },
     "category_or_name": {
-        "item descricao",
-        "item",
-        "categoria",
-        "grupo",
+        "item descricao", "item", "categoria grupo", "grupo item",
     },
     "description": {
-        "descricao",
-        "escopo",
-        "especificacao",
-        "detalhamento",
+        "descricao", "escopo", "especificacao", "detalhamento",
+        "service description scope", "service description", "scope",
+        "description",
+    },
+    "vendor": {
+        "vendor subcontractor", "vendor", "subcontractor", "fornecedor",
+        "fornecedor subcontratado",
+    },
+    "limitations": {
+        "limitations notes", "limitations", "notes", "observacoes",
+        "observacao",
     },
     "billing_type": {
-        "tipo faturamento",
-        "faturamento",
-        "tipo de faturamento",
+        "tipo faturamento", "faturamento", "tipo de faturamento",
+        "cost classification", "classification",
     },
-    "quantity": {"quant", "qtd", "qtde", "quantidade"},
-    "period": {"periodo", "diarias", "dias", "duracao"},
+    "unit": {"unit", "unidade", "un"},
+    "quantity": {"quant", "qtd", "qtde", "quantidade", "quantity", "qty"},
+    "period": {
+        "periodo", "diarias", "dias", "duracao", "day shift", "days shift",
+        "day", "shift",
+    },
     "unit_value": {
-        "valor unit",
-        "valor unitario",
-        "unitario",
-        "preco unitario",
+        "valor unit", "valor unitario", "unitario", "preco unitario",
+        "price", "unit price",
     },
     "base_value": {
-        "valor total",
-        "custo base",
-        "subtotal",
+        "valor total", "custo base", "subtotal",
+        "unit cost before tax", "cost before tax",
     },
     "fees_value": {
-        "honorarios",
-        "honorario",
-        "fee",
+        "honorarios", "honorario", "fee", "agency markup", "agency markup percent",
+        "agency markup %",
     },
+    # Alguns templates internacionais usam o cabeçalho enganoso
+    # "Unit price (including tax, XX%)" para a PARCELA DE IMPOSTOS.
     "charges_value": {
-        "encargos",
-        "impostos",
-        "taxas",
+        "encargos", "impostos", "taxas", "tax", "tax amount",
+        "unit price including tax xx", "unit price including tax xx percent",
+    },
+    "pre_tax_total": {
+        "total before tax", "total sem imposto", "total pre tax",
     },
     "client_total": {
-        "total com honorarios e encargos",
-        "total cliente",
-        "valor final",
-        "total final",
+        "total com honorarios e encargos", "total cliente", "valor final",
+        "total final", "total including tax xx", "total including tax xx percent",
+        "total including tax", "grand total",
     },
 }
+
 
 STATUS_KEYWORDS = {
     "client_responsibility": [
@@ -293,10 +309,12 @@ def _find_header(
             key in mapping
             for key in {
                 "description",
+                "item_name",
                 "quantity",
                 "unit_value",
                 "base_value",
                 "client_total",
+                "category",
                 "category_or_name",
             }
         )
@@ -659,15 +677,21 @@ def parse_cost_workbook(
         blank_streak = 0
 
         code = _get(row, mapping, "code")
+        category = _get(row, mapping, "category")
+        item_name_value = _get(row, mapping, "item_name")
         category_or_name = _get(row, mapping, "category_or_name")
         description = _get(row, mapping, "description")
+        vendor = _get(row, mapping, "vendor")
+        limitations = _get(row, mapping, "limitations")
         billing_type = _get(row, mapping, "billing_type")
+        unit = _get(row, mapping, "unit")
         quantity = _number(_get(row, mapping, "quantity"))
         period = _number(_get(row, mapping, "period"))
         unit_value = _number(_get(row, mapping, "unit_value"))
         base_value = _number(_get(row, mapping, "base_value"))
         fees_value = _number(_get(row, mapping, "fees_value"))
         charges_value = _number(_get(row, mapping, "charges_value"))
+        pre_tax_total = _number(_get(row, mapping, "pre_tax_total"))
         client_total = _number(_get(row, mapping, "client_total"))
 
         normalized_first = normalize_text(
@@ -677,13 +701,20 @@ def parse_cost_workbook(
         if re.search(r"\btotal\b", normalized_first):
             continue
 
+        # Templates internacionais usam linhas de subtotal com categoria +
+        # valores, mas sem Item Description. Elas não são entregas/custos
+        # independentes e seriam duplicadas com as linhas detalhadas.
+        if normalize_text(unit) in {"subtotal", "sub total"} and not str(item_name_value or "").strip():
+            current_category = _category_label(category) or current_category
+            continue
+
         nonempty_values = [
             value for value in row
             if value not in (None, "") and str(value).strip()
         ]
         numeric_values = [
             quantity, period, unit_value, base_value,
-            fees_value, charges_value, client_total,
+            fees_value, charges_value, pre_tax_total, client_total,
         ]
         only_text = str(nonempty_values[0]).strip() if len(nonempty_values) == 1 else ""
         letters = "".join(ch for ch in only_text if ch.isalpha())
@@ -693,7 +724,7 @@ def parse_cost_workbook(
             and looks_like_heading
             and all(value in (None, 0) for value in numeric_values)
         )
-        category_text = str(category_or_name or "").strip()
+        category_text = str(category or category_or_name or "").strip()
         description_text = str(description or "").strip()
         same_category_description = (
             bool(category_text)
@@ -718,15 +749,16 @@ def parse_cost_workbook(
 
         full_description = str(
             description
+            or item_name_value
             or category_or_name
             or ""
         ).strip()
 
-        if not full_description:
-            continue
+        explicit_item_name = _first_line(item_name_value) if item_name_value not in (None, "") else ""
+        item_name = explicit_item_name or _first_line(full_description)
 
-        item_name = _first_line(full_description)
-
+        # Uma linha sem nome/descrição de entrega é metadado, subtotal ou
+        # cabeçalho e não deve virar item financeiro.
         if not item_name:
             continue
 
@@ -757,7 +789,8 @@ def parse_cost_workbook(
                     else None
                 ),
                 category=(
-                    current_category
+                    _category_label(category)
+                    or current_category
                     or (
                         str(category_or_name).strip()
                         if category_or_name and description
@@ -781,7 +814,13 @@ def parse_cost_workbook(
                 item_status=status,
                 estimate_type=estimate_type,
                 flags=flags,
-                raw_data={"row": list(row)},
+                raw_data={
+                    "row": list(row),
+                    "vendor": str(vendor).strip() if vendor not in (None, "") else None,
+                    "limitations": str(limitations).strip() if limitations not in (None, "") else None,
+                    "unit": str(unit).strip() if unit not in (None, "") else None,
+                    "pre_tax_total": pre_tax_total,
+                },
             )
         )
 

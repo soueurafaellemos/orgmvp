@@ -16,7 +16,7 @@ from supabase import Client
 
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-PROJECT_FILE_MAX_BYTES = 100 * 1024 * 1024
+PROJECT_FILE_MAX_BYTES = 300 * 1024 * 1024
 
 SINGLETON_FILE_ROLES = {
     "briefing_original",
@@ -44,6 +44,14 @@ def _business_status_label(project_status: str, outcome: dict[str, Any] | None =
     outcome = outcome or {}
     execution = str(outcome.get("execution_result") or "")
     commercial = str(outcome.get("commercial_result") or "")
+    client_decision = (
+        str(outcome.get("information_source") or "") == "client_feedback"
+        and str(outcome.get("confidence_level") or "") == "client_confirmed"
+    )
+    if client_decision and commercial == "lost":
+        return "Perdeu"
+    if client_decision and commercial == "cancelled":
+        return "Cancelada"
     if execution in {"executed", "partially_executed"} or project_status == "executado":
         return "Executada"
     if execution == "in_progress" or project_status == "em_producao":
@@ -303,7 +311,7 @@ def save_project_file(
         size_mb = len(file_bytes) / (1024 * 1024)
         raise ValueError(
             f"O arquivo tem {size_mb:.1f} MB. "
-            "O limite desta área é 100 MB."
+            "O limite desta área é 300 MB."
         )
 
     if file_role not in FILE_ROLE_LABELS:

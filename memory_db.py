@@ -16,7 +16,7 @@ from document_io import InputDocument
 
 
 MEMORY_BUCKET = "nave-memory"
-MEMORY_MAX_FILE_SIZE = 100 * 1024 * 1024
+MEMORY_MAX_FILE_SIZE = 300 * 1024 * 1024
 MEMORY_ALLOWED_MIME_TYPES = [
     "application/pdf",
     "image/png",
@@ -174,7 +174,7 @@ def _upload_bytes(
 
     if len(file_bytes) > MEMORY_MAX_FILE_SIZE:
         raise ValueError(
-            "O arquivo ultrapassa o limite de 100 MB da Memória."
+            "O arquivo ultrapassa o limite de 300 MB da Memória."
         )
 
     def upload():

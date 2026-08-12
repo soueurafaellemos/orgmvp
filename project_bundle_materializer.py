@@ -20,10 +20,18 @@ from memory_extractor import extract_memory, merge_memory_batches
 from memory_learning_db import save_cost_document, update_project_budget
 from memory_learning_models import CostWorkbookResult
 from project_batch_ingestion import classify_document
+from project_analyst import (
+    FeedbackAnalysis,
+    analyze_feedback_bytes,
+    analyze_project_snapshot,
+    best_item_for_claim,
+    fallback_feedback_analysis,
+    semantic_synthesis_findings,
+)
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.1.7.3"
-LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3"}
+WORKFLOW_VERSION = "28.2.0"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -882,55 +890,263 @@ def _materialize_feedback(
     client: Any,
     source_file: Mapping[str, Any],
     text: str,
+    source_bytes: bytes | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, int]:
+    """Transforma uma fonte de feedback em transcrição + claims + outcomes.
+
+    A fonte continua sendo UM arquivo, mas pode conter vários assuntos. Cada
+    assunto vira uma linha estruturada, permitindo relacionar conceito, venue,
+    ativação, budget e prazo separadamente.
+    """
+    warnings = warnings if warnings is not None else []
     project_id = str(source_file.get("project_id") or "")
-    mime_type = str(source_file.get("mime_type") or "").casefold()
+    mime_type = str(source_file.get("mime_type") or "application/octet-stream").casefold()
     file_name = str(source_file.get("file_name") or "arquivo")
-    if _clip(text, 12000):
-        content = _clip(text, 12000)
-    elif mime_type.startswith("image/"):
-        content = f"Feedback visual anexado: {file_name}. Conteúdo textual não extraído automaticamente nesta etapa."
-    else:
-        content = f"Arquivo de feedback: {file_name}"
     marker = _source_marker(source_file)
+
+    # Compatibilidade defensiva: chamadas legadas sem bytes não têm como fazer
+    # leitura visual. Preservamos a evidência sem inventar transcrição.
+    if not source_bytes and not _clip(text, 12000) and mime_type.startswith("image/"):
+        payload = {
+            "project_id": project_id,
+            "source_type": "not_informed",
+            "process_stage": "not_informed",
+            "theme": "other",
+            "sentiment": "neutral",
+            "original_feedback": f"Feedback visual anexado: {file_name}. Conteúdo textual não extraído automaticamente nesta etapa.",
+            "internal_interpretation": f"{marker} · Arquivo visual preservado como evidência; sem inferir texto, autor ou decisão.",
+            "action_taken": None,
+            "confidence_level": "incomplete",
+        }
+        inserted = _rows(client.table("memory_feedback_entries").insert(_safe_json(payload)).execute())
+        return {"feedback_entries": len(inserted)}
+
+    analysis: FeedbackAnalysis | None = None
+    if source_bytes:
+        api_key, model = _ai_settings()
+        if api_key:
+            try:
+                analysis = analyze_feedback_bytes(
+                    file_name=file_name,
+                    mime_type=mime_type,
+                    file_bytes=source_bytes,
+                    api_key=api_key,
+                    model=model,
+                )
+            except Exception as exc:
+                warnings.append(f"Leitura multimodal do feedback falhou: {exc}")
+        elif mime_type.startswith("image/"):
+            warnings.append(
+                "GEMINI_API_KEY não está disponível; o print de feedback foi preservado, mas a transcrição visual não pôde ser executada."
+            )
+
+    if analysis is None and _clip(text, 12000):
+        analysis = fallback_feedback_analysis(str(text))
+    if analysis is None:
+        # Sem bytes nem texto não fabricamos interpretação. Mantemos uma entrada
+        # explícita de pendência em vez de fingir que o feedback foi analisado.
+        analysis = FeedbackAnalysis(
+            transcription=None,
+            source_type="not_informed",
+            process_stage="not_informed",
+            commercial_result="in_evaluation",
+            proposal_result="not_informed",
+            execution_result="not_informed",
+            confidence_level="incomplete",
+            decision_summary="Feedback anexado, mas ainda não transcrito.",
+            claims=[],
+        )
+
+    # Remove placeholders/claims anteriores desta mesma fonte antes de gravar a
+    # análise atual. O marcador é estável entre versões e evita duplicação.
+    existing_rows: list[dict[str, Any]] = []
     try:
-        response = (
+        existing_rows = _rows(
             client.table("memory_feedback_entries")
             .select("id,internal_interpretation")
             .eq("project_id", project_id)
             .execute()
         )
-        for row in _rows(response):
+        for row in existing_rows:
             if marker in str(row.get("internal_interpretation") or ""):
-                return {"feedback_entries": 0}
+                try:
+                    client.table("memory_feedback_entries").delete().eq("id", row.get("id")).execute()
+                except Exception:
+                    pass
     except Exception:
         pass
-    norm = _normalize(content)
-    sentiment = "mixed" if any(term in norm for term in ("aprov", "gost", "positivo")) and any(term in norm for term in ("ajust", "alter", "nao ", "negativ")) else "neutral"
-    if any(term in norm for term in ("ajust", "alter", "revis")):
-        stage = "revision"
-    elif any(term in norm for term in ("aprov", "cliente", "apresent")):
-        stage = "presentation"
-    else:
-        stage = "not_informed"
-    theme = "budget" if any(term in norm for term in ("orcamento", "verba", "custo", "valor")) else "other"
-    payload = {
-        "project_id": project_id,
-        "source_type": "not_informed",
-        "process_stage": stage,
-        "theme": theme,
-        "sentiment": sentiment,
-        "original_feedback": content,
-        "internal_interpretation": (
-            f"{marker} · Arquivo visual preservado como evidência; sem inferir texto, autor ou decisão."
-            if mime_type.startswith("image/") and not _clip(text, 12000)
-            else f"{marker} · Materializado automaticamente a partir do arquivo, sem inventar autor ou decisão."
-        ),
-        "action_taken": None,
-        "confidence_level": "incomplete",
+
+    rows_to_insert: list[dict[str, Any]] = []
+    transcription = _clip(analysis.transcription or text, 12000)
+    if transcription:
+        rows_to_insert.append({
+            "project_id": project_id,
+            "source_type": analysis.source_type,
+            "process_stage": analysis.process_stage,
+            "theme": "other",
+            "sentiment": "mixed" if len({c.sentiment for c in analysis.claims}) > 1 else (
+                analysis.claims[0].sentiment if analysis.claims else "neutral"
+            ),
+            "original_feedback": transcription,
+            "internal_interpretation": (
+                f"{marker} · NAVE {WORKFLOW_VERSION} · transcrição da fonte"
+                + (f" · {analysis.decision_summary}" if analysis.decision_summary else "")
+            ),
+            "action_taken": None,
+            "confidence_level": analysis.confidence_level,
+        })
+
+    try:
+        memory_items = _rows(
+            client.table("memory_items").select("*").eq("project_id", project_id).execute()
+        )
+    except Exception:
+        memory_items = []
+
+    linked_outcomes = 0
+    for index, claim in enumerate(analysis.claims, start=1):
+        matched_item, match_score = best_item_for_claim(claim, memory_items)
+        related_note = ""
+        if matched_item:
+            related_note = (
+                f" · relacionado a: {matched_item.get('title') or 'solução'}"
+                f" · score {match_score:.2f}"
+            )
+        evidence = _clip(claim.evidence_quote, 3000)
+        original = evidence or _clip(claim.title, 1000) or "Feedback estruturado"
+        rows_to_insert.append({
+            "project_id": project_id,
+            "source_type": analysis.source_type,
+            "process_stage": analysis.process_stage,
+            "theme": claim.theme,
+            "sentiment": claim.sentiment,
+            "original_feedback": original,
+            "internal_interpretation": (
+                f"{marker} · NAVE {WORKFLOW_VERSION} · claim {index}: "
+                f"{_clip(claim.interpretation or claim.title, 3500) or claim.title}"
+                f"{related_note}"
+            ),
+            "action_taken": _clip(claim.recommended_learning, 2500),
+            "confidence_level": analysis.confidence_level,
+        })
+
+        if (
+            matched_item
+            and claim.item_outcome_status
+            not in {"unassessed", "unknown"}
+        ):
+            try:
+                client.table("memory_item_outcomes").upsert({
+                    "item_id": matched_item.get("id"),
+                    "project_id": project_id,
+                    "outcome_status": claim.item_outcome_status,
+                    "decision_reason": evidence or _clip(claim.interpretation, 1800),
+                    "feedback_summary": _clip(claim.title, 1200),
+                    "execution_notes": None,
+                    "confidence_level": analysis.confidence_level,
+                    "information_source": "client_feedback",
+                }, on_conflict="item_id").execute()
+                linked_outcomes += 1
+
+                # Fecha o circuito briefing → solução → feedback quando a solução
+                # já possui vínculo com uma demanda. A aderência passa a refletir
+                # evidência do cliente, e não apenas similaridade textual.
+                adherence_from_outcome = {
+                    "approved": "fulfilled",
+                    "approved_with_changes": "partially_fulfilled",
+                    "not_approved": "not_fulfilled",
+                    "removed_budget": "removed_budget",
+                    "removed_timeline": "removed_timeline",
+                }.get(claim.item_outcome_status)
+                if adherence_from_outcome:
+                    try:
+                        links = _rows(
+                            client.table("memory_briefing_links")
+                            .select("id")
+                            .eq("project_id", project_id)
+                            .eq("memory_item_id", matched_item.get("id"))
+                            .execute()
+                        )
+                        for link in links:
+                            client.table("memory_briefing_links").update({
+                                "adherence_status": adherence_from_outcome,
+                                "evidence": evidence,
+                                "notes": _clip(claim.interpretation, 1800),
+                            }).eq("id", link.get("id")).execute()
+                    except Exception as link_exc:
+                        warnings.append(f"Feedback → aderência do briefing não pôde ser sincronizado: {link_exc}")
+            except Exception as exc:
+                warnings.append(f"Vínculo feedback → solução não pôde ser salvo: {exc}")
+
+    if not rows_to_insert:
+        rows_to_insert.append({
+            "project_id": project_id,
+            "source_type": analysis.source_type,
+            "process_stage": analysis.process_stage,
+            "theme": "other",
+            "sentiment": "neutral",
+            "original_feedback": f"Arquivo de feedback: {file_name}",
+            "internal_interpretation": (
+                f"{marker} · NAVE {WORKFLOW_VERSION} · fonte preservada; leitura ainda incompleta."
+            ),
+            "action_taken": None,
+            "confidence_level": "incomplete",
+        })
+
+    inserted_count = 0
+    for row in rows_to_insert:
+        try:
+            inserted_count += len(
+                _rows(client.table("memory_feedback_entries").insert(_safe_json(row)).execute())
+            )
+        except Exception as exc:
+            warnings.append(f"Claim de feedback não salvo: {exc}")
+
+    # Uma decisão explícita do cliente é a melhor fonte para o estado comercial.
+    if analysis.commercial_result in {"won", "lost", "cancelled", "suspended", "no_return"}:
+        try:
+            existing = _table_select_one(client, "memory_project_outcomes", project_id=project_id) or {}
+            reason_values = list(dict.fromkeys([
+                *list(existing.get("result_reasons") or []),
+                *list(analysis.result_reasons or []),
+                *[c.result_reason for c in analysis.claims if c.result_reason],
+            ]))
+            context_parts = [
+                str(existing.get("result_context") or "").strip(),
+                f"[{marker}] {analysis.decision_summary or 'Decisão extraída do feedback do cliente.'}",
+            ]
+            payload = {
+                "project_id": project_id,
+                "process_type": analysis.process_type if analysis.process_type != "not_informed" else (existing.get("process_type") or "not_informed"),
+                "commercial_result": analysis.commercial_result,
+                "proposal_result": analysis.proposal_result,
+                "execution_result": analysis.execution_result,
+                "result_reasons": reason_values,
+                "result_context": "\n\n".join(part for part in context_parts if part)[:12000],
+                "currency": existing.get("currency") or "BRL",
+                "confidence_level": analysis.confidence_level,
+                "information_source": "client_feedback",
+            }
+            client.table("memory_project_outcomes").upsert(
+                _safe_json(payload), on_conflict="project_id"
+            ).execute()
+            new_status = {
+                "won": "aprovado_ganho",
+                "lost": "perdido",
+                "cancelled": "cancelado",
+            }.get(analysis.commercial_result)
+            if new_status:
+                client.table("projects").update({"status": new_status}).eq("id", project_id).execute()
+        except Exception as exc:
+            warnings.append(f"Decisão comercial do feedback não pôde ser sincronizada: {exc}")
+
+    return {
+        "feedback_entries": inserted_count,
+        "feedback_claims": len(analysis.claims),
+        "item_outcomes": linked_outcomes,
+        "project_outcomes": 1 if analysis.commercial_result in {"won", "lost", "cancelled", "suspended", "no_return"} else 0,
     }
-    inserted = _rows(client.table("memory_feedback_entries").insert(_safe_json(payload)).execute())
-    return {"feedback_entries": len(inserted)}
 
 
 def _append_source(existing: str | None, marker: str, file_name: str, text: str) -> str:
@@ -1302,6 +1518,12 @@ def _repair_general_source_role(
         current == "feedback_approval"
         and predicted in {"briefing_original", "proposal_presentation", "final_presentation"}
         and confidence >= 0.78
+    ) or (
+        # V28.2: uma identidade estrutural forte pode corrigir rótulos específicos
+        # herdados de versões antigas (ex.: briefing → pós-evento; proposta → fornecedor).
+        confidence >= 0.90
+        and predicted in {"briefing_original", "proposal_presentation", "final_presentation"}
+        and current in {"post_event_report", "supplier_reference", "complementary_document"}
     )
     if not safe_to_replace or predicted == current:
         return row
@@ -1320,7 +1542,7 @@ def _repair_bundle_topology(
 
     Versões anteriores podiam rotular um DOCX de briefing ou um PDF de proposta
     como relatório/fornecedor/feedback porque uma palavra interna pesava mais que
-    a função do arquivo no lote. A V28.1.7.3 usa a combinação dos formatos como
+    a função do arquivo no lote. A V28.2.0 usa a combinação dos formatos como
     fallback somente quando existe UM candidato por função. Assim, o caso real
     briefing Word + proposta PDF + planilha + print de feedback deixa de depender
     do rótulo histórico incorreto ou de page_count/text_excerpt preenchidos.
@@ -1484,8 +1706,6 @@ def _semantic_pattern(text: str) -> str | None:
         return r"quick massage|ilha de massagem|massagem"
     if "bar de cafe" in text:
         return r"bar de caf[eé]s?|caf[eé]"
-    if "bacio di latte" in text:
-        return r"bacio di latte"
     if "palco" in text:
         return r"\bpalco\b"
     if "totem" in text:
@@ -1522,24 +1742,25 @@ def _sanitize_memory_items(
     )
     gift_terms = (
         "brinde", "gift", "press kit", "presskit", "camiseta", "mochila", "mala para esportes",
-        "credencial", "sacola", "kit boas vindas", "kit de boas vindas",
+        "sacola", "bag", "luggage tag", "passport holder", "kit boas vindas", "kit de boas vindas",
     )
     activation_terms = (
         "photo op", "ponto de foto", "quick massage", "ilha de massagem", "bar de cafe",
-        "bacio di latte", "ativacao", "experiencia",
+        "ativacao", "activation", "experiencia", "experience", "youtube", "instagram", "tiktok", "kwai",
     )
     scenography_terms = (
         "palco", "totem led", "totem", "cenografia", "implantacao", "planta", "led 14x4",
         "led 6x2", "housemix", "backdrop",
     )
     venue_terms = (
-        "bourbon atibaia", "hotel bourbon", "ballroom garden", "sala londrina", "board room",
-        "orquidea", "tulipa", "montagem dias",
+        "venue", "local", "hotel", "auditorio", "auditorium", "ballroom", "main hall",
+        "capacidade", "capacity", "montagem dias",
     )
-    artistic_terms = ("banda", "studio 4", "musica ao vivo", "palestrante", "mestre de cerimonias")
+    artistic_terms = ("banda", "musica ao vivo", "show musical", "dj set", "palestrante", "mestre de cerimonias", "keynote")
     strategy_terms = (
-        "brief recap", "objetivo", "estrategia", "conceito", "racional", "insight", "narrativa",
-        "direcional", "territorio criativo", "premissa",
+        "brief recap", "objetivo", "our goal", "our challenge", "estrategia", "strategy",
+        "our approach", "conceito", "creative concept", "racional", "rationale", "insight",
+        "narrativa", "brand context", "competitor landscape", "direcional", "territorio criativo", "premissa",
     )
     generic_strategy = re.compile(r"^estrategia(?: e conceito)?(?: slide)? \d+$")
 
@@ -1585,13 +1806,31 @@ def _sanitize_memory_items(
         if title_norm == "ficha de palco":
             row["section_key"] = "communication"
             row["item_type"] = "Material impresso / comunicação"
+        elif "event journey" in title_norm or "jornada do evento" in title_norm:
+            row["section_key"] = "journey_operation"
+            row["item_type"] = "Jornada / operação"
+        elif "communications timeline" in title_norm or "save the date" in title_norm or "online invitation" in title_norm:
+            row["section_key"] = "communication"
+            row["item_type"] = "Comunicação"
+        elif "creator recommendation" in title_norm or "influencer recommendation" in title_norm:
+            row["section_key"] = "partners_sponsorship"
+            row["item_type"] = "Creator / parceiro"
+        elif "product reveal" in title_norm or "keynote" in title_norm:
+            row["section_key"] = "content_agenda"
+            row["item_type"] = "Conteúdo / programação"
+        elif "welcome experience" in title_norm or "guest experience" in title_norm:
+            row["section_key"] = "journey_operation"
+            row["item_type"] = "Jornada / experiência"
+        elif "arrival tunnel" in title_norm or "tunel de chegada" in title_norm:
+            row["section_key"] = "scenography"
+            row["item_type"] = "Cenografia / ambiente"
         elif "photo op" in title_norm or "ponto de foto" in title_norm:
             row["section_key"] = "activations"
             row["item_type"] = "Photo-op"
-        elif any(term in title_norm for term in ("quick massage", "ilha de massagem", "bacio di latte", "bar de cafe")):
+        elif any(term in title_norm for term in ("quick massage", "ilha de massagem", "bar de cafe", "youtube", "instagram", "tiktok", "kwai")):
             row["section_key"] = "activations"
             row["item_type"] = "Ativação / experiência"
-        elif any(term in title_norm for term in ("jantar tematico", "banda", "studio 4", "musica ao vivo", "palestrante", "mestre de cerimonias")):
+        elif any(term in title_norm for term in ("jantar tematico", "banda", "musica ao vivo", "show musical", "dj set", "palestrante", "mestre de cerimonias", "keynote")):
             row["section_key"] = "content_agenda"
             row["item_type"] = "Conteúdo artístico" if any(term in title_norm for term in artistic_terms) else "Conteúdo / programação"
         elif any(term in title_norm for term in ("kit de boas vindas", "camiseta", "mala", "mochila", "brinde", "gift", "press kit", "presskit")):
@@ -1600,9 +1839,15 @@ def _sanitize_memory_items(
         elif any(term in title_norm for term in ("palco", "totem", "cenografia", "implantacao", "backdrop")):
             row["section_key"] = "scenography"
             row["item_type"] = "Cenografia / ambiente"
-        elif any(term in title_norm for term in ("bourbon atibaia", "hotel bourbon", "ballroom garden", "sala londrina", "board room")):
+        elif any(term in title_norm for term in ("venue", "local", "hotel", "auditorio", "auditorium", "ballroom", "main hall")):
             row["section_key"] = "journey_operation"
             row["item_type"] = "Local / operação"
+        elif "event journey" in text or "jornada do evento" in text:
+            row["section_key"] = "journey_operation"
+            row["item_type"] = "Jornada / operação"
+        elif "communications timeline" in text or "save the date" in text or "online invitation" in text:
+            row["section_key"] = "communication"
+            row["item_type"] = "Comunicação"
         elif any(term in text for term in food_terms) or "jantar tematico" in text:
             row["section_key"] = "content_agenda"
             row["item_type"] = "Conteúdo / programação"
@@ -1787,6 +2032,58 @@ def _workspace_counts(client: Any, project_id: str) -> dict[str, int]:
     return counts
 
 
+def _propagate_feedback_outcomes_to_briefing_links(client: Any, project_id: str) -> int:
+    """Fecha a cadeia feedback → solução → requisito depois dos links automáticos."""
+    try:
+        outcomes = _rows(
+            client.table("memory_item_outcomes").select("*")
+            .eq("project_id", project_id).execute()
+        )
+        links = _rows(
+            client.table("memory_briefing_links").select("*")
+            .eq("project_id", project_id).execute()
+        )
+    except Exception:
+        return 0
+    status_map = {
+        "approved": "fulfilled",
+        "approved_with_changes": "partially_fulfilled",
+        "not_approved": "not_fulfilled",
+        "removed_budget": "removed_budget",
+        "removed_timeline": "removed_timeline",
+    }
+    by_item = {
+        str(row.get("item_id") or ""): row
+        for row in outcomes
+        if row.get("item_id")
+        and str(row.get("information_source") or "") == "client_feedback"
+        and str(row.get("outcome_status") or "") in status_map
+    }
+    updated = 0
+    for link in links:
+        outcome = by_item.get(str(link.get("memory_item_id") or ""))
+        if not outcome or not link.get("id"):
+            continue
+        desired = status_map[str(outcome.get("outcome_status"))]
+        evidence = _clip(
+            outcome.get("feedback_summary") or outcome.get("decision_reason"), 1800
+        )
+        payload = {
+            "adherence_status": desired,
+            "evidence": evidence,
+            "notes": _clip(
+                "Aderência atualizada pela V28.2 a partir de feedback explícito do cliente ligado à solução apresentada.",
+                900,
+            ),
+        }
+        try:
+            client.table("memory_briefing_links").update(_safe_json(payload)).eq("id", link.get("id")).execute()
+            updated += 1
+        except Exception:
+            continue
+    return updated
+
+
 def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, Any]:
     try:
         files = _rows(
@@ -1851,6 +2148,55 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
         post_warnings.append("O lote contém custos, mas nenhum documento financeiro estruturado foi confirmado no workspace.")
     actual_errors = sum(1 for r in results if r.get("status") == "error")
     all_warnings = repair_warnings + [w for r in results for w in (r.get("warnings") or [])] + post_warnings
+
+    # V28.2 — depois que as fontes foram materializadas, a NAVE faz uma segunda
+    # leitura: agora do PROJETO como sistema. Ela conecta briefing, soluções,
+    # custos, feedbacks e outcome em vez de analisar cada arquivo isoladamente.
+    semantic_project_analysis: dict[str, Any] | None = None
+    if not post_warnings and actual_errors == 0 and counts.get("briefings", 0) and counts.get("presentations", 0):
+        try:
+            from project_workspace_db import fetch_project_workspace_snapshot
+            from project_workspace_intelligence import (
+                build_project_intelligence,
+                ensure_automatic_briefing_links,
+                ensure_automatic_cost_links,
+                persist_project_intelligence,
+            )
+
+            snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
+            ensure_automatic_cost_links(client, project_id=project_id, snapshot=snapshot)
+            ensure_automatic_briefing_links(client, project_id=project_id, snapshot=snapshot)
+            propagated = _propagate_feedback_outcomes_to_briefing_links(client, project_id)
+            if propagated:
+                snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
+            deterministic = build_project_intelligence(snapshot)
+            api_key, model = _ai_settings()
+            if api_key:
+                synthesis = analyze_project_snapshot(
+                    snapshot=snapshot,
+                    api_key=api_key,
+                    model=model,
+                )
+                semantic_project_analysis = synthesis.model_dump()
+                deterministic["semantic_synthesis"] = semantic_project_analysis
+                deterministic.setdefault("metrics", {})["semantic_synthesis"] = semantic_project_analysis
+                deterministic.setdefault("findings", []).extend(semantic_synthesis_findings(synthesis))
+                deterministic.setdefault("recommendations", []).extend(synthesis.decision_recommendations)
+                deterministic["recommendations"] = list(dict.fromkeys(
+                    str(row).strip() for row in deterministic.get("recommendations") or [] if str(row).strip()
+                ))
+                persist_project_intelligence(
+                    client, project_id=project_id, intelligence=deterministic
+                )
+            else:
+                all_warnings.append(
+                    "Project Analyst semântico não executado porque GEMINI_API_KEY não está configurada; a análise determinística continua disponível."
+                )
+        except Exception as exc:
+            all_warnings.append(
+                f"A materialização foi concluída, mas a síntese semântica do projeto não pôde ser gerada nesta rodada: {exc}"
+            )
+
     return {
         "project_id": project_id,
         "processed": sum(1 for r in results if r.get("status") not in {"error", "preserved_only"}),
@@ -1860,6 +2206,7 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
         "results": results,
         "workspace_counts": counts,
         "resolved_roles": sorted(resolved_roles),
+        "semantic_project_analysis": semantic_project_analysis,
     }
 
 def materialize_source_file(
@@ -1882,7 +2229,10 @@ def materialize_source_file(
     _sync_project_file(client, source_file_id, warnings)
     _ensure_project_file_role(client, source_file, warnings)
     text = _clean_text(text_override if text_override is not None else source_file.get("text_excerpt"))
-    if source_bytes is None and role in {"briefing_original", "detailed_costs", "preliminary_budget", "proposal_presentation", "final_presentation"}:
+    if source_bytes is None and role in {
+        "briefing_original", "detailed_costs", "preliminary_budget",
+        "proposal_presentation", "final_presentation", "feedback_approval",
+    }:
         source_bytes = _download_bytes(client, source_file)
 
     try:
@@ -1923,7 +2273,9 @@ def materialize_source_file(
                     warnings.append(f"A decupagem visual especializada falhou; aplicada materialização textual de segurança: {semantic_exc}")
                     created.update(_materialize_presentation(client, source_file, text, warnings))
         elif role == "feedback_approval":
-            created.update(_materialize_feedback(client, source_file, text))
+            created.update(_materialize_feedback(
+                client, source_file, text, source_bytes, warnings
+            ))
         elif role == "post_event_report":
             created.update(_materialize_report(client, source_file, text))
         # supplier_reference e complementary_document continuam visíveis em

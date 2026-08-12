@@ -1,0 +1,819 @@
+from __future__ import annotations
+
+"""NAVE V28.2 — núcleo de inteligência de projeto.
+
+O módulo mantém duas premissas:
+1) evidência vem antes da inferência;
+2) uma fonte pode gerar várias afirmações relacionadas a entidades diferentes.
+
+Ele não depende de Streamlit ou Supabase e pode ser testado isoladamente.
+"""
+
+import hashlib
+import json
+import re
+import unicodedata
+from collections import Counter, defaultdict
+from typing import Any, Mapping, Sequence
+
+from pydantic import BaseModel, Field
+
+
+ALLOWED_FEEDBACK_THEMES = {
+    "strategy", "creative_concept", "kv", "scenography", "activation",
+    "gift", "journey", "operation", "technology", "budget", "timeline",
+    "presentation", "other",
+}
+ALLOWED_SENTIMENTS = {"positive", "negative", "neutral", "mixed"}
+ALLOWED_ITEM_OUTCOMES = {
+    "unassessed", "approved", "approved_with_changes", "not_approved",
+    "replaced", "removed_budget", "removed_timeline", "executed",
+    "not_executed", "unknown",
+}
+ALLOWED_RESULT_REASONS = {
+    "brief_fit", "concept_strength", "originality", "brand_fit",
+    "technical_feasibility", "timeline", "budget", "scope", "operation",
+    "venue", "supplier", "commercial_relationship", "competitor",
+    "client_internal_change", "project_cancelled", "not_informed", "other",
+}
+
+
+class FeedbackClaim(BaseModel):
+    title: str
+    theme: str = "other"
+    sentiment: str = "neutral"
+    evidence_quote: str | None = None
+    interpretation: str | None = None
+    related_entities: list[str] = Field(default_factory=list)
+    result_reason: str | None = None
+    item_outcome_status: str = "unassessed"
+    recommended_learning: str | None = None
+
+
+class FeedbackAnalysis(BaseModel):
+    transcription: str | None = None
+    source_type: str = "not_informed"
+    process_stage: str = "not_informed"
+    process_type: str = "not_informed"
+    commercial_result: str = "in_evaluation"
+    proposal_result: str = "not_informed"
+    execution_result: str = "not_informed"
+    confidence_level: str = "incomplete"
+    decision_summary: str | None = None
+    result_reasons: list[str] = Field(default_factory=list)
+    claims: list[FeedbackClaim] = Field(default_factory=list)
+
+
+class SemanticConnection(BaseModel):
+    title: str
+    analysis: str
+    connection_type: str = "cross_source"
+    evidence_refs: list[str] = Field(default_factory=list)
+    confidence: str = "medium"
+    recommended_action: str | None = None
+
+
+class ProjectSemanticSynthesis(BaseModel):
+    executive_summary: str
+    strategic_reading: str | None = None
+    strongest_connections: list[SemanticConnection] = Field(default_factory=list)
+    contradictions_or_gaps: list[SemanticConnection] = Field(default_factory=list)
+    validated_learnings: list[str] = Field(default_factory=list)
+    challenged_learnings: list[str] = Field(default_factory=list)
+    decision_recommendations: list[str] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
+
+
+PROJECT_ANALYST_PROMPT = r"""
+Você é o Project Analyst da NAVE by VOE, especialista sênior em live marketing,
+estratégia, criação, produção, experiência, operação e eficiência financeira.
+
+Você receberá um PACOTE DE EVIDÊNCIAS já estruturado. Sua função NÃO é resumir
+arquivos isoladamente. Sua função é CONECTAR as evidências e produzir inteligência
+acionável sobre o projeto.
+
+PRINCÍPIOS ABSOLUTOS
+- Evidência antes de inferência. Não invente nenhuma relação.
+- Uma conclusão só pode ser forte quando citar evidence_refs existentes no pacote.
+- Diferencie claramente: pedido do briefing, solução proposta, custo orçado, feedback
+  do cliente, resultado comercial e execução comprovada.
+- Projeto perdido não significa que todas as soluções foram ruins; projeto ganho não
+  significa que todas foram boas. Preserve aprendizados por item.
+- Orçado/proposto não é gasto real. Só use linguagem de gasto/execução se houver
+  fonte de execução.
+- Feedback do cliente deve ser ligado, quando houver evidência, à solução específica
+  apresentada e ao requisito do briefing correspondente.
+- Procure contradições entre intenção estratégica e materialização. Ex.: a estratégia
+  promete comportamento nativo de plataforma, mas a ativação apresentada não cumpre.
+- Procure concentração financeira, grandes drivers de custo e investimentos relevantes
+  que tenham recebido crítica/validação.
+- Procure requisitos críticos sem resposta, soluções sem custo, custos sem solução e
+  decisões que deveriam ter sido antecipadas.
+- Não transforme um feedback isolado em regra universal. Escreva aprendizados como
+  evidência histórica contextualizada.
+
+CONNECTION TYPES preferidos
+brief_to_solution, solution_to_cost, solution_to_feedback, brief_to_feedback,
+cost_to_feedback, strategy_to_execution, commercial_decision, cross_project_ready,
+cross_source.
+
+CONFIDENCE: high somente quando a relação está explicitamente suportada por duas ou
+mais evidências ou por fonte direta do cliente; medium para inferência forte; low para
+hipótese útil que deve ser validada.
+
+A resposta deve priorizar aquilo que mudaria uma decisão de pré-produção no próximo
+projeto: o que preservar, o que corrigir, onde otimizar, que risco antecipar e que
+repertório merece ser reutilizado.
+
+Retorne SOMENTE JSON válido no schema solicitado.
+""".strip()
+
+
+FEEDBACK_PROMPT = r"""
+Você é o módulo de inteligência de feedback da NAVE by VOE, plataforma de
+pré-produção de live marketing.
+
+Analise a fonte recebida como EVIDÊNCIA. Se for imagem, leia visualmente o texto.
+Não invente nada que não esteja comprovado.
+
+OBJETIVO
+Transformar um único feedback em:
+1. transcrição fiel;
+2. decisão comercial, quando explícita;
+3. várias afirmações independentes (claims), uma por assunto/entidade;
+4. aprendizados que possam ser ligados ao que foi realmente apresentado.
+
+REGRAS DE TRANSCRIÇÃO
+- transcription deve preservar integralmente o conteúdo textual legível da fonte;
+- não traduza a transcrição;
+- preserve nomes próprios, números, prazos, valores e frases relevantes;
+- se uma parte estiver ilegível, omita-a em vez de inventar.
+
+REGRAS DE DECISÃO
+process_type permitido: competition, direct, proactive, renewal, not_informed.
+commercial_result permitido: in_evaluation, won, lost, cancelled, suspended,
+no_return, not_applicable, not_informed.
+proposal_result permitido: fully_approved, partially_approved, not_approved,
+in_revision, no_feedback, not_informed.
+execution_result permitido: executed, partially_executed, not_executed,
+in_progress, not_applicable, not_informed.
+confidence_level: client_confirmed quando a fonte do cliente explicita a decisão;
+inferred somente para inferência clara; incomplete quando não há prova suficiente.
+
+CLAIMS
+Separe elogios e críticas diferentes. Não crie um único claim "misto" quando a
+fonte fala de conceito, local, ativação, orçamento e prazo separadamente.
+
+Themes permitidos:
+strategy, creative_concept, kv, scenography, activation, gift, journey,
+operation, technology, budget, timeline, presentation, other.
+
+Sentiment: positive, negative, neutral, mixed.
+
+related_entities deve conter nomes/textos que ajudem a encontrar a solução
+apresentada, por exemplo: "JOVI X300 Series On Tour", "Cinemateca",
+"YouTube activation", "Instagram activation".
+
+item_outcome_status permitido:
+- approved: elogio/validação explícita da solução;
+- approved_with_changes: solução aceita conceitualmente, mas com ajuste explícito;
+- not_approved: solução explicitamente rejeitada/inadequada;
+- removed_budget: retirada explícita por orçamento;
+- removed_timeline: retirada explícita por prazo;
+- unassessed: quando o texto não permite concluir sobre a solução.
+Não use executed/not_executed sem evidência de execução.
+
+result_reason, quando aplicável, deve ser um de:
+brief_fit, concept_strength, originality, brand_fit, technical_feasibility,
+timeline, budget, scope, operation, venue, supplier, commercial_relationship,
+competitor, client_internal_change, project_cancelled, other.
+
+recommended_learning deve ser uma conclusão reutilizável e específica, sem
+transformar opinião isolada em regra universal.
+
+Retorne SOMENTE JSON válido no schema solicitado.
+""".strip()
+
+
+def normalize_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9]+", " ", text.casefold())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _tokens(value: Any) -> set[str]:
+    stop = {
+        "de", "da", "do", "das", "dos", "e", "em", "para", "por", "com",
+        "the", "a", "an", "of", "to", "and", "for", "on", "in", "our",
+        "project", "projeto", "event", "evento", "activation", "ativacao",
+    }
+    return {tok for tok in normalize_text(value).split() if len(tok) >= 3 and tok not in stop}
+
+
+def _json_object(text: str) -> dict[str, Any]:
+    clean = str(text or "").strip()
+    clean = re.sub(r"^```(?:json)?\s*", "", clean, flags=re.I)
+    clean = re.sub(r"\s*```$", "", clean)
+    try:
+        obj = json.loads(clean)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        start, end = clean.find("{"), clean.rfind("}")
+        if start >= 0 and end > start:
+            obj = json.loads(clean[start:end + 1])
+            return obj if isinstance(obj, dict) else {}
+        raise
+
+
+def normalise_feedback_analysis(value: FeedbackAnalysis) -> FeedbackAnalysis:
+    value.source_type = value.source_type if value.source_type in {
+        "client", "procurement", "marketing", "branding", "partner_agency",
+        "production", "public", "internal_team", "not_informed",
+    } else "not_informed"
+    value.process_stage = value.process_stage if value.process_stage in {
+        "presentation", "revision", "commercial_decision", "production",
+        "post_event", "not_informed",
+    } else "not_informed"
+    value.process_type = value.process_type if value.process_type in {
+        "competition", "direct", "proactive", "renewal", "not_informed",
+    } else "not_informed"
+    value.commercial_result = value.commercial_result if value.commercial_result in {
+        "in_evaluation", "won", "lost", "cancelled", "suspended", "no_return",
+        "not_applicable", "not_informed",
+    } else "not_informed"
+    value.proposal_result = value.proposal_result if value.proposal_result in {
+        "fully_approved", "partially_approved", "not_approved", "in_revision",
+        "no_feedback", "not_informed",
+    } else "not_informed"
+    value.execution_result = value.execution_result if value.execution_result in {
+        "executed", "partially_executed", "not_executed", "in_progress",
+        "not_applicable", "not_informed",
+    } else "not_informed"
+    value.confidence_level = value.confidence_level if value.confidence_level in {
+        "client_confirmed", "voe_confirmed", "inferred", "incomplete",
+    } else "incomplete"
+    value.result_reasons = list(dict.fromkeys(
+        reason for reason in value.result_reasons if reason in ALLOWED_RESULT_REASONS
+    ))
+    cleaned_claims: list[FeedbackClaim] = []
+    for claim in value.claims:
+        claim.theme = claim.theme if claim.theme in ALLOWED_FEEDBACK_THEMES else "other"
+        claim.sentiment = claim.sentiment if claim.sentiment in ALLOWED_SENTIMENTS else "neutral"
+        claim.item_outcome_status = (
+            claim.item_outcome_status if claim.item_outcome_status in ALLOWED_ITEM_OUTCOMES
+            else "unassessed"
+        )
+        if claim.result_reason not in ALLOWED_RESULT_REASONS:
+            claim.result_reason = None
+        if claim.title.strip():
+            cleaned_claims.append(claim)
+    value.claims = cleaned_claims
+    return value
+
+
+def analyze_feedback_bytes(
+    *,
+    file_name: str,
+    mime_type: str,
+    file_bytes: bytes,
+    api_key: str,
+    model: str,
+) -> FeedbackAnalysis:
+    """Lê feedback textual ou visual com Gemini multimodal.
+
+    Importa google-genai apenas no runtime da chamada para manter o módulo testável
+    e desacoplado do ambiente Streamlit.
+    """
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY não está configurada para leitura do feedback.")
+    from google import genai  # type: ignore
+    from google.genai import types  # type: ignore
+
+    client = genai.Client(api_key=api_key)
+    part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+    prompt = f"{FEEDBACK_PROMPT}\n\nArquivo: {file_name}"
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[part, prompt],
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+                response_schema=FeedbackAnalysis,
+            ),
+        )
+    except Exception:
+        # Compatibilidade defensiva: algumas revisões do SDK/modelo aceitam
+        # JSON mode, mas não response_schema nesta superfície. O segundo passe
+        # mantém a mesma instrução e valida localmente pelo Pydantic.
+        schema_text = json.dumps(FeedbackAnalysis.model_json_schema(), ensure_ascii=False)
+        response = client.models.generate_content(
+            model=model,
+            contents=[part, f"{prompt}\n\nSchema JSON obrigatório:\n{schema_text}"],
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+            ),
+        )
+    raw_text = str(getattr(response, "text", "") or "")
+    if not raw_text:
+        raise RuntimeError("O Gemini não devolveu análise para o feedback.")
+    try:
+        analysis = FeedbackAnalysis.model_validate_json(raw_text)
+    except Exception:
+        analysis = FeedbackAnalysis.model_validate(_json_object(raw_text))
+    return normalise_feedback_analysis(analysis)
+
+
+def fallback_feedback_analysis(text: str) -> FeedbackAnalysis:
+    """Fallback conservador para feedback já textual quando IA não estiver disponível."""
+    raw = str(text or "").strip()
+    norm = normalize_text(raw)
+    lost = any(term in norm for term in (
+        "will not be moving forward", "not moving forward", "nao seguiremos",
+        "proposta nao aprovada", "nao aprovado", "perdemos", "declined",
+    ))
+    won = any(term in norm for term in (
+        "proposal approved", "aprovada", "approved proposal", "moving forward with voe",
+    )) and not lost
+    result = "lost" if lost else "won" if won else "in_evaluation"
+    proposal = "not_approved" if lost else "fully_approved" if won else "not_informed"
+    stage = "commercial_decision" if lost or won else "presentation"
+    reasons: list[str] = []
+    for token, reason in (
+        ("budget", "budget"), ("orcamento", "budget"), ("deadline", "timeline"),
+        ("prazo", "timeline"), ("venue", "venue"), ("local", "venue"),
+    ):
+        if token in norm and reason not in reasons:
+            reasons.append(reason)
+    return FeedbackAnalysis(
+        transcription=raw or None,
+        source_type="client" if raw else "not_informed",
+        process_stage=stage,
+        process_type="competition" if any(t in norm for t in ("bid", "concorrencia", "bidding")) else "not_informed",
+        commercial_result=result,
+        proposal_result=proposal,
+        execution_result="not_applicable" if lost else "not_informed",
+        confidence_level="client_confirmed" if lost or won else "incomplete",
+        decision_summary="Decisão comercial explicitada no feedback." if lost or won else None,
+        result_reasons=reasons,
+        claims=[],
+    )
+
+
+def claim_item_match_score(claim: FeedbackClaim, item: Mapping[str, Any]) -> float:
+    """Score genérico claim → solução, sem nomes de clientes/projetos hardcoded."""
+    claim_text = " ".join([
+        claim.title, claim.evidence_quote or "", claim.interpretation or "",
+        " ".join(claim.related_entities),
+    ])
+    item_text = " ".join(str(item.get(key) or "") for key in (
+        "title", "summary", "description", "item_type", "section_key",
+    ))
+    a, b = _tokens(claim_text), _tokens(item_text)
+    if not a or not b:
+        return 0.0
+    overlap = len(a & b) / max(1, len(a | b))
+    containment = len(a & b) / max(1, min(len(a), len(b)))
+    score = overlap * 0.55 + containment * 0.45
+    item_norm = normalize_text(item_text)
+    for entity in claim.related_entities:
+        ent = normalize_text(entity)
+        if len(ent) >= 5 and ent in item_norm:
+            score += 0.35
+    theme_sections = {
+        "strategy": {"strategy"}, "creative_concept": {"strategy"}, "kv": {"communication"},
+        "scenography": {"scenography"}, "activation": {"activations"}, "gift": {"gifts"},
+        "journey": {"journey_operation"}, "operation": {"journey_operation"},
+        "technology": {"activations", "scenography"}, "presentation": {"content_agenda"},
+    }
+    if str(item.get("section_key") or "") in theme_sections.get(claim.theme, set()):
+        score += 0.12
+    return min(1.0, score)
+
+
+def best_item_for_claim(
+    claim: FeedbackClaim,
+    items: Sequence[Mapping[str, Any]],
+    *,
+    min_score: float = 0.24,
+) -> tuple[Mapping[str, Any] | None, float]:
+    ranked = sorted(
+        ((item, claim_item_match_score(claim, item)) for item in items),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+    if not ranked or ranked[0][1] < min_score:
+        return None, 0.0
+    return ranked[0]
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _briefing_audience_quantity(snapshot: Mapping[str, Any]) -> float | None:
+    candidates: list[Any] = []
+    for doc in snapshot.get("briefing_documents", []) or []:
+        metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+        # audience_quantity é evidência estruturada e tem prioridade absoluta.
+        direct = metadata.get("audience_quantity")
+        if direct not in (None, ""):
+            candidates.insert(0, direct)
+        candidates.append(doc.get("audience"))
+    patterns = ("convid", "guest", "participant", "pessoa", "attendee", "publico")
+    for prefer_context in (True, False):
+        for value in candidates:
+            norm = str(value or "")
+            normalized = normalize_text(norm)
+            if prefer_context and not any(token in normalized for token in patterns):
+                continue
+            numbers = re.findall(r"\b([1-9][0-9]{1,5})\b", norm.replace(".", ""))
+            if numbers:
+                parsed = [float(n) for n in numbers if 10 <= float(n) <= 100000]
+                if parsed:
+                    return max(parsed)
+    return None
+
+
+def _compact_text(value: Any, limit: int = 900) -> str | None:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit] if text else None
+
+
+def build_project_evidence_packet(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Monta pacote compacto, rastreável e seguro para raciocínio semântico."""
+    project = dict(snapshot.get("project") or {})
+    outcome = dict(snapshot.get("outcome") or {})
+
+    requirements = []
+    for row in (snapshot.get("briefing_requirements") or [])[:60]:
+        requirements.append({
+            "ref": f"REQ:{row.get('id')}",
+            "title": row.get("title"),
+            "type": row.get("requirement_type"),
+            "mandatory": row.get("mandatory"),
+            "priority": row.get("priority"),
+            "description": _compact_text(row.get("description") or row.get("original_text"), 700),
+            "adherence_status": row.get("adherence_status"),
+        })
+
+    items = []
+    for row in (snapshot.get("memory_items") or [])[:100]:
+        items.append({
+            "ref": f"ITEM:{row.get('id')}",
+            "title": row.get("title"),
+            "section": row.get("section_key"),
+            "type": row.get("item_type"),
+            "summary": _compact_text(row.get("summary") or row.get("description"), 900),
+            "source_page": row.get("source_page"),
+            "source_document_id": row.get("document_id"),
+        })
+
+    costs = []
+    sorted_costs = sorted(
+        list(snapshot.get("cost_items") or []),
+        key=lambda row: _safe_float(row.get("client_total")) or 0.0,
+        reverse=True,
+    )
+    for row in sorted_costs[:80]:
+        costs.append({
+            "ref": f"COST:{row.get('id')}",
+            "category": row.get("category"),
+            "item": row.get("item_name"),
+            "description": _compact_text(row.get("description"), 500),
+            "value": _safe_float(row.get("client_total")),
+            "quantity": _safe_float(row.get("quantity")),
+            "unit_value": _safe_float(row.get("unit_value")),
+        })
+
+    feedback = []
+    for row in (snapshot.get("feedback_entries") or [])[:50]:
+        raw = str(row.get("original_feedback") or "")
+        feedback.append({
+            "ref": f"FB:{row.get('id')}",
+            "theme": row.get("theme"),
+            "sentiment": row.get("sentiment"),
+            "feedback": _compact_text(raw, 1600),
+            "interpretation": _compact_text(row.get("internal_interpretation"), 900),
+            "confidence": row.get("confidence_level"),
+        })
+
+    brief_links = [
+        {
+            "ref": f"BLINK:{row.get('id')}",
+            "requirement_ref": f"REQ:{row.get('requirement_id')}",
+            "item_ref": f"ITEM:{row.get('memory_item_id')}",
+            "status": row.get("link_status"),
+            "adherence": row.get("adherence_status"),
+            "evidence": _compact_text(row.get("evidence"), 500),
+        }
+        for row in (snapshot.get("briefing_links") or [])[:120]
+    ]
+    cost_links = [
+        {
+            "ref": f"CLINK:{row.get('id')}",
+            "item_ref": f"ITEM:{row.get('memory_item_id')}",
+            "cost_ref": f"COST:{row.get('cost_item_id')}",
+            "status": row.get("link_status"),
+            "score": row.get("match_score"),
+        }
+        for row in (snapshot.get("cost_links") or [])[:120]
+    ]
+    item_outcomes = [
+        {
+            "ref": f"OUT:{row.get('id')}",
+            "item_ref": f"ITEM:{row.get('item_id')}",
+            "status": row.get("outcome_status"),
+            "feedback": _compact_text(row.get("feedback_summary"), 900),
+            "reason": _compact_text(row.get("decision_reason"), 500),
+            "source": row.get("information_source"),
+            "confidence": row.get("confidence_level"),
+        }
+        for row in (snapshot.get("item_outcomes") or [])[:100]
+    ]
+
+    briefing_docs = []
+    for row in (snapshot.get("briefing_documents") or [])[:5]:
+        briefing_docs.append({
+            "ref": f"BRIEF:{row.get('id')}",
+            "title": row.get("title") or row.get("file_name"),
+            "budget_amount": _safe_float(row.get("budget_amount")),
+            "audience": _compact_text(row.get("audience"), 600),
+            "objective": _compact_text(row.get("objective") or row.get("summary"), 1200),
+        })
+
+    return {
+        "project": {
+            "ref": f"PROJECT:{project.get('id')}",
+            "name": project.get("project_name"),
+            "client": project.get("client_brand"),
+            "event": project.get("event_name"),
+            "status": project.get("status"),
+            "event_date": project.get("event_date"),
+        },
+        "outcome": {
+            "process_type": outcome.get("process_type"),
+            "commercial_result": outcome.get("commercial_result"),
+            "proposal_result": outcome.get("proposal_result"),
+            "execution_result": outcome.get("execution_result"),
+            "result_reasons": outcome.get("result_reasons"),
+            "result_context": _compact_text(outcome.get("result_context"), 900),
+            "source": outcome.get("information_source"),
+            "confidence": outcome.get("confidence_level"),
+        },
+        "briefing_documents": briefing_docs,
+        "requirements": requirements,
+        "proposal_items": items,
+        "cost_items": costs,
+        "feedback_claims": feedback,
+        "brief_to_solution_links": brief_links,
+        "solution_to_cost_links": cost_links,
+        "solution_outcomes": item_outcomes,
+    }
+
+
+def project_evidence_signature(snapshot: Mapping[str, Any]) -> str:
+    packet = build_project_evidence_packet(snapshot)
+    payload = json.dumps(packet, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def analyze_project_snapshot(
+    *,
+    snapshot: Mapping[str, Any],
+    api_key: str,
+    model: str,
+) -> ProjectSemanticSynthesis:
+    """Executa raciocínio semântico sobre o PROJETO, não sobre um arquivo isolado."""
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY não está configurada para o Project Analyst.")
+    from google import genai  # type: ignore
+    from google.genai import types  # type: ignore
+
+    packet = build_project_evidence_packet(snapshot)
+    evidence_json = json.dumps(packet, ensure_ascii=False, default=str)
+    prompt = f"{PROJECT_ANALYST_PROMPT}\n\nPACOTE DE EVIDÊNCIAS:\n{evidence_json}"
+    client = genai.Client(api_key=api_key)
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+                response_schema=ProjectSemanticSynthesis,
+            ),
+        )
+    except Exception:
+        schema_text = json.dumps(ProjectSemanticSynthesis.model_json_schema(), ensure_ascii=False)
+        response = client.models.generate_content(
+            model=model,
+            contents=f"{prompt}\n\nSchema JSON obrigatório:\n{schema_text}",
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+            ),
+        )
+    raw_text = str(getattr(response, "text", "") or "")
+    if not raw_text:
+        raise RuntimeError("O Gemini não devolveu a síntese semântica do projeto.")
+    try:
+        return ProjectSemanticSynthesis.model_validate_json(raw_text)
+    except Exception:
+        return ProjectSemanticSynthesis.model_validate(_json_object(raw_text))
+
+
+def semantic_synthesis_findings(synthesis: ProjectSemanticSynthesis) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    contradiction_ids = {id(row) for row in synthesis.contradictions_or_gaps}
+    for connection in [*synthesis.strongest_connections, *synthesis.contradictions_or_gaps]:
+        rows.append({
+            "level": "warning" if id(connection) in contradiction_ids else "info",
+            "title": connection.title,
+            "text": connection.analysis,
+            "source": "semantic_project_analyst",
+            "connection_type": connection.connection_type,
+            "evidence_refs": list(connection.evidence_refs),
+            "confidence": connection.confidence,
+            "recommended_action": connection.recommended_action,
+        })
+    return rows
+
+
+def derive_advanced_project_insights(
+    snapshot: Mapping[str, Any],
+    *,
+    proposal_total: float | None,
+    budget_amount: float | None,
+) -> dict[str, Any]:
+    """Gera inteligência cruzada baseada apenas nos dados estruturados/provados.
+
+    Esta camada é determinística. A futura camada LLM pode sintetizar linguagem,
+    mas os números e relações centrais permanecem auditáveis.
+    """
+    cost_items = list(snapshot.get("cost_items", []) or [])
+    cost_links = list(snapshot.get("cost_links", []) or [])
+    item_outcomes = list(snapshot.get("item_outcomes", []) or [])
+    memory_items = list(snapshot.get("memory_items", []) or [])
+    feedback_entries = list(snapshot.get("feedback_entries", []) or [])
+    briefing_links = list(snapshot.get("briefing_links", []) or [])
+    requirements = list(snapshot.get("briefing_requirements", []) or [])
+
+    categories: dict[str, float] = defaultdict(float)
+    valid_costs: list[dict[str, Any]] = []
+    for item in cost_items:
+        value = _safe_float(item.get("client_total"))
+        if value is None:
+            continue
+        categories[str(item.get("category") or "Sem categoria")] += value
+        if value > 0:
+            valid_costs.append({
+                "id": item.get("id"), "name": item.get("item_name") or "Item sem nome",
+                "category": item.get("category") or "Sem categoria", "value": value,
+            })
+    top_categories = [
+        {"category": k, "value": v, "share": (v / proposal_total if proposal_total else None)}
+        for k, v in sorted(categories.items(), key=lambda pair: pair[1], reverse=True)
+    ]
+    top_items = sorted(valid_costs, key=lambda row: row["value"], reverse=True)
+    top5_share = (
+        sum(row["value"] for row in top_items[:5]) / proposal_total
+        if proposal_total and top_items else None
+    )
+    top4_category_share = (
+        sum(row["value"] for row in top_categories[:4]) / proposal_total
+        if proposal_total and top_categories else None
+    )
+    audience = _briefing_audience_quantity(snapshot)
+    cost_per_attendee = proposal_total / audience if proposal_total and audience else None
+
+    item_by_id = {str(row.get("id")): row for row in memory_items if row.get("id")}
+    cost_by_id = {str(row.get("id")): row for row in cost_items if row.get("id")}
+    outcome_by_item = {str(row.get("item_id")): row for row in item_outcomes if row.get("item_id")}
+    costs_by_memory_item: dict[str, float] = defaultdict(float)
+    for link in cost_links:
+        if str(link.get("link_status") or "suggested") == "rejected":
+            continue
+        cost = cost_by_id.get(str(link.get("cost_item_id") or ""))
+        if not cost:
+            continue
+        value = _safe_float(cost.get("client_total")) or 0.0
+        costs_by_memory_item[str(link.get("memory_item_id") or "")] += value
+
+    validated: list[dict[str, Any]] = []
+    challenged: list[dict[str, Any]] = []
+    for item_id, outcome in outcome_by_item.items():
+        item = item_by_id.get(item_id)
+        if not item:
+            continue
+        row = {
+            "item_id": item_id,
+            "title": item.get("title") or "Solução",
+            "section": item.get("section_key"),
+            "status": outcome.get("outcome_status"),
+            "feedback": outcome.get("feedback_summary") or outcome.get("decision_reason"),
+            "linked_cost": costs_by_memory_item.get(item_id) or None,
+        }
+        if outcome.get("outcome_status") in {"approved", "approved_with_changes"}:
+            validated.append(row)
+        elif outcome.get("outcome_status") in {"not_approved", "removed_budget", "removed_timeline", "replaced"}:
+            challenged.append(row)
+
+    # Briefing crítico cujo item ligado recebeu feedback negativo.
+    req_by_id = {str(row.get("id")): row for row in requirements if row.get("id")}
+    challenged_item_ids = {row["item_id"] for row in challenged}
+    requirement_risks: list[dict[str, Any]] = []
+    for link in briefing_links:
+        if str(link.get("memory_item_id") or "") not in challenged_item_ids:
+            continue
+        req = req_by_id.get(str(link.get("requirement_id") or ""))
+        if not req:
+            continue
+        if bool(req.get("mandatory")) or str(req.get("priority") or "") in {"critical", "high"}:
+            requirement_risks.append({
+                "requirement": req.get("title"),
+                "item": item_by_id.get(str(link.get("memory_item_id") or ""), {}).get("title"),
+                "adherence": link.get("adherence_status"),
+            })
+
+    feedback_theme_counts = Counter(str(row.get("theme") or "other") for row in feedback_entries)
+    feedback_sentiment_counts = Counter(str(row.get("sentiment") or "neutral") for row in feedback_entries)
+
+    findings: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+    if budget_amount is not None and proposal_total is not None and budget_amount > 0:
+        delta = proposal_total - budget_amount
+        if delta > 0:
+            findings.append({
+                "level": "warning", "title": "Aderência financeira",
+                "text": f"A proposta excede o budget comprovado em R$ {delta:,.2f} ({delta / budget_amount:.1%}).",
+            })
+            recommendations.append("Atacar primeiro os maiores drivers de custo e preservar as soluções que receberam validação qualitativa do cliente.")
+    if top_categories:
+        lead = top_categories[0]
+        share = lead.get("share")
+        findings.append({
+            "level": "info", "title": "Principal driver de custo",
+            "text": f"{lead['category']} concentra R$ {lead['value']:,.2f}" + (f" ({share:.1%} da proposta)." if share is not None else "."),
+        })
+    if top4_category_share is not None and top4_category_share >= 0.65:
+        findings.append({
+            "level": "info", "title": "Concentração do orçamento",
+            "text": f"As quatro maiores categorias concentram {top4_category_share:.1%} da proposta; são o melhor ponto de partida para otimização.",
+        })
+    if top_items:
+        lead_item = top_items[0]
+        findings.append({
+            "level": "info", "title": "Maior item individual",
+            "text": f"{lead_item['name']} ({lead_item['category']}) representa R$ {lead_item['value']:,.2f}.",
+        })
+    if cost_per_attendee is not None:
+        findings.append({
+            "level": "info", "title": "Custo por participante",
+            "text": f"Com audiência de referência de {audience:,.0f} pessoas, a proposta equivale a aproximadamente R$ {cost_per_attendee:,.2f} por participante.",
+        })
+    if validated:
+        titles = ", ".join(str(row["title"]) for row in validated[:3])
+        findings.append({
+            "level": "info", "title": "Soluções validadas pelo cliente",
+            "text": f"Há validação positiva vinculada a {titles}. O resultado geral do projeto não deve apagar esses aprendizados específicos.",
+        })
+    if challenged:
+        expensive = [row for row in challenged if row.get("linked_cost") and proposal_total and float(row["linked_cost"]) / proposal_total >= 0.05]
+        if expensive:
+            row = max(expensive, key=lambda r: float(r.get("linked_cost") or 0))
+            findings.append({
+                "level": "warning", "title": "Crítica em investimento relevante",
+                "text": f"{row['title']} recebeu feedback desfavorável e está ligado a aproximadamente R$ {float(row['linked_cost']):,.2f} do orçamento.",
+            })
+            recommendations.append("Revisar cedo soluções de alto peso financeiro que tenham risco de aderência ao briefing ou histórico de feedback negativo.")
+    if requirement_risks:
+        findings.append({
+            "level": "warning", "title": "Briefing × feedback",
+            "text": f"{len(requirement_risks)} requisito(s) crítico(s)/alto(s) estão ligados a soluções posteriormente questionadas pelo cliente.",
+        })
+    if feedback_entries and not validated and not challenged:
+        recommendations.append("Vincular os feedbacks às soluções apresentadas para transformar opinião do cliente em aprendizado reutilizável por item.")
+
+    return {
+        "top_categories": top_categories,
+        "top_items": top_items,
+        "top5_item_share": top5_share,
+        "top4_category_share": top4_category_share,
+        "audience_quantity": audience,
+        "cost_per_attendee": cost_per_attendee,
+        "validated_items": validated,
+        "challenged_items": challenged,
+        "requirement_risks": requirement_risks,
+        "feedback_theme_counts": dict(feedback_theme_counts),
+        "feedback_sentiment_counts": dict(feedback_sentiment_counts),
+        "findings": findings,
+        "recommendations": list(dict.fromkeys(recommendations)),
+    }

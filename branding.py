@@ -389,25 +389,8 @@ def _install_cover_table_guard() -> None:
 def apply_nave_branding() -> None:
     _install_cover_table_guard()
 
-    # V28.1.1: corrige uma única vez por sessão os lotes V28.1.0 que foram
-    # preservados em source_files, mas ainda não apareciam no workspace. A
-    # rotina é silenciosa aqui; a página Importar projeto completo exibe o
-    # resumo quando for aberta.
-    if not st.session_state.get("v2811_legacy_repair_done"):
-        try:
-            from nave_data_client import get_nave_client
-            from project_bundle_materializer import repair_v2810_projects
-
-            repair_result = repair_v2810_projects(get_nave_client())
-            st.session_state["v2811_legacy_repair_result"] = repair_result
-            st.session_state["v2811_legacy_repair_done"] = True
-        except Exception as exc:
-            st.session_state["v2811_legacy_repair_result"] = {
-                "repaired": 0,
-                "errors": 1,
-                "warnings": [str(exc)],
-            }
-            st.session_state["v2811_legacy_repair_done"] = True
+    # Branding não executa migrações nem materialização de dados.
+    # Correções de projetos legados são explícitas na página de importação.
 
     st.markdown(BRAND_CSS, unsafe_allow_html=True)
     render_sidebar()

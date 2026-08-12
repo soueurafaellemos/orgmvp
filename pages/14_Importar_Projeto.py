@@ -18,7 +18,7 @@ from project_batch_ingestion import (
     rank_project_candidates,
     save_project_bundle,
 )
-from project_bundle_materializer import repair_v2810_projects, reprocess_project_semantically
+from project_bundle_materializer import reprocess_project_semantically
 
 st.set_page_config(
     page_title="Importar projeto completo | NAVE by VOE",
@@ -31,30 +31,13 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.1.7.3",
+    eyebrow="NAVE by VOE · V28.2.0",
 )
 
 client = get_nave_client()
 
-# Corrige automaticamente lotes da V28.1.0 que foram preservados em
-# source_files, mas ainda não tinham sido incorporados às tabelas do workspace.
-# A rotina é idempotente e roda uma vez por sessão para não penalizar a navegação.
-if not st.session_state.get("v2811_legacy_repair_done"):
-    with st.spinner("Verificando projetos importados pela V28.1.0..."):
-        legacy_repair = repair_v2810_projects(client)
-    st.session_state["v2811_legacy_repair_done"] = True
-    st.session_state["v2811_legacy_repair_result"] = legacy_repair
-else:
-    legacy_repair = st.session_state.get("v2811_legacy_repair_result") or {}
-
-if legacy_repair.get("repaired"):
-    st.success(
-        f"A NAVE incorporou ao workspace {legacy_repair['repaired']} arquivo(s) de importações anteriores que estavam apenas preservados no lote."
-    )
-if legacy_repair.get("errors"):
-    st.warning(
-        f"{legacy_repair['errors']} arquivo(s) antigo(s) ainda precisam de revisão. Os demais foram preservados e incorporados normalmente."
-    )
+# Migrações/reprocessamentos são explícitos. Abrir a página nunca altera dados.
+# A rotina legada continua disponível somente quando o usuário solicita correção.
 
 with st.expander("Corrigir um projeto importado por uma versão anterior da V28", expanded=False):
     st.caption(
@@ -96,7 +79,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     f"{outcome.get('errors', 0)} erro(s). A NAVE não considera a correção concluída enquanto briefing/apresentação esperados continuarem zerados."
                 )
             else:
-                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.1.7.3.")
+                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.2.0.")
                 st.session_state["nave_project_hub_focus_id"] = repair_options[repair_label]
 
             if counts:

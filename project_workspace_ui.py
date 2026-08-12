@@ -65,7 +65,7 @@ BUSINESS_STATE_OPTIONS = [
 BUSINESS_STATE_LABELS = {
     "proposal": "Em proposta / concorrência",
     "won": "Ganhou / aprovada",
-    "lost": "Perdeu",
+    "lost": "Perdeu / proposta não aprovada",
     "no_return": "Sem resposta",
     "production": "Em produção",
     "executed": "Executada",
@@ -297,6 +297,14 @@ def _business_state(project: dict[str, Any], outcome: dict[str, Any]) -> str:
     execution = str(outcome.get("execution_result") or "")
     commercial = str(outcome.get("commercial_result") or "")
     status = str(project.get("status") or "")
+    client_decision = (
+        str(outcome.get("information_source") or "") == "client_feedback"
+        and str(outcome.get("confidence_level") or "") == "client_confirmed"
+    )
+    if client_decision and commercial == "lost":
+        return "lost"
+    if client_decision and commercial == "cancelled":
+        return "cancelled"
     if execution in {"executed", "partially_executed"} or status == "executado":
         return "executed"
     if execution == "in_progress" or status == "em_producao":
@@ -318,6 +326,9 @@ def _project_header(project: dict[str, Any], outcome: dict[str, Any] | None = No
     event = project.get("event_name") or "Evento não informado"
     business_state = _business_state(project, outcome or {})
     status = BUSINESS_STATE_LABELS.get(business_state, "Não informado")
+    process_type = str((outcome or {}).get("process_type") or "")
+    if business_state == "lost" and process_type == "competition":
+        status = "Concorrência perdida / proposta não aprovada"
     date_text = _format_date(project.get("event_date"))
 
     st.markdown(
@@ -774,10 +785,8 @@ def _render_overview(
     feedback_files = _role_rows(snapshot, "feedback") + _role_rows(snapshot, "approval")
     metrics[3].metric(
         "Feedbacks",
-        _count_structured_or_files(
-            list(snapshot.get("feedback_entries", [])),
-            feedback_files,
-        ),
+        len(feedback_files) if feedback_files else len(snapshot.get("feedback_entries", [])),
+        help="Conta fontes de feedback. Uma única fonte pode gerar vários claims estruturados sem ser contada várias vezes.",
     )
     metrics[4].metric(
         "Arquivos",
@@ -803,12 +812,62 @@ def _render_overview(
         )
     )
 
-    financial = st.columns(4)
-    financial[0].metric("Budget do briefing", _format_money(intel_metrics.get("budget_amount")) if intel_metrics.get("budget_amount") is not None else "Não identificado")
-    financial[1].metric("Proposta detalhada", _format_money(intel_metrics.get("cost_total")) if intel_metrics.get("cost_total") is not None else "Não identificado")
-    financial[2].metric("Diferença para o budget", _format_money(intel_metrics.get("budget_delta")) if intel_metrics.get("budget_delta") is not None else "Não calculável")
+    budget_amount = intel_metrics.get("budget_amount")
+    cost_total = intel_metrics.get("cost_total")
+    budget_delta = intel_metrics.get("budget_delta")
     usage = intel_metrics.get("budget_usage_pct")
-    financial[3].metric("Budget comprometido", f"{usage:.1%}" if usage is not None else "Não calculável")
+    if budget_delta is not None:
+        delta_number = float(budget_delta)
+        delta_title = "Folga no budget" if delta_number >= 0 else "Acima do teto"
+        delta_value = _format_money(abs(delta_number))
+        delta_detail = (
+            f"{abs(delta_number) / float(budget_amount):.2%} do budget"
+            if budget_amount not in (None, 0, "") else ""
+        )
+    else:
+        delta_title, delta_value, delta_detail = "Diferença", "—", "Sem base comparável"
+    st.markdown(
+        f"""
+        <style>
+        .nave-overview-fin {{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:.45rem 0 1rem;}}
+        .nave-overview-fin-card {{background:#F7F9FC;border:1px solid #E1E6EF;border-radius:14px;padding:14px 15px;min-width:0;}}
+        .nave-overview-fin-label {{font-size:.72rem;color:#667188;font-weight:700;margin-bottom:5px;}}
+        .nave-overview-fin-value {{font-size:1.24rem;line-height:1.18;color:#121B42;font-weight:850;overflow-wrap:anywhere;}}
+        .nave-overview-fin-detail {{font-size:.72rem;color:#778198;margin-top:5px;}}
+        @media (max-width:900px) {{.nave-overview-fin {{grid-template-columns:repeat(2,minmax(0,1fr));}}}}
+        </style>
+        <div class="nave-overview-fin">
+          <div class="nave-overview-fin-card"><div class="nave-overview-fin-label">Budget do briefing</div><div class="nave-overview-fin-value">{escape(_format_money(budget_amount) if budget_amount is not None else '—')}</div><div class="nave-overview-fin-detail">Teto / referência comprovada</div></div>
+          <div class="nave-overview-fin-card"><div class="nave-overview-fin-label">Total da proposta</div><div class="nave-overview-fin-value">{escape(_format_money(cost_total) if cost_total is not None else '—')}</div><div class="nave-overview-fin-detail">Valor orçado, não gasto real</div></div>
+          <div class="nave-overview-fin-card"><div class="nave-overview-fin-label">{escape(delta_title)}</div><div class="nave-overview-fin-value">{escape(delta_value)}</div><div class="nave-overview-fin-detail">{escape(delta_detail)}</div></div>
+          <div class="nave-overview-fin-card"><div class="nave-overview-fin-label">Uso do budget</div><div class="nave-overview-fin-value">{escape(f'{usage:.1%}' if usage is not None else '—')}</div><div class="nave-overview-fin-detail">Proposta ÷ budget</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    semantic = intel_metrics.get("semantic_synthesis") if isinstance(intel_metrics.get("semantic_synthesis"), dict) else None
+    if semantic:
+        st.markdown("#### O que a NAVE entendeu")
+        st.info(str(semantic.get("executive_summary") or ""))
+        connections = [
+            row for row in (semantic.get("strongest_connections") or [])
+            if isinstance(row, dict) and row.get("analysis")
+        ]
+        gaps = [
+            row for row in (semantic.get("contradictions_or_gaps") or [])
+            if isinstance(row, dict) and row.get("analysis")
+        ]
+        if connections or gaps:
+            cols = st.columns(2, gap="large")
+            with cols[0]:
+                st.markdown("**Conexões mais relevantes**")
+                for row in connections[:3]:
+                    st.success(f"**{row.get('title') or 'Conexão'}**\n\n{row.get('analysis')}")
+            with cols[1]:
+                st.markdown("**Riscos / contradições**")
+                for row in gaps[:3]:
+                    st.warning(f"**{row.get('title') or 'Ponto de atenção'}**\n\n{row.get('analysis')}")
 
     context_notes: list[str] = []
     observations: list[str] = []
@@ -988,6 +1047,10 @@ def _render_overview(
                 "md",
                 "eml",
                 "msg",
+                "jpg",
+                "jpeg",
+                "png",
+                "webp",
             ],
             key_suffix="overview",
         )
@@ -1306,22 +1369,45 @@ def _render_budget(
     usage = financial.get("budget_usage_pct")
     additional_cost_sheets = financial.get("additional_cost_sheets") or []
 
-    summary_cols = st.columns(4)
-    summary_cols[0].metric(
-        "Budget do briefing",
-        _format_money(budget_amount) if budget_amount is not None else "Não identificado",
+    advanced = intelligence.get("advanced_insights") or {}
+    cost_per_attendee = advanced.get("cost_per_attendee")
+    audience_quantity = advanced.get("audience_quantity")
+    overage = (-float(delta)) if delta is not None and float(delta) < 0 else None
+    headroom = float(delta) if delta is not None and float(delta) >= 0 else None
+    delta_label = "Acima do teto" if overage is not None else "Folga no budget" if headroom is not None else "Diferença"
+    delta_value = _format_money(overage if overage is not None else headroom) if delta is not None else "—"
+    delta_detail = (
+        f"+{(overage / float(budget_amount)):.2%}"
+        if overage is not None and budget_amount
+        else f"{(headroom / float(budget_amount)):.2%} disponível"
+        if headroom is not None and budget_amount
+        else "Sem base comparável"
     )
-    summary_cols[1].metric(
-        "Proposta detalhada",
-        _format_money(proposal_total) if proposal_total is not None else "Não identificado",
-    )
-    summary_cols[2].metric(
-        "Saldo / diferença",
-        _format_money(delta) if delta is not None else "Não calculável",
-    )
-    summary_cols[3].metric(
-        "% do budget",
-        f"{usage:.1%}" if usage is not None else "Não calculável",
+    budget_value = _format_money(budget_amount) if budget_amount is not None else "—"
+    proposal_value = _format_money(proposal_total) if proposal_total is not None else "—"
+    usage_value = f"{usage:.1%}" if usage is not None else "—"
+    attendee_value = _format_money(cost_per_attendee) if cost_per_attendee is not None else "—"
+    attendee_detail = f"Base: {int(audience_quantity)} pessoas" if audience_quantity else "Audiência não identificada"
+
+    st.markdown(
+        f"""
+        <style>
+        .nave-fin-grid {{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:.5rem 0 1rem 0;}}
+        .nave-fin-card {{background:#F7F9FC;border:1px solid #E1E6EF;border-radius:14px;padding:14px 15px;min-width:0;}}
+        .nave-fin-label {{font-size:.72rem;color:#667188;font-weight:700;margin-bottom:6px;}}
+        .nave-fin-value {{font-size:1.30rem;line-height:1.18;color:#121B42;font-weight:850;overflow-wrap:anywhere;}}
+        .nave-fin-detail {{font-size:.68rem;color:#7C879D;margin-top:5px;line-height:1.25;}}
+        @media (max-width: 1100px) {{.nave-fin-grid {{grid-template-columns:repeat(2,minmax(0,1fr));}}}}
+        </style>
+        <div class="nave-fin-grid">
+          <div class="nave-fin-card"><div class="nave-fin-label">Budget do briefing</div><div class="nave-fin-value">{budget_value}</div><div class="nave-fin-detail">Teto comprovado na fonte</div></div>
+          <div class="nave-fin-card"><div class="nave-fin-label">Total da proposta</div><div class="nave-fin-value">{proposal_value}</div><div class="nave-fin-detail">Total final estruturado</div></div>
+          <div class="nave-fin-card"><div class="nave-fin-label">{delta_label}</div><div class="nave-fin-value">{delta_value}</div><div class="nave-fin-detail">{delta_detail}</div></div>
+          <div class="nave-fin-card"><div class="nave-fin-label">Uso do budget</div><div class="nave-fin-value">{usage_value}</div><div class="nave-fin-detail">Proposta ÷ budget</div></div>
+          <div class="nave-fin-card"><div class="nave-fin-label">Custo por participante</div><div class="nave-fin-value">{attendee_value}</div><div class="nave-fin-detail">{attendee_detail}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     if preliminary_total is not None:
@@ -1352,6 +1438,51 @@ def _render_budget(
             "O budget foi identificado, mas a proposta detalhada ainda não possui um total financeiro comprovado. "
             "A aderência não será inventada até a leitura conseguir provar os valores."
         )
+
+    top_categories = advanced.get("top_categories") or []
+    top_items = advanced.get("top_items") or []
+    if top_categories or top_items:
+        st.markdown("#### Leitura NAVE do orçamento")
+        left_analysis, right_analysis = st.columns(2, gap="large")
+        with left_analysis:
+            st.markdown("**Onde o budget está concentrado**")
+            if top_categories:
+                category_rows = []
+                for row in top_categories[:6]:
+                    category_rows.append({
+                        "Categoria": row.get("category") or "Sem categoria",
+                        "Valor": float(row.get("value") or 0),
+                        "% da proposta": float(row.get("share") or 0) if row.get("share") is not None else None,
+                    })
+                st.dataframe(
+                    pd.DataFrame(category_rows), hide_index=True, width="stretch",
+                    column_config={
+                        "Valor": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "% da proposta": st.column_config.NumberColumn(format="%.1f%%"),
+                    },
+                )
+                concentration = advanced.get("top4_category_share")
+                if concentration is not None:
+                    st.caption(f"As 4 maiores categorias concentram {float(concentration):.1%} do total.")
+        with right_analysis:
+            st.markdown("**Maiores itens individuais**")
+            if top_items:
+                top_rows = []
+                for row in top_items[:6]:
+                    share = (float(row.get("value") or 0) / float(proposal_total)) if proposal_total else None
+                    top_rows.append({
+                        "Item": row.get("name") or "Item",
+                        "Categoria": row.get("category") or "Sem categoria",
+                        "Valor": float(row.get("value") or 0),
+                        "%": share,
+                    })
+                st.dataframe(
+                    pd.DataFrame(top_rows), hide_index=True, width="stretch",
+                    column_config={
+                        "Valor": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "%": st.column_config.NumberColumn(format="%.1f%%"),
+                    },
+                )
 
     if additional_cost_sheets:
         st.markdown("#### Escopos financeiros apartados")
@@ -1416,22 +1547,35 @@ def _render_budget(
             "quoted": "Cotado", "estimated": "Estimado", "reserve": "Reserva",
             "waiting_supplier": "Aguardando fornecedor", "no_value": "Sem valor",
         }
+        vendors = []
+        for raw in df.get("raw_data", pd.Series([{}] * len(df))):
+            vendors.append(raw.get("vendor") if isinstance(raw, dict) else None)
+        final_values = pd.to_numeric(df.get("client_total"), errors="coerce")
         view = pd.DataFrame({
             "Categoria": df.get("category", ""),
             "Item": df.get("item_name", ""),
-            "Quantidade": df.get("quantity"),
-            "Valor unitário": pd.to_numeric(df.get("unit_value"), errors="coerce"),
-            "Valor final": pd.to_numeric(df.get("client_total"), errors="coerce"),
+            "Descrição / escopo": df.get("description", ""),
+            "Fornecedor": vendors,
+            "Qtd.": df.get("quantity"),
+            "Unitário": pd.to_numeric(df.get("unit_value"), errors="coerce"),
+            "Custo base": pd.to_numeric(df.get("base_value"), errors="coerce"),
+            "Markup": pd.to_numeric(df.get("fees_value"), errors="coerce"),
+            "Impostos": pd.to_numeric(df.get("charges_value"), errors="coerce"),
+            "Total final": final_values,
+            "% proposta": (final_values / float(proposal_total)) if proposal_total else None,
             "Situação": df.get("item_status", pd.Series(dtype=str)).map(status_labels).fillna(""),
-            "Tipo": df.get("estimate_type", pd.Series(dtype=str)).map(estimate_labels).fillna(""),
         })
         st.dataframe(
             view,
             hide_index=True,
             width="stretch",
             column_config={
-                "Valor unitário": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Valor final": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Unitário": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Custo base": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Markup": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Impostos": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Total final": st.column_config.NumberColumn(format="R$ %.2f"),
+                "% proposta": st.column_config.NumberColumn(format="%.1f%%"),
             },
         )
         if proposal_total is not None:
@@ -1738,25 +1882,50 @@ def _render_feedbacks(
                 st.rerun()
 
     entries = snapshot.get("feedback_entries", [])
+    outcome = snapshot.get("outcome") or {}
+    if str(outcome.get("information_source") or "") == "client_feedback":
+        st.markdown("#### Leitura NAVE da decisão")
+        commercial_labels = {
+            "won": "Ganho", "lost": "Perdido", "cancelled": "Cancelado",
+            "suspended": "Suspenso", "no_return": "Sem retorno", "in_evaluation": "Em avaliação",
+        }
+        proposal_labels = {
+            "fully_approved": "Aprovada integralmente", "partially_approved": "Aprovada parcialmente",
+            "not_approved": "Não aprovada", "in_revision": "Em revisão", "no_feedback": "Sem feedback",
+        }
+        cols = st.columns(3)
+        cols[0].metric("Resultado comercial", commercial_labels.get(str(outcome.get("commercial_result") or ""), "Não informado"))
+        cols[1].metric("Proposta", proposal_labels.get(str(outcome.get("proposal_result") or ""), "Não informada"))
+        cols[2].metric("Confiança", "Confirmado pelo cliente" if outcome.get("confidence_level") == "client_confirmed" else str(outcome.get("confidence_level") or "Não informada"))
+        if outcome.get("result_context"):
+            st.info(str(outcome.get("result_context")))
+
     st.markdown("#### Histórico de feedbacks")
 
     if entries:
         for row in entries:
+            interpretation = str(row.get("internal_interpretation") or "")
+            is_transcription = "transcrição da fonte" in interpretation
+            sentiment_label = {
+                "positive": "Positivo", "negative": "Negativo", "neutral": "Neutro", "mixed": "Misto",
+            }.get(str(row.get("sentiment") or ""), "")
+            theme_label = str(row.get("theme") or "outro").replace("_", " ").title()
             title = (
-                f"{_format_date(row.get('feedback_date'))} · "
-                f"{str(row.get('theme') or 'outro').replace('_', ' ').title()}"
+                f"{_format_date(row.get('feedback_date'))} · Transcrição do arquivo"
+                if is_transcription
+                else f"{_format_date(row.get('feedback_date'))} · {theme_label}" + (f" · {sentiment_label}" if sentiment_label else "")
             )
-            with st.expander(title):
+            with st.expander(title, expanded=is_transcription):
+                if is_transcription:
+                    st.markdown("**Texto transcrito da fonte**")
+                else:
+                    st.markdown("**Evidência / trecho do cliente**")
                 st.write(row.get("original_feedback"))
-                if row.get("internal_interpretation"):
-                    st.markdown(
-                        f"**Interpretação interna:** "
-                        f"{row.get('internal_interpretation')}"
-                    )
+                if interpretation:
+                    clean_interpretation = interpretation.split(" · claim ", 1)[-1] if " · claim " in interpretation else interpretation
+                    st.markdown(f"**Leitura NAVE:** {clean_interpretation}")
                 if row.get("action_taken"):
-                    st.markdown(
-                        f"**Ação decorrente:** {row.get('action_taken')}"
-                    )
+                    st.markdown(f"**Aprendizado recomendado:** {row.get('action_taken')}")
     else:
         st.caption("Nenhum feedback em texto foi registrado.")
 
@@ -1787,6 +1956,10 @@ def _render_feedbacks(
                 "md",
                 "eml",
                 "msg",
+                "jpg",
+                "jpeg",
+                "png",
+                "webp",
             ],
             key_suffix="feedback",
         )
@@ -1796,7 +1969,7 @@ def _render_feedbacks(
             project_id=project_id,
             role="approval",
             title="Arquivo de aprovação",
-            accepted_types=["pdf", "docx", "pptx", "txt", "md", "eml"],
+            accepted_types=["pdf", "docx", "pptx", "txt", "md", "eml", "jpg", "jpeg", "png", "webp"],
             key_suffix="approval",
         )
 

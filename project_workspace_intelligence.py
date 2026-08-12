@@ -13,6 +13,8 @@ import pandas as pd
 import streamlit as st
 from supabase import Client
 
+from project_analyst import derive_advanced_project_insights
+
 
 VISUAL_SECTIONS = {"scenography", "activations", "gifts"}
 DELIVERY_SECTIONS = {
@@ -45,7 +47,7 @@ SECTION_KEYWORDS = {
         "fachada": 4, "palco": 4, "lounge": 4, "arquitetura": 4,
         "mobiliario": 4, "estrutura": 2, "marcenaria": 4,
         "implantacao": 4, "layout": 3, "planta": 3, "render": 4,
-        "area externa": 3, "area interna": 3, "casa chambinho": 6,
+        "area externa": 3, "area interna": 3,
         "backdrop": 3, "painel cenografico": 5, "portal": 3,
         "entrada": 2, "balcao": 3, "testeira": 4,
     },
@@ -675,7 +677,20 @@ def project_stage(snapshot: dict[str, Any]) -> tuple[str, str]:
     status = str(project.get("status") or "")
     commercial = str(outcome.get("commercial_result") or "")
     execution = str(outcome.get("execution_result") or "")
+    client_decision = (
+        str(outcome.get("information_source") or "") == "client_feedback"
+        and str(outcome.get("confidence_level") or "") == "client_confirmed"
+    )
 
+    if client_decision and commercial == "lost":
+        return (
+            "lost",
+            "Concorrência perdida / proposta não aprovada"
+            if str(outcome.get("process_type") or "") == "competition"
+            else "Perdido / proposta não aprovada",
+        )
+    if client_decision and commercial == "cancelled":
+        return "cancelled", "Cancelado"
     if execution in {"executed", "partially_executed"} or status == "executado":
         return "executed", "Executado"
     if execution == "in_progress" or status == "em_producao":
@@ -803,6 +818,17 @@ def _financial_scope(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
+    current_signature = _source_signature(snapshot)
+    prior_semantic: dict[str, Any] | None = None
+    for stored in snapshot.get("intelligence_snapshots", []) or []:
+        if str(stored.get("source_signature") or "") != current_signature:
+            continue
+        stored_metrics = stored.get("metrics") if isinstance(stored.get("metrics"), dict) else {}
+        candidate = stored_metrics.get("semantic_synthesis")
+        if isinstance(candidate, dict) and candidate.get("executive_summary"):
+            prior_semantic = candidate
+            break
+
     project_files = [row for row in snapshot.get("project_files", []) if not row.get("is_archived")]
     role_count = defaultdict(int)
     for row in project_files:
@@ -992,6 +1018,19 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         budget_amount = float(budget_amount) if budget_amount not in (None, "") else None
     except (TypeError, ValueError):
         budget_amount = None
+    if budget_amount is None:
+        briefing_budgets = []
+        for document in snapshot.get("briefing_documents", []):
+            value = document.get("budget_amount")
+            try:
+                if value not in (None, "") and float(value) > 0:
+                    briefing_budgets.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if briefing_budgets:
+            # A versão mais recente vem primeiro no snapshot; o primeiro valor
+            # comprovado é a melhor evidência disponível do teto do briefing.
+            budget_amount = briefing_budgets[0]
     if budget_amount is None and preliminary_budget_total is not None:
         budget_amount = preliminary_budget_total
     budget_delta = (budget_amount - cost_total) if budget_amount is not None and cost_total is not None else None
@@ -1119,8 +1158,68 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
         recommendations.append("Reprocessar ou revisar a estrutura da planilha de custos para transformar o budget do briefing em uma análise financeira comparável.")
     if not snapshot.get("feedback_entries") and stage_key not in {"executed", "lost", "cancelled"}:
         recommendations.append("Quando houver retorno do cliente, registrar o resultado comercial para atualizar automaticamente a leitura do projeto.")
+    advanced = derive_advanced_project_insights(
+        snapshot,
+        proposal_total=cost_total,
+        budget_amount=budget_amount,
+    )
+    # O Project Analyst adiciona conexões de segunda ordem: concentração
+    # financeira, feedback → solução, custo → solução e briefing → feedback.
+    existing_finding_signatures = {
+        (str(row.get("title") or ""), str(row.get("text") or ""))
+        for row in findings
+    }
+    for row in advanced.get("findings") or []:
+        signature = (str(row.get("title") or ""), str(row.get("text") or ""))
+        if signature not in existing_finding_signatures:
+            findings.append(row)
+            existing_finding_signatures.add(signature)
+    recommendations.extend(advanced.get("recommendations") or [])
+    recommendations = list(dict.fromkeys(recommendations))
     if not recommendations:
         recommendations.append("Manter o projeto atualizado com novas versões, feedbacks e resultados para preservar o ciclo de aprendizado.")
+
+    metrics.update({
+        "cost_per_attendee": advanced.get("cost_per_attendee"),
+        "audience_quantity": advanced.get("audience_quantity"),
+        "top4_category_share": advanced.get("top4_category_share"),
+        "top5_item_share": advanced.get("top5_item_share"),
+        "validated_items_count": len(advanced.get("validated_items") or []),
+        "challenged_items_count": len(advanced.get("challenged_items") or []),
+    })
+
+    # A síntese semântica é gerada após materialização e fica presa à assinatura
+    # das fontes. Recalcular a parte determinística não apaga o raciocínio já
+    # validado para exatamente o mesmo conjunto de evidências.
+    if prior_semantic:
+        metrics["semantic_synthesis"] = prior_semantic
+        semantic_rows = []
+        for group_name, level in (("strongest_connections", "info"), ("contradictions_or_gaps", "warning")):
+            for row in prior_semantic.get(group_name) or []:
+                if not isinstance(row, dict):
+                    continue
+                semantic_rows.append({
+                    "level": level,
+                    "title": row.get("title") or "Conexão inteligente",
+                    "text": row.get("analysis") or "",
+                    "source": "semantic_project_analyst",
+                    "connection_type": row.get("connection_type") or "cross_source",
+                    "evidence_refs": row.get("evidence_refs") or [],
+                    "confidence": row.get("confidence") or "medium",
+                    "recommended_action": row.get("recommended_action"),
+                })
+        existing = {(str(r.get("title") or ""), str(r.get("text") or "")) for r in findings}
+        for row in semantic_rows:
+            key = (str(row.get("title") or ""), str(row.get("text") or ""))
+            if row.get("text") and key not in existing:
+                findings.append(row)
+                existing.add(key)
+        recommendations.extend(
+            str(value).strip()
+            for value in prior_semantic.get("decision_recommendations") or []
+            if str(value).strip()
+        )
+        recommendations = list(dict.fromkeys(recommendations))
 
     latest_report = snapshot.get("report_analyses", [None])[0] if snapshot.get("report_analyses") else None
     result_summary = {
@@ -1136,7 +1235,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
     return {
-        "source_signature": _source_signature(snapshot),
+        "source_signature": current_signature,
         "coverage": coverage,
         "metrics": metrics,
         "matrix": matrix,
@@ -1149,6 +1248,7 @@ def build_project_intelligence(snapshot: dict[str, Any]) -> dict[str, Any]:
             "proposed_without_cost": proposed_without_cost,
         },
         "result_summary": result_summary,
+        "advanced_insights": advanced,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1228,6 +1328,27 @@ def render_project_intelligence(
         "apresentação, planilha, relatório ou feedback recebe uma nova informação."
     )
 
+    semantic = (intelligence.get("metrics") or {}).get("semantic_synthesis")
+    if isinstance(semantic, dict) and semantic.get("executive_summary"):
+        st.markdown("#### Project Analyst · leitura integrada")
+        st.info(str(semantic.get("executive_summary") or ""))
+        if semantic.get("strategic_reading"):
+            st.markdown(f"**Leitura estratégica:** {semantic.get('strategic_reading')}")
+        learn_cols = st.columns(2, gap="large")
+        with learn_cols[0]:
+            st.markdown("**O que merece ser preservado como repertório**")
+            for value in (semantic.get("validated_learnings") or [])[:5]:
+                st.success(str(value))
+        with learn_cols[1]:
+            st.markdown("**O que precisa mudar em projetos futuros**")
+            for value in (semantic.get("challenged_learnings") or [])[:5]:
+                st.warning(str(value))
+        unknowns = [str(value).strip() for value in (semantic.get("unknowns") or []) if str(value).strip()]
+        if unknowns:
+            with st.expander("O que a NAVE ainda não pode concluir", expanded=False):
+                for value in unknowns[:8]:
+                    st.write(f"• {value}")
+
     if new_cost_links or new_brief_links:
         st.success(
             f"A NAVE criou {new_cost_links} nova(s) sugestão(ões) de custo e "
@@ -1264,6 +1385,53 @@ def render_project_intelligence(
             "A classificação ‘sem evidência de execução’ não significa que a entrega não aconteceu. "
             "Ela indica apenas que os arquivos atuais ainda não comprovam o resultado."
         )
+
+    advanced = intelligence.get("advanced_insights") or {}
+    validated = advanced.get("validated_items") or []
+    challenged = advanced.get("challenged_items") or []
+    requirement_risks = advanced.get("requirement_risks") or []
+    if validated or challenged or requirement_risks:
+        st.markdown("#### Conexões inteligentes")
+        st.caption(
+            "A NAVE conecta feedbacks às soluções apresentadas e, quando houver vínculo financeiro/briefing, "
+            "mostra o impacto daquela decisão no projeto."
+        )
+        connections = st.columns(2, gap="large")
+        with connections[0]:
+            st.markdown("**O que recebeu validação**")
+            if validated:
+                for row in validated[:6]:
+                    cost = row.get("linked_cost")
+                    cost_text = f" · custo ligado: {_money(cost)}" if cost not in (None, 0, "") else ""
+                    st.success(
+                        f"**{row.get('title') or 'Solução'}**{cost_text}\n\n"
+                        f"{row.get('feedback') or 'Validação registrada pelo cliente.'}"
+                    )
+            else:
+                st.caption("Nenhuma solução recebeu validação estruturada até agora.")
+        with connections[1]:
+            st.markdown("**O que foi questionado**")
+            if challenged:
+                for row in challenged[:6]:
+                    cost = row.get("linked_cost")
+                    cost_text = f" · custo ligado: {_money(cost)}" if cost not in (None, 0, "") else ""
+                    st.warning(
+                        f"**{row.get('title') or 'Solução'}**{cost_text}\n\n"
+                        f"{row.get('feedback') or 'Ponto questionado pelo cliente.'}"
+                    )
+            else:
+                st.caption("Nenhuma solução questionada foi vinculada ainda.")
+        if requirement_risks:
+            st.markdown("**Briefing × solução × feedback**")
+            st.dataframe(
+                pd.DataFrame(requirement_risks).rename(columns={
+                    "requirement": "Demanda do briefing",
+                    "item": "Solução apresentada",
+                    "adherence": "Aderência registrada",
+                }),
+                hide_index=True,
+                width="stretch",
+            )
 
     left, right = st.columns(2, gap="large")
     with left:
