@@ -30,8 +30,8 @@ from project_analyst import (
 )
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.2.0"
-LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0"}
+WORKFLOW_VERSION = "28.2.1"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0", "28.2.1"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -1542,7 +1542,7 @@ def _repair_bundle_topology(
 
     Versões anteriores podiam rotular um DOCX de briefing ou um PDF de proposta
     como relatório/fornecedor/feedback porque uma palavra interna pesava mais que
-    a função do arquivo no lote. A V28.2.0 usa a combinação dos formatos como
+    a função do arquivo no lote. A V28.2.1 usa a combinação dos formatos como
     fallback somente quando existe UM candidato por função. Assim, o caso real
     briefing Word + proposta PDF + planilha + print de feedback deixa de depender
     do rótulo histórico incorreto ou de page_count/text_excerpt preenchidos.
@@ -2279,7 +2279,43 @@ def materialize_source_file(
         elif role == "post_event_report":
             created.update(_materialize_report(client, source_file, text))
         # supplier_reference e complementary_document continuam visíveis em
-        # Documentos via project_files/source_files, sem fabricar conteúdo.
+        # Documentos via project_files/source_files, sem fabricar conteúdo legado.
+
+        # V28.2.1 — File Analyst + Intelligence Dual-Write.
+        # O workspace legado continua sendo a camada operacional atual. Quando a
+        # Intelligence Foundation estiver instalada, o MESMO arquivo também é
+        # analisado como fonte/evidência e gravado paralelamente no Intelligence
+        # Graph. Falha nesta camada nunca invalida a materialização anterior.
+        try:
+            from intelligence_graph_db import dual_write_source_file, foundation_available
+
+            intelligence_bytes = source_bytes
+            if intelligence_bytes is None and foundation_available(client):
+                intelligence_bytes = _download_bytes(client, source_file)
+            intelligence = dual_write_source_file(
+                client,
+                source_file,
+                source_bytes=intelligence_bytes,
+                enable_semantic=True,
+            )
+            for source_key, target_key in (
+                ("evidence", "intelligence_evidence"),
+                ("entities", "intelligence_entities"),
+                ("claims", "intelligence_claims"),
+                ("relations", "intelligence_relations"),
+                ("findings", "intelligence_findings"),
+            ):
+                if int(intelligence.get(source_key) or 0) > 0:
+                    created[target_key] = int(intelligence.get(source_key) or 0)
+            if str(intelligence.get("status") or "") == "error":
+                warnings.append("File Analyst concluiu com erro, sem afetar o workspace legado.")
+            for item in intelligence.get("warnings") or []:
+                if str(item).strip():
+                    warnings.append(f"File Analyst: {item}")
+        except Exception as intelligence_exc:
+            warnings.append(
+                f"Intelligence Dual-Write não pôde ser concluído; o workspace legado foi preservado: {intelligence_exc}"
+            )
 
         status = "materialized_with_warnings" if warnings else "materialized"
         notes = " | ".join(warnings[:12]) if warnings else f"Materializado pela NAVE {WORKFLOW_VERSION}."
