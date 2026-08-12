@@ -807,9 +807,8 @@ def render_memory_item_row(
     visual_url = (
         create_memory_signed_url(
             client,
-            item.get(
-                "visual_storage_path"
-            ),
+            item.get("visual_storage_path"),
+            storage_bucket=item.get("visual_storage_bucket"),
         )
         if item.get(
             "visual_storage_path"
@@ -820,9 +819,8 @@ def render_memory_item_row(
     slide_url = (
         create_memory_signed_url(
             client,
-            (page or {}).get(
-                "storage_path"
-            ),
+            (page or {}).get("storage_path"),
+            storage_bucket=(page or {}).get("storage_bucket"),
         )
         if page
         else None

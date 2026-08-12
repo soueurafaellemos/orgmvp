@@ -7,6 +7,8 @@ import re
 
 import pandas as pd
 
+from nave_storage import create_signed_url as storage_signed_url, is_r2_bucket
+
 from nave_runtime_fixes import apply_runtime_fixes
 
 
@@ -189,17 +191,19 @@ def _asset_url(client: Any, asset: Mapping[str, Any]) -> str:
         return ""
 
     try:
-        response = client.storage.from_(bucket).create_signed_url(path, 60 * 60 * 24)
-        if isinstance(response, Mapping):
-            signed = (
-                response.get("signedURL")
-                or response.get("signedUrl")
-                or response.get("signed_url")
-            )
-            if signed:
-                return str(signed)
+        signed = storage_signed_url(
+            client,
+            bucket_name=bucket,
+            path=path,
+            expires_in=60 * 60 * 24,
+        )
+        if signed:
+            return str(signed)
     except Exception:
         pass
+
+    if is_r2_bucket(bucket):
+        return ""
 
     try:
         response = client.storage.from_(bucket).get_public_url(path)

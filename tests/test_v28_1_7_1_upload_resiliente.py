@@ -81,24 +81,21 @@ def test_file_above_300_mb_is_rejected_before_processing():
         prepare_document("feedback.jpeg", data, "image/jpeg")
 
 
-def test_storage_413_becomes_actionable_message():
-    class _Bucket:
-        def upload(self, *_args, **_kwargs):
-            raise RuntimeError("413 Payload Too Large")
+def test_storage_failure_becomes_actionable_message(monkeypatch):
+    import project_batch_ingestion as ingestion
+    from nave_storage import NaveStorageError
 
-    class _Storage:
-        def from_(self, _name):
-            return _Bucket()
+    def _fail(**_kwargs):
+        raise NaveStorageError("R2 indisponível para teste")
 
-    class _Client:
-        storage = _Storage()
-
-    with pytest.raises(ProjectBatchError, match="Storage do projeto recusou o tamanho"):
+    monkeypatch.setattr(ingestion, "put_bytes", _fail)
+    data = b"\xff\xd8\xff\xe0JPEG"
+    with pytest.raises(ProjectBatchError, match="Cloudflare R2"):
         _upload_bytes(
-            _Client(),
             path="projects/test/feedback.jpeg",
-            data=b"\xff\xd8\xff\xe0JPEG",
+            data=data,
             mime_type="image/jpeg",
+            sha256=__import__("hashlib").sha256(data).hexdigest(),
         )
 
 

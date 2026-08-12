@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from nave_storage import delete_objects
+
 
 ENTITY_TABLES = {
     "product": "products",
@@ -139,7 +141,7 @@ def _remove_storage(client: Any, refs: Sequence[tuple[str, str]]) -> None:
         by_bucket.setdefault(bucket, []).append(path)
     for bucket, paths in by_bucket.items():
         try:
-            client.storage.from_(bucket).remove(list(dict.fromkeys(paths)))
+            delete_objects(client, bucket_name=bucket, paths=paths)
         except Exception:
             continue
 

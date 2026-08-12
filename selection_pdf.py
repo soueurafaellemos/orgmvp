@@ -26,6 +26,8 @@ from urllib.parse import quote_plus, urlparse
 from urllib.request import Request, urlopen
 
 from PIL import Image as PILImage, ImageOps
+from nave_storage import create_signed_url as storage_signed_url
+
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
@@ -543,15 +545,10 @@ def _asset_url(client: Any, asset: dict) -> str:
     if not client or not bucket or not path:
         return ""
     try:
-        response = client.storage.from_(bucket).create_signed_url(path, 3600)
-        if isinstance(response, str):
-            return response
-        if isinstance(response, dict):
-            return _text_value(response.get("signedURL") or response.get("signedUrl") or response.get("signed_url"))
         return _text_value(
-            getattr(response, "signedURL", None)
-            or getattr(response, "signedUrl", None)
-            or getattr(response, "signed_url", None)
+            storage_signed_url(
+                client, bucket_name=bucket, path=path, expires_in=3600
+            )
         )
     except Exception:
         return ""

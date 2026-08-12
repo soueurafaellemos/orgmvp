@@ -11,6 +11,8 @@ import pandas as pd
 import streamlit as st
 from supabase import Client
 
+from nave_storage import get_bytes as storage_get_bytes, put_bytes, r2_bucket_marker
+
 from project_workspace_db import create_storage_signed_url
 from project_workspace_intelligence import (
     SECTION_LABELS,
@@ -245,7 +247,9 @@ def recover_missing_visual_pages(
         if not original_path:
             continue
         try:
-            pdf_bytes = client.storage.from_(bucket).download(original_path)
+            pdf_bytes = storage_get_bytes(client, bucket_name=bucket, path=original_path)
+            if not pdf_bytes:
+                continue
             pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
         except Exception:
             continue
@@ -263,19 +267,16 @@ def recover_missing_visual_pages(
                     f"pages/recovered-v272-{page_number:04d}-{digest[:10]}.jpg"
                 )
                 try:
-                    client.storage.from_(MEMORY_BUCKET).upload(
+                    uploaded = put_bytes(
                         path=storage_path,
-                        file=image_bytes,
-                        file_options={
-                            "content-type": "image/jpeg",
-                            "cache-control": "3600",
-                            "upsert": "false",
-                        },
+                        data=image_bytes,
+                        content_type="image/jpeg",
+                        cache_control="3600",
+                        sha256=digest,
+                        logical_kind="workspace-visual",
                     )
-                except Exception as exc:
-                    message = str(exc).casefold()
-                    if not any(token in message for token in ("already exists", "duplicate", "409")):
-                        continue
+                except Exception:
+                    continue
                 payload = {
                     "project_id": project_id,
                     "document_id": document_id,
@@ -283,7 +284,7 @@ def recover_missing_visual_pages(
                     "slide_title": str(row.get("suggested_title") or "Material visual").strip(),
                     "slide_summary": row.get("slide_summary"),
                     "primary_section": row.get("inferred_section"),
-                    "storage_bucket": MEMORY_BUCKET,
+                    "storage_bucket": str(uploaded.get("storage_bucket") or r2_bucket_marker()),
                     "storage_path": storage_path,
                     "content_sha256": digest,
                     "raw_data": {

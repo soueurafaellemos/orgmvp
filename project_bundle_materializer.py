@@ -108,16 +108,9 @@ def _download_bytes(client: Any, source_file: Mapping[str, Any]) -> bytes | None
     if not bucket or not path:
         return None
     try:
-        data = client.storage.from_(bucket).download(path)
-        if isinstance(data, bytes):
-            return data
-        if isinstance(data, bytearray):
-            return bytes(data)
-        if hasattr(data, "read"):
-            return data.read()
+        return get_bytes(client, bucket_name=bucket, path=path)
     except Exception:
         return None
-    return None
 
 
 def _table_select_one(client: Any, table: str, **filters: Any) -> dict[str, Any] | None:

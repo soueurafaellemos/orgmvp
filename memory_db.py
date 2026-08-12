@@ -12,6 +12,14 @@ import fitz
 import pandas as pd
 from supabase import Client
 
+from nave_storage import (
+    create_signed_url as storage_signed_url,
+    delete_objects,
+    put_bytes,
+    r2_bucket_marker,
+    verify_r2_access,
+)
+
 from document_io import InputDocument
 
 
@@ -74,75 +82,15 @@ def _bucket_identifier(bucket: Any) -> str:
 
 
 def ensure_memory_bucket(client: Client) -> None:
+    # R2 is the canonical storage for all new NAVE files.
     try:
-        buckets = client.storage.list_buckets() or []
-        bucket_ids = {
-            _bucket_identifier(bucket)
-            for bucket in buckets
-        }
-
-        if MEMORY_BUCKET in bucket_ids:
-            return
-
-        try:
-            # Do not impose a bucket-level size limit here. Supabase
-            # requires this value to be less than or equal to the
-            # project's global Storage limit. The previous 100 MB
-            # setting caused bucket creation itself to fail with 413
-            # on projects whose global limit was lower.
-            #
-            # The bucket inherits the project's global limit, while
-            # this application continues validating file type and
-            # size before each upload.
-            client.storage.create_bucket(
-                MEMORY_BUCKET,
-                options={
-                    "public": False,
-                    "allowed_mime_types": (
-                        MEMORY_ALLOWED_MIME_TYPES
-                    ),
-                },
-            )
-        except Exception as exc:
-            message = str(exc).casefold()
-            if (
-                "already exists" in message
-                or "duplicate" in message
-                or "409" in message
-            ):
-                return
-            raise
-
+        verify_r2_access()
     except Exception as exc:
         raise MemorySaveError(
             "armazenamento",
-            (
-                "A NAVE não conseguiu preparar o armazenamento privado "
-                "da Memória no Supabase."
-            ),
+            "A NAVE não conseguiu acessar o armazenamento privado no Cloudflare R2.",
             original=exc,
         ) from exc
-
-
-def _retry(
-    operation,
-    *,
-    attempts: int = 3,
-    base_delay: float = 0.7,
-):
-    last_error = None
-
-    for attempt in range(1, attempts + 1):
-        try:
-            return operation()
-        except Exception as exc:
-            last_error = exc
-            if attempt >= attempts:
-                break
-            time.sleep(base_delay * attempt)
-
-    raise last_error
-
 
 
 def _safe_filename(filename: str) -> str:
@@ -166,65 +114,30 @@ def _upload_bytes(
     file_bytes: bytes,
     mime_type: str,
     critical: bool = True,
-) -> None:
+) -> str:
     ensure_memory_bucket(client)
-
     if not file_bytes:
         raise ValueError("O arquivo está vazio.")
-
     if len(file_bytes) > MEMORY_MAX_FILE_SIZE:
-        raise ValueError(
-            "O arquivo ultrapassa o limite de 300 MB da Memória."
-        )
-
-    def upload():
-        return (
-            client.storage
-            .from_(MEMORY_BUCKET)
-            .upload(
-                path=storage_path,
-                file=file_bytes,
-                file_options={
-                    "content-type": mime_type,
-                    "cache-control": "3600",
-                    "upsert": "false",
-                },
-            )
-        )
-
+        raise ValueError("O arquivo ultrapassa o limite de 300 MB da Memória.")
     try:
-        _retry(upload)
+        result = put_bytes(
+            path=storage_path,
+            data=file_bytes,
+            content_type=mime_type,
+            cache_control="3600",
+            sha256=hashlib.sha256(file_bytes).hexdigest(),
+            logical_kind="memory",
+        )
+        return str(result.get("storage_bucket") or r2_bucket_marker())
     except Exception as exc:
         if critical:
-            message = str(exc).casefold()
-            if (
-                "413" in message
-                or "payload too large" in message
-                or "entity too large" in message
-                or "maximum allowed size" in message
-            ):
-                file_size_mb = len(file_bytes) / (1024 * 1024)
-                raise MemorySaveError(
-                    "upload",
-                    (
-                        f"O arquivo tem {file_size_mb:.1f} MB e ultrapassa "
-                        "o limite global configurado no Storage do Supabase. "
-                        "Aumente esse limite para um valor superior ao tamanho "
-                        "do PDF e tente novamente."
-                    ),
-                    original=exc,
-                ) from exc
-
             raise MemorySaveError(
                 "upload",
-                (
-                    "A NAVE não conseguiu enviar o arquivo original "
-                    "para o armazenamento privado."
-                ),
+                "A NAVE não conseguiu enviar o arquivo para o Cloudflare R2.",
                 original=exc,
             ) from exc
         raise
-
 
 
 def _signed_url_value(response: Any) -> str | None:
@@ -247,25 +160,17 @@ def create_memory_signed_url(
     client: Client,
     storage_path: str | None,
     *,
+    storage_bucket: str | None = None,
     expires_in: int = 3600,
     download: bool = False,
 ) -> str | None:
-    path = str(storage_path or "").strip()
-    if not path:
-        return None
-
-    if download:
-        response = client.storage.from_(MEMORY_BUCKET).create_signed_url(
-            path,
-            expires_in,
-            {"download": True},
-        )
-    else:
-        response = client.storage.from_(MEMORY_BUCKET).create_signed_url(
-            path,
-            expires_in,
-        )
-    return _signed_url_value(response)
+    return storage_signed_url(
+        client,
+        bucket_name=storage_bucket or MEMORY_BUCKET,
+        path=storage_path,
+        expires_in=expires_in,
+        download=download,
+    )
 
 
 def normalize_project_name(value: str | None) -> str:
@@ -1031,7 +936,7 @@ def save_memory_presentation(
             .update(
                 {
                     "storage_bucket": (
-                        MEMORY_BUCKET
+                        r2_bucket_marker()
                     ),
                     "storage_path": (
                         original_path
@@ -1133,7 +1038,7 @@ def save_memory_presentation(
                                 else None
                             ),
                             "storage_bucket": (
-                                MEMORY_BUCKET
+                                r2_bucket_marker()
                             ),
                             "storage_path": (
                                 page_path
@@ -1449,7 +1354,7 @@ def save_memory_presentation(
                     .update(
                         {
                             "visual_storage_bucket": (
-                                MEMORY_BUCKET
+                                r2_bucket_marker()
                             ),
                             "visual_storage_path": (
                                 crop_path
@@ -1527,10 +1432,10 @@ def save_memory_presentation(
     except MemorySaveError:
         if uploaded_paths:
             try:
-                (
-                    client.storage
-                    .from_(MEMORY_BUCKET)
-                    .remove(uploaded_paths)
+                delete_objects(
+                    client,
+                    bucket_name=r2_bucket_marker(),
+                    paths=uploaded_paths,
                 )
             except Exception:
                 pass
@@ -1550,10 +1455,10 @@ def save_memory_presentation(
     except Exception as exc:
         if uploaded_paths:
             try:
-                (
-                    client.storage
-                    .from_(MEMORY_BUCKET)
-                    .remove(uploaded_paths)
+                delete_objects(
+                    client,
+                    bucket_name=r2_bucket_marker(),
+                    paths=uploaded_paths,
                 )
             except Exception:
                 pass
@@ -1666,36 +1571,39 @@ def delete_memory_document(
 ) -> None:
     document_response = (
         client.table("memory_documents")
-        .select("storage_path")
+        .select("storage_bucket,storage_path")
         .eq("id", document_id)
         .limit(1)
         .execute()
     )
     page_response = (
         client.table("memory_pages")
-        .select("storage_path")
+        .select("storage_bucket,storage_path")
         .eq("document_id", document_id)
         .execute()
     )
     item_response = (
         client.table("memory_items")
-        .select("visual_storage_path")
+        .select("visual_storage_bucket,visual_storage_path")
         .eq("document_id", document_id)
         .execute()
     )
 
-    paths = []
+    by_bucket: dict[str, list[str]] = {}
     for row in document_response.data or []:
-        if row.get("storage_path"):
-            paths.append(row["storage_path"])
+        path = str(row.get("storage_path") or "").strip()
+        if path:
+            by_bucket.setdefault(str(row.get("storage_bucket") or MEMORY_BUCKET), []).append(path)
     for row in page_response.data or []:
-        if row.get("storage_path"):
-            paths.append(row["storage_path"])
+        path = str(row.get("storage_path") or "").strip()
+        if path:
+            by_bucket.setdefault(str(row.get("storage_bucket") or MEMORY_BUCKET), []).append(path)
     for row in item_response.data or []:
-        if row.get("visual_storage_path"):
-            paths.append(row["visual_storage_path"])
+        path = str(row.get("visual_storage_path") or "").strip()
+        if path:
+            by_bucket.setdefault(str(row.get("visual_storage_bucket") or MEMORY_BUCKET), []).append(path)
 
-    if paths:
-        client.storage.from_(MEMORY_BUCKET).remove(list(dict.fromkeys(paths)))
+    for bucket_name, paths in by_bucket.items():
+        delete_objects(client, bucket_name=bucket_name, paths=paths)
 
     client.table("memory_documents").delete().eq("id", document_id).execute()

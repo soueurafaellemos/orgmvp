@@ -14,6 +14,14 @@ from uuid import uuid4
 import pandas as pd
 from supabase import Client
 
+from nave_storage import (
+    create_signed_url as storage_signed_url,
+    delete_objects,
+    put_bytes,
+    r2_bucket_marker,
+    verify_r2_access,
+)
+
 
 PROJECT_FILES_BUCKET = "nave-project-files"
 PROJECT_FILE_MAX_BYTES = 300 * 1024 * 1024
@@ -152,29 +160,8 @@ def _bucket_identifier(bucket: Any) -> str:
 
 
 def ensure_project_files_bucket(client: Client) -> None:
-    buckets = client.storage.list_buckets() or []
-    identifiers = {_bucket_identifier(bucket) for bucket in buckets}
-
-    if PROJECT_FILES_BUCKET in identifiers:
-        return
-
-    try:
-        client.storage.create_bucket(
-            PROJECT_FILES_BUCKET,
-            options={"public": False},
-        )
-    except Exception as exc:
-        message = str(exc).casefold()
-        if (
-            "already exists" in message
-            or "duplicate" in message
-            or "409" in message
-        ):
-            return
-        raise RuntimeError(
-            "A NAVE não conseguiu preparar o armazenamento "
-            "privado dos arquivos do projeto."
-        ) from exc
+    # New NAVE files live in Cloudflare R2; Supabase Storage remains legacy-read only.
+    verify_r2_access()
 
 
 def _upload_bytes(
@@ -183,21 +170,15 @@ def _upload_bytes(
     storage_path: str,
     file_bytes: bytes,
     mime_type: str,
-) -> None:
-    bucket = client.storage.from_(PROJECT_FILES_BUCKET)
-    options = {
-        "content-type": mime_type or "application/octet-stream",
-        "upsert": "false",
-    }
-
-    try:
-        bucket.upload(storage_path, file_bytes, options)
-    except TypeError:
-        bucket.upload(
-            storage_path,
-            file_bytes,
-            file_options=options,
-        )
+) -> str:
+    result = put_bytes(
+        path=storage_path,
+        data=file_bytes,
+        content_type=mime_type or "application/octet-stream",
+        sha256=hashlib.sha256(file_bytes).hexdigest(),
+        logical_kind="project-file",
+    )
+    return str(result.get("storage_bucket") or r2_bucket_marker())
 
 
 def create_project_file_signed_url(
@@ -206,39 +187,14 @@ def create_project_file_signed_url(
     *,
     expires_in: int = 3600,
     download: bool = False,
+    storage_bucket: str | None = None,
 ) -> str | None:
-    path = str(storage_path or "").strip()
-    if not path:
-        return None
-
-    bucket = client.storage.from_(PROJECT_FILES_BUCKET)
-
-    try:
-        if download:
-            response = bucket.create_signed_url(
-                path,
-                expires_in,
-                {"download": True},
-            )
-        else:
-            response = bucket.create_signed_url(path, expires_in)
-    except Exception:
-        return None
-
-    if isinstance(response, str):
-        return response
-
-    if isinstance(response, dict):
-        return (
-            response.get("signedURL")
-            or response.get("signedUrl")
-            or response.get("signed_url")
-        )
-
-    return (
-        getattr(response, "signedURL", None)
-        or getattr(response, "signedUrl", None)
-        or getattr(response, "signed_url", None)
+    return storage_signed_url(
+        client,
+        bucket_name=storage_bucket or r2_bucket_marker(),
+        path=storage_path,
+        expires_in=expires_in,
+        download=download,
     )
 
 
@@ -351,7 +307,7 @@ def save_project_file(
         except Exception:
             pass
 
-    _upload_bytes(
+    storage_bucket = _upload_bytes(
         client,
         storage_path=storage_path,
         file_bytes=file_bytes,
@@ -368,7 +324,7 @@ def save_project_file(
         "file_size_bytes": len(file_bytes),
         "content_sha256": digest,
         "version_number": version_number,
-        "storage_bucket": PROJECT_FILES_BUCKET,
+        "storage_bucket": storage_bucket,
         "storage_path": storage_path,
         "notes": str(notes or "").strip() or None,
         "metadata": metadata or {},
@@ -380,7 +336,7 @@ def save_project_file(
         inserted = client.table("project_files").insert(payload).execute()
     except Exception:
         try:
-            client.storage.from_(PROJECT_FILES_BUCKET).remove([storage_path])
+            delete_objects(client, bucket_name=storage_bucket, paths=[storage_path])
         except Exception:
             pass
         raise
@@ -859,23 +815,13 @@ def create_storage_signed_url(
     expires_in: int = 3600,
     download: bool = False,
 ) -> str | None:
-    bucket = str(bucket_name or "").strip()
-    path = str(storage_path or "").strip()
-    if not bucket or not path:
-        return None
-    try:
-        storage = client.storage.from_(bucket)
-        if download:
-            response = storage.create_signed_url(path, expires_in, {"download": True})
-        else:
-            response = storage.create_signed_url(path, expires_in)
-    except Exception:
-        return None
-    if isinstance(response, str):
-        return response
-    if isinstance(response, dict):
-        return response.get("signedURL") or response.get("signedUrl") or response.get("signed_url")
-    return getattr(response, "signedURL", None) or getattr(response, "signedUrl", None) or getattr(response, "signed_url", None)
+    return storage_signed_url(
+        client,
+        bucket_name=bucket_name,
+        path=storage_path,
+        expires_in=expires_in,
+        download=download,
+    )
 
 
 def _normalise_match_text(value: Any) -> str:

@@ -28,6 +28,7 @@ from enrichment_engine import (
     merge_record,
 )
 from media_library import upload_generated_media_asset
+from nave_storage import delete_objects
 from pdf_visuals import prepare_visual_assignments
 from venue_types import venue_type_suggestion
 from taxonomy import (
@@ -1341,10 +1342,8 @@ def _move_media_to_target(
 
             if bucket and storage_path:
                 try:
-                    (
-                        client.storage
-                        .from_(bucket)
-                        .remove([storage_path])
+                    delete_objects(
+                        client, bucket_name=bucket, paths=[storage_path]
                     )
                 except Exception:
                     pass
@@ -4344,10 +4343,8 @@ def delete_knowledge_entity(
 
         if bucket and storage_path:
             try:
-                (
-                    client.storage
-                    .from_(bucket)
-                    .remove([storage_path])
+                delete_objects(
+                    client, bucket_name=bucket, paths=[storage_path]
                 )
             except Exception:
                 pass

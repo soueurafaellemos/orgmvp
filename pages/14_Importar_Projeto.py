@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.2.2.1",
+    eyebrow="NAVE by VOE · V28.2.2.2",
 )
 
 client = get_nave_client()
@@ -367,7 +367,7 @@ if documents:
                 "top_candidate_conflicts": top.conflicts,
                 "user_destination": destination,
             }
-        with st.spinner("Preservando arquivos e criando o lote do projeto..."):
+        with st.spinner("Preservando arquivos no Cloudflare R2 e criando o lote do projeto..."):
             try:
                 result = save_project_bundle(
                     client,
@@ -405,7 +405,7 @@ if documents:
                 cols[2].metric("Reaproveitados", result.get("duplicates_reused", 0))
                 cols[3].metric("Projeto", "Novo" if result.get("created_project") else "Existente")
                 st.caption(
-                    "Briefing, custos, apresentações, feedbacks e relatórios passam a alimentar as estruturas que a Visão geral e as abas do projeto realmente consultam."
+                    "Os masters ficam preservados no Cloudflare R2; briefing, custos, apresentações, feedbacks e relatórios alimentam as estruturas que a Visão geral e as abas do projeto realmente consultam."
                 )
                 materialization_rows = []
                 role_labels_by_key = ROLE_LABELS

@@ -684,9 +684,8 @@ with consult_tab:
                                         cover_url = (
                                             create_memory_signed_url(
                                                 client,
-                                                cover_page.iloc[0].get(
-                                                    "storage_path"
-                                                ),
+                                                cover_page.iloc[0].get("storage_path"),
+                                                storage_bucket=cover_page.iloc[0].get("storage_bucket"),
                                             )
                                         )
                                         if cover_url:
@@ -916,6 +915,7 @@ with consult_tab:
                                             create_memory_signed_url(
                                                 client,
                                                 document.get("storage_path"),
+                                                storage_bucket=document.get("storage_bucket"),
                                                 download=True,
                                             )
                                         )

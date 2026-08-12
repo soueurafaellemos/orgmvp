@@ -11,8 +11,16 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from nave_storage import (
+    NaveStorageError,
+    delete_objects,
+    put_bytes,
+    r2_bucket_marker,
+    verify_r2_access,
+)
+
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.2.2.1"
+WORKFLOW_VERSION = "28.2.2.2"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_MB = 300
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
@@ -864,61 +872,20 @@ def rank_project_candidates(
     return candidates[:limit]
 
 
-def _ensure_bucket(client: Any) -> None:
+def _upload_bytes(*, path: str, data: bytes, mime_type: str, sha256: str) -> dict[str, Any]:
     try:
-        buckets = client.storage.list_buckets()
-        names = {
-            str(getattr(bucket, "name", "") or (bucket.get("name") if isinstance(bucket, dict) else ""))
-            for bucket in (buckets or [])
-        }
-        if PROJECT_FILES_BUCKET in names:
-            return
-    except Exception:
-        # O bucket já é parte do workspace V27; caso a listagem não esteja disponível,
-        # tentamos criar e tratamos "already exists" como sucesso.
-        pass
-
-    try:
-        client.storage.create_bucket(PROJECT_FILES_BUCKET, options={"public": False})
-    except Exception as exc:
-        message = str(exc).casefold()
-        if "already" not in message and "exist" not in message and "duplicate" not in message:
-            # Ainda pode existir sem permissão de listagem. A tentativa real de upload
-            # produzirá a mensagem definitiva se o bucket estiver indisponível.
-            return
-
-
-def _storage_size_error(exc: Exception) -> bool:
-    message = str(exc).casefold()
-    return any(token in message for token in (
-        "413", "payload too large", "request entity too large",
-        "file size", "maximum file size", "exceeded the maximum",
-    ))
-
-
-def _upload_bytes(client: Any, *, path: str, data: bytes, mime_type: str) -> None:
-    bucket = client.storage.from_(PROJECT_FILES_BUCKET)
-    try:
-        try:
-            bucket.upload(
-                path,
-                data,
-                file_options={"content-type": mime_type, "upsert": "false"},
-            )
-        except TypeError:
-            bucket.upload(
-                path,
-                data,
-                {"content-type": mime_type, "upsert": "false"},
-            )
-    except Exception as exc:
-        if _storage_size_error(exc):
-            size_mb = len(data) / (1024 * 1024)
-            raise ProjectBatchError(
-                f"O arquivo ({size_mb:.1f} MB) passou pela validação da NAVE, mas o Storage do projeto recusou o tamanho. "
-                f"A aplicação permite até {MAX_FILE_MB} MB por arquivo; confirme que o bucket '{PROJECT_FILES_BUCKET}' também permite esse limite."
-            ) from exc
-        raise
+        return put_bytes(
+            path=path,
+            data=data,
+            content_type=mime_type,
+            sha256=sha256,
+            logical_kind="project-source",
+        )
+    except NaveStorageError as exc:
+        size_mb = len(data) / (1024 * 1024)
+        raise ProjectBatchError(
+            f"A NAVE não conseguiu gravar o arquivo ({size_mb:.1f} MB) no Cloudflare R2. {exc}"
+        ) from exc
 
 
 def _project_raw_data(client: Any, project_id: str) -> dict[str, Any]:
@@ -985,6 +952,7 @@ def _source_file_payload(
     role: str,
     confidence: float,
     reasons: Sequence[str],
+    storage_bucket: str | None,
     storage_path: str | None,
     batch_order: int,
     duplicate: bool,
@@ -995,7 +963,7 @@ def _source_file_payload(
         "project_id": project_id,
         "file_name": document.name,
         "mime_type": document.mime_type,
-        "storage_bucket": PROJECT_FILES_BUCKET if storage_path else None,
+        "storage_bucket": storage_bucket if storage_path else None,
         "storage_path": storage_path,
         "page_count": document.page_count,
         "sha256": document.sha256,
@@ -1011,6 +979,7 @@ def _source_file_payload(
             "workflow_version": WORKFLOW_VERSION,
             "role_label": ROLE_LABELS.get(role),
             "duplicate_in_project": duplicate,
+            "storage_provider": "r2" if str(storage_bucket or "").startswith("r2:") else "supabase_legacy",
         },
     }
 
@@ -1021,7 +990,7 @@ def _assert_project_db_client(client: Any) -> None:
     This protects the import transaction from starting with a string/dict/etc. and
     turns a cryptic ``object has no attribute table`` into an actionable error.
     """
-    if not callable(getattr(client, "table", None)) or not hasattr(client, "storage"):
+    if not callable(getattr(client, "table", None)):
         raise ProjectBatchError(
             "A conexão de dados da NAVE ficou inválida antes da importação. "
             "Recarregue a página após o deploy da versão atual; nenhum arquivo foi importado."
@@ -1049,7 +1018,11 @@ def save_project_bundle(
     if not selected:
         raise ProjectBatchError("Selecione pelo menos um arquivo para importar.")
 
-    _ensure_bucket(client)
+    try:
+        verify_r2_access()
+    except NaveStorageError as exc:
+        raise ProjectBatchError(str(exc)) from exc
+
     created_project = False
     project_id = str(existing_project_id or "").strip()
     if not project_id:
@@ -1109,7 +1082,7 @@ def save_project_bundle(
         "imported_records": 0,
     }
 
-    uploaded_paths: list[str] = []
+    uploaded_paths: list[tuple[str, str]] = []
     import_id: str | None = None
     saved_rows: list[dict[str, Any]] = []
     duplicate_count = 0
@@ -1120,28 +1093,34 @@ def save_project_bundle(
             raise ProjectBatchError("Não foi possível abrir o lote de importação.")
         import_id = str(import_rows[0]["id"])
 
-        seen_batch_hashes: dict[str, str] = {}
+        seen_batch_hashes: dict[str, tuple[str, str]] = {}
         for order, document in enumerate(selected, start=1):
             existing = _existing_by_sha(client, project_id, document.sha256)
             existing_path = str((existing or {}).get("storage_path") or "").strip()
-            batch_path = seen_batch_hashes.get(document.sha256)
-            duplicate = bool(existing_path or batch_path)
+            existing_bucket = str((existing or {}).get("storage_bucket") or "").strip()
+            batch_location = seen_batch_hashes.get(document.sha256)
+            duplicate = bool(existing_path or batch_location)
             if duplicate:
                 duplicate_count += 1
-                storage_path = existing_path or batch_path
+                if existing_path:
+                    storage_bucket = existing_bucket or PROJECT_FILES_BUCKET
+                    storage_path = existing_path
+                else:
+                    storage_bucket, storage_path = batch_location or ("", "")
             else:
                 storage_path = (
                     f"projects/{project_id}/imports/{import_id}/"
                     f"{order:02d}_{document.sha256[:12]}_{safe_filename(document.name)}"
                 )
-                _upload_bytes(
-                    client,
+                uploaded = _upload_bytes(
                     path=storage_path,
                     data=document.data,
                     mime_type=document.mime_type,
+                    sha256=document.sha256,
                 )
-                uploaded_paths.append(storage_path)
-                seen_batch_hashes[document.sha256] = storage_path
+                storage_bucket = str(uploaded.get("storage_bucket") or r2_bucket_marker())
+                uploaded_paths.append((storage_bucket, storage_path))
+                seen_batch_hashes[document.sha256] = (storage_bucket, storage_path)
 
             payload = _source_file_payload(
                 import_id=import_id,
@@ -1150,6 +1129,7 @@ def save_project_bundle(
                 role=roles_for_document[document.sha256],
                 confidence=document.role_confidence,
                 reasons=document.role_reasons,
+                storage_bucket=storage_bucket,
                 storage_path=storage_path,
                 batch_order=order,
                 duplicate=duplicate,
@@ -1260,10 +1240,15 @@ def save_project_bundle(
 
     except Exception as exc:
         if uploaded_paths:
-            try:
-                client.storage.from_(PROJECT_FILES_BUCKET).remove(uploaded_paths)
-            except Exception:
-                pass
+            for bucket_name in {bucket for bucket, _ in uploaded_paths}:
+                try:
+                    delete_objects(
+                        client,
+                        bucket_name=bucket_name,
+                        paths=[path for bucket, path in uploaded_paths if bucket == bucket_name],
+                    )
+                except Exception:
+                    pass
         if import_id:
             try:
                 client.table("imports").delete().eq("id", import_id).execute()

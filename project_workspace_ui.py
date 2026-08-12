@@ -659,6 +659,7 @@ def _render_file_list(
         signed_url = create_project_file_signed_url(
             client,
             row.get("storage_path"),
+            storage_bucket=row.get("storage_bucket"),
             download=True,
         )
 

@@ -11,13 +11,21 @@ from typing import Any
 import pandas as pd
 from supabase import Client
 
+from nave_storage import (
+    create_signed_url as storage_signed_url,
+    delete_objects,
+    put_bytes,
+    r2_bucket_marker,
+    verify_r2_access,
+)
+
 from memory_cost_parser import normalize_text
 from memory_learning_models import CostWorkbookResult
 
 
 LEGACY_COST_BUCKET = "nave-memory-costs"
 COST_BUCKET = "nave-project-costs"
-COST_MAX_FILE_SIZE = 50 * 1024 * 1024
+COST_MAX_FILE_SIZE = 300 * 1024 * 1024
 
 COST_MIME_TYPES = {
     ".xlsx": (
@@ -170,38 +178,11 @@ def _bucket_identifier(
 def ensure_cost_bucket(
     client: Client,
 ) -> None:
-    buckets = (
-        client.storage.list_buckets()
-        or []
-    )
-    bucket_ids = {
-        _bucket_identifier(bucket)
-        for bucket in buckets
-    }
-
-    if COST_BUCKET in bucket_ids:
-        return
-
     try:
-        client.storage.create_bucket(
-            COST_BUCKET,
-            options={
-                "public": False,
-            },
-        )
+        verify_r2_access()
     except Exception as exc:
-        message = str(exc).casefold()
-
-        if (
-            "already exists" in message
-            or "duplicate" in message
-            or "409" in message
-        ):
-            return
-
         raise LearningDataError(
-            "A NAVE não conseguiu preparar o "
-            "armazenamento das planilhas."
+            "A NAVE não conseguiu acessar o armazenamento privado de planilhas no Cloudflare R2."
         ) from exc
 
 
@@ -269,53 +250,27 @@ def _upload_cost_file(
     storage_path: str,
     file_name: str,
     file_bytes: bytes,
-) -> None:
+) -> str:
     if not file_bytes:
-        raise ValueError(
-            "A planilha está vazia."
-        )
+        raise ValueError("A planilha está vazia.")
+    if len(file_bytes) > COST_MAX_FILE_SIZE:
+        raise ValueError("A planilha ultrapassa o limite de 300 MB.")
 
-    if (
-        len(file_bytes)
-        > COST_MAX_FILE_SIZE
-    ):
-        raise ValueError(
-            "A planilha ultrapassa o limite "
-            "de 50 MB."
-        )
-
-    suffix = Path(
-        file_name
-    ).suffix.casefold()
-    mime_type = (
-        COST_MIME_TYPES.get(
-            suffix
-        )
-        or "application/octet-stream"
-    ).casefold()
-
+    suffix = Path(file_name).suffix.casefold()
+    mime_type = (COST_MIME_TYPES.get(suffix) or "application/octet-stream").casefold()
     if not mime_type:
-        raise ValueError(
-            "Formato de planilha não suportado."
-        )
+        raise ValueError("Formato de planilha não suportado.")
 
     ensure_cost_bucket(client)
-
-    _retry(
-        lambda: (
-            client.storage
-            .from_(COST_BUCKET)
-            .upload(
-                path=storage_path,
-                file=file_bytes,
-                file_options={
-                    "content-type": mime_type,
-                    "cache-control": "3600",
-                    "upsert": "false",
-                },
-            )
-        )
+    result = put_bytes(
+        path=storage_path,
+        data=file_bytes,
+        content_type=mime_type,
+        cache_control="3600",
+        sha256=hashlib.sha256(file_bytes).hexdigest(),
+        logical_kind="cost-workbook",
     )
+    return str(result.get("storage_bucket") or r2_bucket_marker())
 
 
 def _signed_url_value(
@@ -360,40 +315,12 @@ def create_cost_signed_url(
     expires_in: int = 3600,
     download: bool = False,
 ) -> str | None:
-    path = str(
-        storage_path or ""
-    ).strip()
-
-    if not path:
-        return None
-
-    bucket_name = str(
-        storage_bucket
-        or COST_BUCKET
-    ).strip()
-
-    bucket = client.storage.from_(
-        bucket_name
-    )
-
-    if download:
-        response = (
-            bucket.create_signed_url(
-                path,
-                expires_in,
-                {"download": True},
-            )
-        )
-    else:
-        response = (
-            bucket.create_signed_url(
-                path,
-                expires_in,
-            )
-        )
-
-    return _signed_url_value(
-        response
+    return storage_signed_url(
+        client,
+        bucket_name=storage_bucket or COST_BUCKET,
+        path=storage_path,
+        expires_in=expires_in,
+        download=download,
     )
 
 
@@ -1188,7 +1115,7 @@ def save_cost_document(
     )
 
     try:
-        _upload_cost_file(
+        storage_bucket = _upload_cost_file(
             client,
             storage_path=storage_path,
             file_name=file_name,
@@ -1202,7 +1129,7 @@ def save_cost_document(
             .update(
                 {
                     "storage_bucket": (
-                        COST_BUCKET
+                        storage_bucket
                     ),
                     "storage_path": (
                         storage_path
@@ -1268,12 +1195,10 @@ def save_cost_document(
 
     except Exception:
         try:
-            (
-                client.storage
-                .from_(COST_BUCKET)
-                .remove(
-                    [storage_path]
-                )
+            delete_objects(
+                client,
+                bucket_name=locals().get("storage_bucket") or r2_bucket_marker(),
+                paths=[storage_path],
             )
         except Exception:
             pass
@@ -1407,13 +1332,7 @@ def delete_cost_document(
 
     if storage_path:
         try:
-            (
-                client.storage
-                .from_(storage_bucket)
-                .remove(
-                    [storage_path]
-                )
-            )
+            delete_objects(client, bucket_name=storage_bucket, paths=[storage_path])
         except Exception:
             pass
 
@@ -1536,29 +1455,8 @@ def _remove_storage_paths(
     paths: list[str],
     chunk_size: int = 100,
 ) -> None:
-    unique_paths = list(
-        dict.fromkeys(
-            str(path).strip()
-            for path in paths
-            if str(path or "").strip()
-        )
-    )
-
-    for start in range(
-        0,
-        len(unique_paths),
-        chunk_size,
-    ):
-        chunk = unique_paths[
-            start : start + chunk_size
-        ]
-
-        if chunk:
-            (
-                client.storage
-                .from_(bucket_name)
-                .remove(chunk)
-            )
+    # Chunking is handled internally by nave_storage for R2 and legacy Supabase.
+    delete_objects(client, bucket_name=bucket_name, paths=paths)
 
 
 def delete_memory_project(
@@ -1579,7 +1477,7 @@ def delete_memory_project(
             "memory_documents"
         )
         .select(
-            "storage_path"
+            "storage_bucket, storage_path"
         )
         .eq(
             "project_id",
@@ -1593,7 +1491,7 @@ def delete_memory_project(
             "memory_pages"
         )
         .select(
-            "storage_path"
+            "storage_bucket, storage_path"
         )
         .eq(
             "project_id",
@@ -1607,7 +1505,7 @@ def delete_memory_project(
             "memory_items"
         )
         .select(
-            "visual_storage_path"
+            "visual_storage_bucket, visual_storage_path"
         )
         .eq(
             "project_id",
@@ -1630,42 +1528,25 @@ def delete_memory_project(
         .execute()
     )
 
-    memory_paths = []
+    memory_paths_by_bucket: dict[str, list[str]] = {}
 
-    for row in (
-        document_response.data
-        or []
-    ):
-        if row.get(
-            "storage_path"
-        ):
-            memory_paths.append(
-                row["storage_path"]
-            )
+    for row in (document_response.data or []):
+        path = str(row.get("storage_path") or "").strip()
+        if path:
+            bucket_name = str(row.get("storage_bucket") or MEMORY_BUCKET).strip()
+            memory_paths_by_bucket.setdefault(bucket_name, []).append(path)
 
-    for row in (
-        page_response.data
-        or []
-    ):
-        if row.get(
-            "storage_path"
-        ):
-            memory_paths.append(
-                row["storage_path"]
-            )
+    for row in (page_response.data or []):
+        path = str(row.get("storage_path") or "").strip()
+        if path:
+            bucket_name = str(row.get("storage_bucket") or MEMORY_BUCKET).strip()
+            memory_paths_by_bucket.setdefault(bucket_name, []).append(path)
 
-    for row in (
-        item_response.data
-        or []
-    ):
-        if row.get(
-            "visual_storage_path"
-        ):
-            memory_paths.append(
-                row[
-                    "visual_storage_path"
-                ]
-            )
+    for row in (item_response.data or []):
+        path = str(row.get("visual_storage_path") or "").strip()
+        if path:
+            bucket_name = str(row.get("visual_storage_bucket") or MEMORY_BUCKET).strip()
+            memory_paths_by_bucket.setdefault(bucket_name, []).append(path)
 
     cost_paths_by_bucket = {}
 
@@ -1698,13 +1579,12 @@ def delete_memory_project(
         )
 
     try:
-        _remove_storage_paths(
-            client,
-            bucket_name=(
-                MEMORY_BUCKET
-            ),
-            paths=memory_paths,
-        )
+        for bucket_name, bucket_paths in memory_paths_by_bucket.items():
+            _remove_storage_paths(
+                client,
+                bucket_name=bucket_name,
+                paths=bucket_paths,
+            )
 
         for (
             bucket_name,

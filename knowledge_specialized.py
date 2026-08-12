@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 import pandas as pd
 import streamlit as st
 
+from nave_storage import create_signed_url as storage_signed_url
+
 from knowledge_details import (
     BOOLEAN_FIELDS,
     DECIMAL_SUFFIXES,
@@ -155,7 +157,9 @@ def asset_url(client: Any, asset: dict) -> str | None:
     if not bucket or not path:
         return None
     try:
-        return _signed_url_value(client.storage.from_(bucket).create_signed_url(path, 3600))
+        return storage_signed_url(
+            client, bucket_name=bucket, path=path, expires_in=3600
+        )
     except Exception:
         return None
 

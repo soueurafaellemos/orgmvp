@@ -5,6 +5,8 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from nave_storage import get_bytes as storage_get_bytes
+
 
 def _money(value: Any) -> str:
     try:
@@ -125,7 +127,9 @@ def render_pending_report_actions(
                 path = str(row.get("storage_path") or "")
                 if not path:
                     raise RuntimeError("O caminho do arquivo não foi encontrado.")
-                file_bytes = client.storage.from_(bucket).download(path)
+                file_bytes = storage_get_bytes(client, bucket_name=bucket, path=path)
+                if not file_bytes:
+                    raise RuntimeError("O arquivo não pôde ser baixado do armazenamento privado.")
                 api_key = (
                     st.secrets.get("GEMINI_API_KEY")
                     or st.secrets.get("GOOGLE_API_KEY")

@@ -10,9 +10,19 @@ from uuid import uuid4
 import pandas as pd
 from supabase import Client
 
+from nave_storage import (
+    create_signed_url as storage_signed_url,
+    delete_objects,
+    get_bytes as storage_get_bytes,
+    is_r2_bucket,
+    put_bytes,
+    r2_bucket_marker,
+    verify_r2_access,
+)
+
 
 MEDIA_BUCKET = "nave-media"
-MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
+MAX_FILE_SIZE_BYTES = 300 * 1024 * 1024
 
 ALLOWED_MIME_TYPES = [
     "image/jpeg",
@@ -79,23 +89,8 @@ def _bucket_identifier(bucket: Any) -> str:
 
 
 def ensure_media_bucket(client: Client) -> None:
-    buckets = client.storage.list_buckets() or []
-    bucket_ids = {
-        _bucket_identifier(bucket)
-        for bucket in buckets
-    }
-
-    if MEDIA_BUCKET in bucket_ids:
-        return
-
-    client.storage.create_bucket(
-        MEDIA_BUCKET,
-        options={
-            "public": False,
-            "allowed_mime_types": ALLOWED_MIME_TYPES,
-            "file_size_limit": MAX_FILE_SIZE_BYTES,
-        },
-    )
+    # All new media lives in the single private R2 bucket.
+    verify_r2_access()
 
 
 def _safe_filename(filename: str) -> str:
@@ -154,31 +149,16 @@ def create_signed_media_url(
     *,
     expires_in: int = 3600,
 ) -> str | None:
-    external_url = str(
-        media.get("external_url") or ""
-    ).strip()
+    external_url = str(media.get("external_url") or "").strip()
     if external_url:
         return external_url
-
-    bucket = str(
-        media.get("storage_bucket") or ""
-    ).strip()
-    path = str(
-        media.get("storage_path") or ""
-    ).strip()
-
-    if not bucket or not path:
-        return None
-
-    response = (
-        client.storage
-        .from_(bucket)
-        .create_signed_url(
-            path,
-            expires_in,
-        )
+    return storage_signed_url(
+        client,
+        bucket_name=media.get("storage_bucket"),
+        path=media.get("storage_path"),
+        expires_in=expires_in,
+        download=False,
     )
-    return _signed_url_from_response(response)
 
 
 def create_signed_download_url(
@@ -187,26 +167,13 @@ def create_signed_download_url(
     *,
     expires_in: int = 3600,
 ) -> str | None:
-    bucket = str(
-        media.get("storage_bucket") or ""
-    ).strip()
-    path = str(
-        media.get("storage_path") or ""
-    ).strip()
-
-    if not bucket or not path:
-        return None
-
-    response = (
-        client.storage
-        .from_(bucket)
-        .create_signed_url(
-            path,
-            expires_in,
-            {"download": True},
-        )
+    return storage_signed_url(
+        client,
+        bucket_name=media.get("storage_bucket"),
+        path=media.get("storage_path"),
+        expires_in=expires_in,
+        download=True,
     )
-    return _signed_url_from_response(response)
 
 
 def fetch_media_assets(
@@ -372,46 +339,33 @@ def fetch_primary_media_urls(
             )
 
     for bucket, bucket_items in by_bucket.items():
-        paths = [path for _, path in bucket_items]
-
-        try:
-            response = (
-                client.storage
-                .from_(bucket)
-                .create_signed_urls(
-                    paths,
-                    expires_in,
-                )
-            )
-            records = _signed_url_records(response)
-
-            for index, (key, path) in enumerate(
-                bucket_items
-            ):
-                record = (
-                    records[index]
-                    if index < len(records)
-                    else {}
-                )
-                url = (
-                    record.get("signedURL")
-                    or record.get("signedUrl")
-                    or record.get("signed_url")
+        if is_r2_bucket(bucket):
+            for key, path in bucket_items:
+                url = storage_signed_url(
+                    client,
+                    bucket_name=bucket,
+                    path=path,
+                    expires_in=expires_in,
                 )
                 if url:
                     result[key] = url
+            continue
 
+        paths = [path for _, path in bucket_items]
+        try:
+            response = client.storage.from_(bucket).create_signed_urls(paths, expires_in)
+            records = _signed_url_records(response)
+            for index, (key, path) in enumerate(bucket_items):
+                record = records[index] if index < len(records) else {}
+                url = record.get("signedURL") or record.get("signedUrl") or record.get("signed_url")
+                if url:
+                    result[key] = url
         except Exception:
             for key, _ in bucket_items:
                 try:
-                    url = create_signed_media_url(
-                        client,
-                        assets[key],
-                        expires_in=expires_in,
-                    )
+                    url = create_signed_media_url(client, assets[key], expires_in=expires_in)
                 except Exception:
                     url = None
-
                 if url:
                     result[key] = url
 
@@ -422,33 +376,11 @@ def download_media_bytes(
     client: Client,
     media: dict,
 ) -> bytes | None:
-    bucket = str(
-        media.get("storage_bucket") or ""
-    ).strip()
-    path = str(
-        media.get("storage_path") or ""
-    ).strip()
-
-    if not bucket or not path:
-        return None
-
-    response = (
-        client.storage
-        .from_(bucket)
-        .download(path)
+    return storage_get_bytes(
+        client,
+        bucket_name=media.get("storage_bucket"),
+        path=media.get("storage_path"),
     )
-
-    if isinstance(response, bytes):
-        return response
-
-    if isinstance(response, bytearray):
-        return bytes(response)
-
-    data = getattr(response, "data", None)
-    if isinstance(data, bytes):
-        return data
-
-    return None
 
 
 def upload_media_asset(
@@ -471,7 +403,7 @@ def upload_media_asset(
 
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
         raise ValueError(
-            "O arquivo ultrapassa o limite de 50 MB."
+            "O arquivo ultrapassa o limite de 300 MB."
         )
 
     resolved_mime = _resolve_mime_type(
@@ -489,19 +421,15 @@ def upload_media_asset(
         f"{uuid4().hex}_{safe_name}"
     )
 
-    (
-        client.storage
-        .from_(MEDIA_BUCKET)
-        .upload(
-            path=storage_path,
-            file=file_bytes,
-            file_options={
-                "content-type": resolved_mime,
-                "cache-control": "3600",
-                "upsert": "false",
-            },
-        )
+    uploaded = put_bytes(
+        path=f"media/{storage_path}",
+        data=file_bytes,
+        content_type=resolved_mime,
+        cache_control="3600",
+        logical_kind="media-asset",
     )
+    storage_path = str(uploaded.get("storage_path") or f"media/{storage_path}")
+    storage_bucket = str(uploaded.get("storage_bucket") or r2_bucket_marker())
 
     try:
         if is_primary:
@@ -524,7 +452,7 @@ def upload_media_asset(
                 if description
                 else None
             ),
-            "storage_bucket": MEDIA_BUCKET,
+            "storage_bucket": storage_bucket,
             "storage_path": storage_path,
             "file_name": file_name,
             "mime_type": resolved_mime,
@@ -541,11 +469,7 @@ def upload_media_asset(
 
     except Exception:
         try:
-            (
-                client.storage
-                .from_(MEDIA_BUCKET)
-                .remove([storage_path])
-            )
+            delete_objects(client, bucket_name=storage_bucket, paths=[storage_path])
         except Exception:
             pass
         raise
@@ -615,19 +539,16 @@ def upload_generated_media_asset(
         f"{content_sha256[:16]}_{safe_name}"
     )
 
-    (
-        client.storage
-        .from_(MEDIA_BUCKET)
-        .upload(
-            path=storage_path,
-            file=file_bytes,
-            file_options={
-                "content-type": mime_type,
-                "cache-control": "3600",
-                "upsert": "false",
-            },
-        )
+    uploaded = put_bytes(
+        path=f"media/{storage_path}",
+        data=file_bytes,
+        content_type=mime_type,
+        cache_control="3600",
+        sha256=content_sha256,
+        logical_kind="generated-media",
     )
+    storage_path = str(uploaded.get("storage_path") or f"media/{storage_path}")
+    storage_bucket = str(uploaded.get("storage_bucket") or r2_bucket_marker())
 
     payload = {
         "entity_type": entity_type,
@@ -637,7 +558,7 @@ def upload_generated_media_asset(
         ),
         "title": title,
         "description": description,
-        "storage_bucket": MEDIA_BUCKET,
+        "storage_bucket": storage_bucket,
         "storage_path": storage_path,
         "file_name": file_name,
         "mime_type": mime_type,
@@ -669,7 +590,7 @@ def upload_generated_media_asset(
         }
     except Exception:
         try:
-            client.storage.from_(MEDIA_BUCKET).remove([storage_path])
+            delete_objects(client, bucket_name=storage_bucket, paths=[storage_path])
         except Exception:
             pass
         raise
@@ -730,11 +651,7 @@ def delete_media_asset(
     ).strip()
 
     if bucket and path:
-        (
-            client.storage
-            .from_(bucket)
-            .remove([path])
-        )
+        delete_objects(client, bucket_name=bucket, paths=[path])
 
     (
         client.table("media_assets")
