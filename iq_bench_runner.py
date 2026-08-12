@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover - erro explicado em runtime
     yaml = None
 
 
-RUNNER_VERSION = "1.0.0"
+RUNNER_VERSION = "1.1.0"
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +687,57 @@ def evaluate_jovi_forbidden(case: Mapping[str, Any], candidate: Mapping[str, Any
     return [MetricResult("forbidden_inference_count", float(violations))]
 
 
+def evaluate_chambinho_forbidden(case: Mapping[str, Any], candidate: Mapping[str, Any]) -> list[MetricResult]:
+    if case.get("case_id") != "golden_chambinho_festivalzinho_2026_full_cycle":
+        return []
+    violations = 0
+    fin = candidate.get("financial") if isinstance(candidate.get("financial"), dict) else {}
+    facts = candidate.get("facts") if isinstance(candidate.get("facts"), dict) else {}
+    proposed = fin.get("after_tax_total") or fin.get("proposed_total") or facts.get("proposed_total")
+    actual = fin.get("actual_total") or facts.get("actual_total")
+    if actual is not None and proposed is not None and approx_equal(actual, proposed, 0.01):
+        violations += 1
+
+    # 8 mil é audiência do Festivalzinho; só é violação quando propagada para
+    # visitação/impacto específico da ativação Casa Chambinho.
+    for key in ("activation_attendees", "house_attendees", "activation_visitors", "casa_chambinho_visitors"):
+        value = facts.get(key)
+        if value is None:
+            value = fin.get(key)
+        if value is not None and approx_equal(value, 8000, 0.01):
+            violations += 1
+            break
+
+    identity = candidate.get("project_identity") if isinstance(candidate.get("project_identity"), dict) else {}
+    client_name = normalize_text(_first(identity, "client", "client_brand", "brand"))
+    if "lagunitas" in client_name:
+        violations += 1
+    for key in ("event_date", "presentation_date", "project_date"):
+        value = str(identity.get(key) or facts.get(key) or "")
+        if value.startswith("2024-05-10") or value.startswith("2024-09-30"):
+            violations += 1
+            break
+
+    after_movie = normalize_text(facts.get("after_movie_status") or candidate.get("after_movie_status"))
+    if after_movie in {"delivered", "completed", "entregue", "finalizado", "ready"}:
+        violations += 1
+
+    # Se a saída declara estouro líquido sem qualquer caveat sobre pagamento
+    # direto/responsabilidade cliente, consideramos propagação indevida do total bruto.
+    budget_status = normalize_text(fin.get("budget_status") or facts.get("budget_status"))
+    if budget_status in {"over budget", "over_budget", "estourado", "acima do budget"}:
+        findings = _dict_list(candidate, "findings")
+        caveat = any(
+            any(term in normalize_text(_first(f, "text", "statement", "summary", "title")) for term in (
+                "pagamento direto", "pago diretamente", "responsabilidade cliente", "reconciliar", "envelope"
+            ))
+            for f in findings
+        )
+        if not caveat:
+            violations += 1
+    return [MetricResult("forbidden_inference_count", float(violations))]
+
+
 def evaluate_case(case: Mapping[str, Any], candidate: Mapping[str, Any]) -> tuple[list[MetricResult], dict[str, Any]]:
     metrics: list[MetricResult] = []
     sr = evaluate_source_roles(case, candidate)
@@ -706,6 +757,7 @@ def evaluate_case(case: Mapping[str, Any], candidate: Mapping[str, Any]) -> tupl
         evaluate_findings,
         evaluate_retrieval,
         evaluate_jovi_forbidden,
+        evaluate_chambinho_forbidden,
     ):
         metrics.extend(fn(case, candidate))
 

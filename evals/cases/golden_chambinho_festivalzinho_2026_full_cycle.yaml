@@ -1,0 +1,118 @@
+case_id: golden_chambinho_festivalzinho_2026_full_cycle
+case_type: golden_real_project
+purpose: >-
+  Validar ciclo briefing → proposta → orçamento → execução/relatório, distinguindo proposto,
+  orçado e executado; preservando incerteza financeira quando existem responsabilidades de
+  pagamento direto; e evitando contaminar o projeto com resíduos históricos/de template.
+fixture_policy: >-
+  Os binários reais NÃO entram no repositório. O runner resolve os arquivos por basename + sha256
+  em fixture storage autorizado.
+sources:
+  - role: briefing
+    basename: VOE _Briefing Interno_Chambinho_no_Festivalzinho (1).docx
+    sha256: 6d83d06f9b1985bdb7e7f3bce69458759ea29d6c09bb7321d965625425622957
+  - role: proposal
+    basename: PDF_PROJETO_FESTIVALZINHO_CHAMBINHO_27.05_compressed.pdf
+    sha256: 2ab26a8876808860cecde7c2a37297aa275ce4fb71bb0ef1d7895b2075341457
+  - role: budget
+    basename: Evento - FESTIVALZINHO - CHAMBINHO 25.06.2026 (1).xlsm
+    sha256: ea009afd09661a73737b75a2acf28d3aea8a4b656f47d6cd663a7ada96abc473
+  - role: report
+    basename: RELATORIO_LACTALIS_FESTIVALZINHO26 (1).pptx
+    sha256: 3e102c3ae5db728b68099d0df144c8b5b182584552f3541b857a7cc597b3024b
+expected:
+  source_roles:
+    briefing: briefing_original
+    proposal: proposal_presentation
+    budget: cost_sheet
+    report: post_event_report
+  claims:
+    - subject: project
+      predicate: budget_max
+      value_numeric: 400000.0
+      currency: BRL
+      evidence_hint: briefing page 5
+    - subject: project
+      predicate: proposed_total
+      value_numeric: 554310.85
+      currency: BRL
+      tolerance: 0.02
+      evidence_hint: XLSM Planilha VOE row 16 / total
+    - subject: project
+      predicate: execution_result
+      value_text_one_of: [executed, realized, realizado]
+      evidence_hint: post-event report with actual activation photos and produced/distributed materials
+  entities_required:
+    - type: concept
+      name_contains: nostalgia
+    - type: solution
+      name_contains: Casa Chambinho
+    - type: activation
+      name_contains: Amarelinha
+    - type: activation
+      name_contains: Jogo da Memória
+    - type: activation
+      name_contains: Pescaria
+    - type: activation
+      name_contains: Origami
+    - type: gift
+      name_contains: Meia
+    - type: presskit
+      name_contains: Press Kit
+  relations_required:
+    - source: origami_activation
+      relation: costed_by
+      target: origami_cost_line
+    - source: amarelinha_activation
+      relation: costed_by
+      target: amarelinha_cost_line
+    - source: pescaria_activation
+      relation: costed_by
+      target: pescaria_cost_line
+  financial:
+    base_cost_total: 456687.01
+    agency_markup_total: 44369.43
+    tax_amount_total: 53254.41
+    after_tax_total: 554310.85
+    budget_delta_gross: 154310.85
+    budget_delta_gross_pct: 38.5777
+    infrastructure_total: 353703.03
+    infrastructure_concentration_pct: 63.8095
+    largest_line_item_total: 280303.03
+    largest_line_item_concentration_pct: 50.5660
+    top_categories_after_tax:
+      - [3. INFRAESTRUTURA, 353703.03]
+      - [8. STAFF E TERCEIROS, 77813.34]
+      - [9. TAXAS, 28266.67]
+      - [11. OUTROS ITENS / ITENS ADICIONAIS, 18640.38]
+  findings_desirable:
+    - kind: unknown
+      must_express: total bruto acima do budget nominal mas pagamento direto do cliente precisa ser reconciliado antes de concluir estouro
+      requires_evidence_from: [briefing, budget]
+    - kind: learning
+      must_express: Casa Chambinho e ativações apresentadas possuem evidência de execução no relatório pós-evento
+      requires_evidence_from: [proposal, report]
+    - kind: contradiction
+      must_express: quantidades de tatuagem produzidas sobras e distribuídas não reconciliam
+      requires_evidence_from: [report]
+    - kind: unknown
+      must_express: after movie estava pendente no relatório
+      requires_evidence_from: [report]
+  forbidden:
+    - tratar os R$ 554.310,85 propostos como gasto realizado
+    - afirmar automaticamente que houve estouro líquido de 38,6% sem reconciliar custos/responsabilidades de pagamento direto do cliente
+    - dizer que 8 mil pessoas visitaram a Casa Chambinho; a fonte comprova 8 mil presentes no Festivalzinho, não visitação da ativação
+    - usar Lagunitas ou 10.05.2024 como cliente/data do projeto atual por causa do slide residual de template
+    - usar 30.09.24 da planilha como data confiável da apresentação atual sem sinalizar inconsistência temporal
+    - tratar referências a 2025 como data do projeto 2026
+    - concluir que o after movie foi entregue quando o relatório diz AGUARDANDO
+    - concluir que uma solução foi executada apenas porque foi apresentada/orçada, sem evidência no relatório
+metrics:
+  - exact_numeric_accuracy
+  - claim_precision
+  - claim_recall
+  - critical_relation_precision
+  - high_critical_grounding_rate
+  - forbidden_inference_count
+  - cross_source_finding_quality
+  - uncertainty_calibration

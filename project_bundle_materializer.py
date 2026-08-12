@@ -30,8 +30,8 @@ from project_analyst import (
 )
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.2.1"
-LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0", "28.2.1"}
+WORKFLOW_VERSION = "28.2.2"
+LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0", "28.2.1", "28.2.2"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
 MAX_COST_ROWS = 2500
@@ -2149,6 +2149,24 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
     actual_errors = sum(1 for r in results if r.get("status") == "error")
     all_warnings = repair_warnings + [w for r in results for w in (r.get("warnings") or [])] + post_warnings
 
+    # V28.2.2 — antes da síntese do Project Analyst, resolve identidades e cria
+    # os vínculos cross-source que permitem raciocinar sobre a MESMA entidade ao
+    # longo de briefing, proposta, custos, feedback e relatório pós-evento.
+    cross_source_intelligence: dict[str, Any] | None = None
+    if actual_errors == 0:
+        try:
+            from cross_source_linker import run_project_cross_source_intelligence
+
+            cross_source_intelligence = run_project_cross_source_intelligence(client, project_id)
+            if str(cross_source_intelligence.get("status") or "") == "error":
+                all_warnings.append(
+                    f"Cross-Source Linker não concluiu esta rodada: {cross_source_intelligence.get('error') or 'erro não detalhado'}"
+                )
+        except Exception as exc:
+            all_warnings.append(
+                f"A materialização foi concluída, mas Entity Resolution/Cross-Source Linker não pôde ser executado: {exc}"
+            )
+
     # V28.2 — depois que as fontes foram materializadas, a NAVE faz uma segunda
     # leitura: agora do PROJETO como sistema. Ela conecta briefing, soluções,
     # custos, feedbacks e outcome em vez de analisar cada arquivo isoladamente.
@@ -2207,6 +2225,7 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
         "workspace_counts": counts,
         "resolved_roles": sorted(resolved_roles),
         "semantic_project_analysis": semantic_project_analysis,
+        "cross_source_intelligence": cross_source_intelligence,
     }
 
 def materialize_source_file(

@@ -370,11 +370,37 @@ def _find_entity(client: Any, candidate: EntityCandidate, project_entity: Mappin
         .eq("normalized_name", normalized)
         .eq("status", "active")
     )
-    if candidate.entity_kind in {"project_instance", "scoped_profile", "ephemeral"}:
+    scoped = candidate.entity_kind in {"project_instance", "scoped_profile", "ephemeral"}
+    if scoped:
         query = query.eq("scope_entity_id", project_entity["id"])
     rows = _rows(query.limit(3).execute())
     if len(rows) == 1:
         return rows[0]
+
+    # V28.2.2 — aliases resolvidos em rodadas anteriores passam a evitar novas
+    # duplicatas. O alias precisa respeitar o mesmo escopo para instâncias de
+    # projeto; entidades canônicas globais podem usar alias global.
+    try:
+        alias_query = (
+            client.table("entity_aliases")
+            .select("entity_id,scope_entity_id")
+            .eq("normalized_alias", normalized)
+            .eq("active", True)
+        )
+        if scoped:
+            alias_query = alias_query.eq("scope_entity_id", project_entity["id"])
+        aliases = _rows(alias_query.limit(4).execute())
+        entity_ids = list(dict.fromkeys(str(row.get("entity_id") or "") for row in aliases if row.get("entity_id")))
+        if len(entity_ids) == 1:
+            alias_rows = _rows(
+                client.table("knowledge_entities").select("*")
+                .eq("id", entity_ids[0]).eq("entity_type", candidate.entity_type).eq("status", "active")
+                .limit(1).execute()
+            )
+            if alias_rows:
+                return alias_rows[0]
+    except Exception:
+        pass
     return None
 
 
@@ -392,6 +418,32 @@ def _ensure_entity(client: Any, candidate: EntityCandidate, project_entity: Mapp
             existing.update(update)
         except Exception:
             pass
+        # Não descarte aliases só porque a entidade já existia. Esses aliases são
+        # justamente o que permite que o Entity Resolver aprenda variações entre
+        # arquivos e evite criar uma nova entidade no próximo documento.
+        for alias in candidate.aliases:
+            normalized_alias = _normalize(alias)
+            if not normalized_alias:
+                continue
+            try:
+                found = _rows(
+                    client.table("entity_aliases").select("id")
+                    .eq("entity_id", existing["id"]).eq("normalized_alias", normalized_alias).eq("active", True)
+                    .limit(1).execute()
+                )
+                if found:
+                    continue
+                client.table("entity_aliases").insert({
+                    "entity_id": existing["id"],
+                    "alias": alias,
+                    "normalized_alias": normalized_alias,
+                    "alias_type": "name",
+                    "scope_entity_id": project_entity["id"] if candidate.entity_kind != "canonical" else None,
+                    "confidence": candidate.confidence,
+                    "active": True,
+                }).execute()
+            except Exception:
+                pass
         return existing
     payload = {
         "entity_type": candidate.entity_type,

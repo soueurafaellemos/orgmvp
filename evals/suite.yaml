@@ -27,6 +27,7 @@ gates:
   blind_project_regression_allowed: false
 cases:
 - golden_jovi_x300_multisource
+- golden_chambinho_festivalzinho_2026_full_cycle
 - blind_loss_with_validated_concept
 - blind_financial_state_separation
 - adversarial_conflicting_sources

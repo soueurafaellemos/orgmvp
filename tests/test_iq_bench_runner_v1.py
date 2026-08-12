@@ -25,7 +25,7 @@ def _case(case_id: str):
 def test_suite_schema_is_valid_and_complete():
     suite, cases = load_suite(SUITE)
     assert suite["suite_id"] == "nave_iq_bench_v1"
-    assert len(cases) == 7
+    assert len(cases) == 8
     assert {c["case_id"] for c in cases} == set(suite["cases"])
 
 

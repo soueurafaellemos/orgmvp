@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.2.1"
+WORKFLOW_VERSION = "28.2.2"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_MB = 300
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
@@ -487,6 +487,11 @@ def _structural_document_identity(
         if any(token in normalized_name for token in ("briefing", "debriefing", "brief interno")):
             return "briefing_original", 0.97, ["nome do arquivo identifica briefing"]
 
+    if extension in {".pdf", ".pptx", ".ppt"} and any(token in normalized_name for token in (
+        "relatorio", "post event", "pos evento", "encerramento", "final report"
+    )):
+        return "post_event_report", 0.97, ["nome do arquivo identifica relatório/pós-evento"]
+
     briefing_groups = (
         ("job", "infos gerais", "concorrencia", "briefing"),
         ("publico alvo", "target audience", "audience"),
@@ -501,7 +506,20 @@ def _structural_document_identity(
         "relatorio pos evento", "relatorio de encerramento", "post event report",
         "resultados realizados", "actual results", "lessons learned",
         "planned vs actual", "participantes realizados", "actual attendance",
+        "produzidas", "distribuidas", "sobras", "presentes no evento",
+        "after movie", "fotos",
     ))
+    report_name = any(token in normalized_name for token in (
+        "relatorio", "report", "pos evento", "post event", "encerramento"
+    ))
+    report_execution_evidence = sum(term in full_haystack for term in (
+        "produzidas", "distribuidas", "sobras", "presentes no evento",
+        "actual results", "after movie", "fotos", "realizado", "executado"
+    ))
+    if extension in {".pdf", ".pptx", ".ppt"} and report_name and report_execution_evidence >= 2:
+        return "post_event_report", 0.97, [
+            "nome de relatório combinado com evidências de execução/pós-evento"
+        ]
 
     if extension in {".docx", ".txt", ".md"} and briefing_hits >= 4 and report_strong < 2:
         return "briefing_original", 0.94, [
@@ -1153,6 +1171,24 @@ def save_project_bundle(
             if str(warning).strip()
         ]
 
+        # V28.2.2 — a análise de arquivos termina com uma rodada única por projeto
+        # para resolver aliases/duplicatas e conectar solução ↔ custo ↔ execução.
+        # Continua fail-open: o lote e o workspace não são invalidados se a nova
+        # camada de inteligência estiver indisponível.
+        cross_source_intelligence: dict[str, Any] | None = None
+        try:
+            from cross_source_linker import run_project_cross_source_intelligence
+
+            cross_source_intelligence = run_project_cross_source_intelligence(client, project_id)
+            if str(cross_source_intelligence.get("status") or "") == "error":
+                workspace_warnings.append(
+                    f"Cross-Source Linker não concluiu: {cross_source_intelligence.get('error') or 'erro não detalhado'}"
+                )
+        except Exception as exc:
+            workspace_warnings.append(
+                f"Entity Resolution/Cross-Source Linker não pôde ser executado nesta rodada: {exc}"
+            )
+
         import_warnings = []
         if duplicate_count:
             import_warnings.append(
@@ -1204,6 +1240,7 @@ def save_project_bundle(
             "workspace_errors": workspace_errors,
             "workspace_warnings": workspace_warnings[:40],
             "materialization_results": materialization_results,
+            "cross_source_intelligence": cross_source_intelligence,
         }
 
     except Exception as exc:

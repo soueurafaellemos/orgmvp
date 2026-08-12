@@ -29,9 +29,9 @@ from typing import Any, Iterable, Mapping, Sequence
 from pydantic import BaseModel, Field
 
 
-FILE_ANALYST_VERSION = "file-analyst-v1"
+FILE_ANALYST_VERSION = "file-analyst-v1.1"
 FILE_ANALYST_SCHEMA_VERSION = "1"
-FILE_ANALYST_PROMPT_VERSION = "2026-08-11.v1"
+FILE_ANALYST_PROMPT_VERSION = "2026-08-12.v1.1"
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 ENTITY_TYPES = {
@@ -476,20 +476,18 @@ def _infer_role(file_name: str, units: Sequence[EvidenceUnit], declared_role: st
 
     declared = str(declared_role or "").strip()
     if declared:
-        # Papel específico já revisado no lote tem precedência. Só substituímos
-        # automaticamente papéis historicamente genéricos/propensos a erro quando
-        # a identidade estrutural do arquivo é forte. Isso evita uma planilha de
-        # custos virar fornecedor apenas porque possui coluna Vendor/Subcontractor.
+        # V28.2.2: um papel específico já resolvido/revisado no lote é uma
+        # evidência de processo e não deve ser derrubado por termos internos do
+        # documento. Só papéis genéricos podem ser promovidos automaticamente.
+        # Isso é especialmente importante em relatórios pós-evento que recapitulam
+        # a proposta e, por isso, naturalmente contêm "estratégia", "ativação" etc.
         weak_declared = declared in {"complementary_document", "supplier_reference"}
-        if inferred_role and inferred_role != declared and (
-            (weak_declared and inferred_conf >= 0.92)
-            or (not weak_declared and inferred_conf >= 0.97)
-        ):
+        if weak_declared and inferred_role and inferred_role != declared and inferred_conf >= 0.92:
             return inferred_role, float(inferred_conf), list(reasons)
-        confidence = max(float(inferred_conf or 0.0), 0.82 if not weak_declared else 0.72)
+        confidence = max(float(inferred_conf or 0.0), 0.94 if not weak_declared else 0.72)
         if inferred_role and inferred_role != declared:
-            reasons = [*reasons, f"papel do lote preservado: {declared}; inferência concorrente: {inferred_role} ({inferred_conf:.2f})"]
-        return declared, confidence, reasons or ["papel já classificado no lote"]
+            reasons = [*reasons, f"papel específico do lote preservado: {declared}; inferência interna concorrente: {inferred_role} ({inferred_conf:.2f})"]
+        return declared, confidence, reasons or ["papel específico já resolvido no lote"]
     if inferred_role and inferred_conf >= 0.90:
         return inferred_role, float(inferred_conf), list(reasons)
     if inferred_role:
@@ -838,22 +836,65 @@ def _add_briefing_deterministic_semantics(role: str, units: Sequence[EvidenceUni
     attendee_candidates: list[tuple[float, str]] = []
     text_units = [unit for unit in units if unit.content_text]
 
-    # Claims numéricos de alta confiança.
-    for unit in text_units:
+    # Claims numéricos de alta confiança. Briefings humanos frequentemente
+    # quebram o rótulo "BUDGET" e o valor em parágrafos/células consecutivas; a
+    # janela curta preserva contexto sem procurar números pelo documento inteiro.
+    for idx, unit in enumerate(text_units):
         text = str(unit.content_text or "")
         norm = _normalize(text)
         if any(token in norm for token in ("budget", "orcamento", "verba", "teto orcamentario", "budget cap")):
-            for match in re.finditer(r"(?i)(?:R\$|BRL|\$)\s*([0-9][0-9. ]*(?:,[0-9]{1,2})?)", text):
-                value = _parse_br_money(match.group(1))
-                if value is not None and value >= 1000:
-                    budget_candidates.append((value, unit.ref))
-        for match in re.finditer(r"(?i)\b([0-9]{2,5})\s*(?:convidados|participantes|guests?|attendees?)\b", text):
+            for near in text_units[idx:min(len(text_units), idx + 3)]:
+                near_text = str(near.content_text or "")
+                for match in re.finditer(r"(?i)(?:R\$|BRL|\$)\s*([0-9][0-9. ]*(?:,[0-9]{1,2})?)", near_text):
+                    value = _parse_br_money(match.group(1))
+                    if value is not None and value >= 1000:
+                        budget_candidates.append((value, near.ref))
+        for match in re.finditer(r"(?i)\b([0-9]{2,5})\s*(?:convidados|participantes|guests?|attendees?|pessoas)\b", text):
             try:
                 value = float(match.group(1))
             except Exception:
                 continue
             if 10 <= value <= 100000:
                 attendee_candidates.append((value, unit.ref))
+        for match in re.finditer(r"(?i)\b([0-9]{1,3})\s*(?:a|até|-)\s*([0-9]{1,3})\s*mil\s*(?:pessoas|participantes|visitantes|attendees?)\b", text):
+            try:
+                value = float(match.group(2)) * 1000.0
+            except Exception:
+                continue
+            if 1000 <= value <= 500000:
+                attendee_candidates.append((value, unit.ref))
+
+    # Requisitos explícitos de responsabilidade financeira também viram
+    # entidades próprias. O texto é conservador: não associa automaticamente a
+    # uma linha da planilha; o Cross-Source Linker fará esse vínculo ou pedirá
+    # revisão quando houver ambiguidade.
+    for unit in text_units:
+        text = str(unit.content_text or "")
+        norm = _normalize(text)
+        direct_payment_signal = any(signal in norm for signal in (
+            "pagamento direto", "pago diretamente", "pagar diretamente",
+            "pagamento sera realizado diretamente", "responsabilidade cliente",
+        )) or bool(re.search(r"\bpag(?:ar|am|arem|ue|uem|uem)?\w*\b.{0,90}\b(?:diretamente|forma direta)\b", norm))
+        if not direct_payment_signal:
+            continue
+        family_terms = []
+        for token in ("cenografia", "infraestrutura", "local", "locacao", "alimentacao", "a b", "artistico", "fornecedor"):
+            if token in norm:
+                family_terms.append(token)
+        label = "Pagamento direto pelo cliente"
+        if family_terms:
+            label += " — " + ", ".join(family_terms[:3])
+        key = f"direct_payment_requirement:{unit.ref}"
+        result.entities.append(EntityCandidate(
+            key=key, entity_type="requirement", canonical_name=label, entity_kind="project_instance",
+            confidence=0.94, evidence_refs=[unit.ref],
+            attributes={"constraint_family": "client_direct_payment", "subject_terms": family_terms},
+        ))
+        result.relations.append(RelationCandidate(
+            source_key=key, relation_type="requirement_of", target_key="project", relation_kind="fact",
+            confidence=0.96, authority_score=0.95, evidence_refs=[unit.ref],
+            attributes={"constraint_family": "client_direct_payment"},
+        ))
 
     # Direcionais de plataforma são tratados como SEÇÕES, não como proximidade
     # lexical global. Isso evita atribuir um "vídeo horizontal/vertical" genérico
