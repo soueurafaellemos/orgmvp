@@ -1,0 +1,21 @@
+case_id: adversarial_missing_execution_evidence
+case_type: adversarial_synthetic
+purpose: Impedir falso positivo de execução.
+sources:
+- role: proposal
+  inline_text: We propose a 400-person product launch with stage, LED wall and four activations.
+- role: budget
+  inline_text: 'Proposed total: BRL 1,200,000.'
+expected:
+  execution_state_one_of:
+  - unknown
+  - not_evidenced
+  - proposal_only
+  forbidden:
+  - executed
+  - execution_result=success
+  - actual_total=1200000
+metrics:
+- uncertainty_calibration
+- false_executed_without_evidence
+- forbidden_inference_count

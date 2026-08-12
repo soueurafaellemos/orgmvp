@@ -1,0 +1,29 @@
+case_id: adversarial_conflicting_sources
+case_type: adversarial_synthetic
+purpose: Preservar conflito e escolher current value com autoridade/recência sem apagar a fonte anterior.
+sources:
+- role: briefing
+  observed_at: '2026-05-01T10:00:00-03:00'
+  inline_text: 'Event date: September 10, 2026.'
+- role: client_email
+  observed_at: '2026-06-15T09:00:00-03:00'
+  inline_text: 'Confirmed change: the event will now happen on September 17, 2026.'
+expected:
+  claims_required:
+  - predicate: event_date
+    value_date: '2026-09-10'
+    status_one_of:
+    - superseded
+    - disputed
+  - predicate: event_date
+    value_date: '2026-09-17'
+    status: active
+  conflict_set_required: true
+  current_value: '2026-09-17'
+  forbidden:
+  - apagar completamente a data 2026-09-10
+  - manter 2026-09-10 como atual sem sinalizar conflito
+metrics:
+- conflict_preservation
+- authority_resolution_accuracy
+- provenance

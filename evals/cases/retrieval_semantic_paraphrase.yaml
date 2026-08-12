@@ -1,0 +1,29 @@
+case_id: retrieval_semantic_paraphrase
+case_type: retrieval_synthetic
+purpose: Validar recuperação semântica além de keyword overlap.
+query: Experiência em que convidados percebam como pontos de vista diferentes transformam uma mesma história, com geração
+  de conteúdo pessoal.
+candidates:
+- id: A
+  text: Estação de recarga de celulares com lockers e café.
+  relevance: 0
+- id: B
+  text: Uma mesma cena é capturada por múltiplos enquadramentos; o participante alterna lentes, composição e perspectiva e
+    recebe um conteúdo comparativo para compartilhar.
+  relevance: 3
+- id: C
+  text: Painel de LED com agenda do evento.
+  relevance: 0
+- id: D
+  text: Photo-op estático com logo e iluminação frontal.
+  relevance: 1
+expected:
+  top_relevant_id: B
+  must_be_in_top_k:
+    B: 3
+  forbidden:
+  - excluir B por baixa sobreposição lexical
+metrics:
+- recall_at_3
+- mrr
+- semantic_relevance

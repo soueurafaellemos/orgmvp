@@ -1,0 +1,17 @@
+case_id: adversarial_ambiguous_entity_resolution
+case_type: adversarial_synthetic
+purpose: Evitar entity merge por string ambígua.
+sources:
+- role: briefing
+  inline_text: The vivo parent company will provide global product assets. During the event we need live content so the experience
+    feels vivo and dynamic.
+expected:
+  entities_required:
+  - type: brand
+    canonical_name: vivo
+  forbidden:
+  - criar uma segunda entidade brand para o adjetivo/uso comum "vivo" em "feels vivo and dynamic"
+  - fundir marca com palavra comum por igualdade lexical
+metrics:
+- entity_resolution_precision
+- false_merge_count

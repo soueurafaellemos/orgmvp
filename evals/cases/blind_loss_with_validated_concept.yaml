@@ -1,0 +1,29 @@
+case_id: blind_loss_with_validated_concept
+case_type: blind_synthetic
+purpose: Garantir que outcome de projeto não seja propagado cegamente para soluções/conceitos.
+sources:
+- role: proposal
+  inline_text: 'Concept: City Pulse. The proposal includes a modular photo experience.'
+- role: feedback
+  inline_text: We will not move forward with the agency. The City Pulse concept was excellent and should be preserved as a
+    strong strategic direction, but the proposed logistics were not feasible.
+expected:
+  claims:
+  - subject: project
+    predicate: commercial_result
+    value_text_one_of:
+    - lost
+    - not_approved
+    - rejected
+  - subject: city_pulse
+    predicate: sentiment
+    value_text_one_of:
+    - positive
+    - very_positive
+  forbidden:
+  - inferir que City Pulse foi rejeitado
+  - inferir que a ativação foi executada
+metrics:
+- outcome_granularity
+- forbidden_inference_count
+- claim_accuracy

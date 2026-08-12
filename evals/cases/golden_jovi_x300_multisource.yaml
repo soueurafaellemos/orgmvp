@@ -1,0 +1,193 @@
+case_id: golden_jovi_x300_multisource
+case_type: golden_real_project
+purpose: Validar compreensão multiescala e cruzamento briefing → proposta → orçamento → feedback sem hardcode de projeto.
+fixture_policy: Os binários reais NÃO entram no repositório. O runner resolve os arquivos por basename + sha256 em fixture
+  storage autorizado.
+sources:
+- role: briefing
+  basename: VOE _Briefing_JOVI_X300_V2_10.06 (1)(1).docx
+  sha256: d4fdca353a4273cb1c1b512831a12b013a1233bdbc214629bec7e0fb085da9ba
+- role: proposal
+  basename: PDF_LANCAMENTO_JOVI_X300_30.06.pdf
+  sha256: ef8c07424b3e7757def15294cc259a40fb424afe4110dec1998e567c8e91a18e
+- role: budget
+  basename: JOVI_X300_Enterprise_Event_Agency_Bid_Quotation_Template_2906_v2(1).xlsx
+  sha256: 9f771fefa458f308f97f47156e4789c263518996c2ee0c1aeeb877c1b9f1efeb
+- role: feedback
+  basename: feedback.jpeg
+  sha256: f8cdbc0c68c6b022200ace8a50fbf607f129c14ddcc562e8e09b9dce20592b6e
+expected:
+  source_roles:
+    briefing: briefing_original
+    proposal: proposal_presentation
+    budget: cost_sheet
+    feedback: feedback
+  claims:
+  - subject: project
+    predicate: budget_max
+    value_numeric: 1300000.0
+    currency: BRL
+    evidence_hint: briefing page 20
+  - subject: project
+    predicate: expected_attendees
+    value_numeric: 250
+    unit: people
+    evidence_hint: briefing pages 2 and 20 / proposal page 2
+  - subject: youtube_requirement
+    predicate: required_platform_behavior
+    value_text_contains: horizontal
+    evidence_hint: briefing page 5
+  - subject: project
+    predicate: proposed_total
+    value_numeric: 1499590.31
+    currency: BRL
+    tolerance: 0.01
+    evidence_hint: XLSX 02_Cost_Breakdown row 94 total including tax
+  - subject: project
+    predicate: commercial_result
+    value_text_one_of:
+    - lost
+    - not_approved
+    - rejected
+    evidence_hint: feedback.jpeg
+  - subject: on_tour_concept
+    predicate: sentiment
+    value_text_one_of:
+    - positive
+    - very_positive
+    evidence_hint: feedback.jpeg
+  - subject: cinemateca
+    predicate: approval_status
+    value_text_one_of:
+    - challenged
+    - not_approved
+    - negative
+    evidence_hint: feedback.jpeg
+  entities_required:
+  - type: concept
+    name_contains: ON TOUR
+  - type: venue
+    name_contains: Cinemateca
+  - type: platform
+    name: YouTube
+  - type: platform
+    name: Instagram
+  - type: platform
+    name: TikTok
+  - type: presskit
+    name_contains: Press Kit
+  relations_required:
+  - source: project
+    relation: uses_venue
+    target: cinemateca
+  - source: youtube_activation
+    relation: responds_to
+    target: youtube_requirement
+  - source: instagram_activation
+    relation: responds_to
+    target: instagram_requirement
+  - source: tiktok_activation
+    relation: responds_to
+    target: tiktok_requirement
+  - source: on_tour_concept
+    relation: validated_by
+    target_type_one_of:
+    - client
+    - brand
+    - person
+  - source: cinemateca
+    relation: challenged_by
+    target_type_one_of:
+    - client
+    - brand
+    - person
+  financial:
+    base_cost_total: 1291226.22
+    agency_markup_total: 127122.62
+    before_tax_total: 1418348.84
+    tax_amount_total: 81241.47
+    after_tax_total: 1499590.31
+    budget_delta: 199590.31
+    budget_delta_pct: 15.3531
+    top_categories_after_tax:
+    - - Scenic & Event Production
+      - 416586.36
+    - - Venue & Infrastructure
+      - 276182.18
+    - - AV & Technical
+      - 231754.55
+    - - Staffing & Talent
+      - 204826.68
+    - - Food & Beverage
+      - 124852.43
+    top4_concentration_pct: 75.3106
+    largest_line_items_after_tax:
+    - - Booth Construction & Scenography
+      - 313939.39
+    - - Venue Rental
+      - 238720.97
+  feedback_claims_required:
+  - target: on_tour_concept
+    polarity: positive
+    topic: concept_campaign_alignment
+  - target: cinemateca
+    polarity: negative
+    topic: venue_capacity
+  - target: youtube_activation
+    polarity: negative
+    topic: platform_format_alignment
+  - target: instagram_activation
+    polarity: negative
+    topic: lifestyle_self_content
+  - target: tiktok_activation
+    polarity: negative
+    topic: repetition_market_standard
+  - target: project
+    polarity: negative
+    topic: budget_cap
+  - target: project
+    polarity: negative
+    topic: deadline
+  - target: project
+    polarity: negative
+    topic: commercial_decision
+  findings_desirable:
+  - kind: risk
+    must_express: proposta acima do teto de budget
+    requires_evidence_from:
+    - briefing
+    - budget
+  - kind: learning
+    must_express: conceito validado apesar da perda da concorrência
+    requires_evidence_from:
+    - proposal
+    - feedback
+  - kind: contradiction
+    must_express: solução de venue relevante financeiramente foi criticada por adequação/capacidade
+    requires_evidence_from:
+    - briefing
+    - proposal
+    - budget
+    - feedback
+  - kind: learning
+    must_express: aderência à linguagem nativa de plataforma precisa ser validada entre briefing, estratégia e materialização
+    requires_evidence_from:
+    - briefing
+    - proposal
+    - feedback
+  forbidden:
+  - classificar o projeto como executado sem evidência de execução
+  - marcar todas as soluções como rejeitadas porque o projeto perdeu
+  - tratar o total proposto como gasto realizado
+  - colocar EVENT JOURNEY em Brindes/Press kits apenas por proximidade lexical
+  - criar fornecedor a partir de Vendor/Subcontractor vazio
+  - inventar data final do evento quando as fontes divergem/estão em evolução
+metrics:
+- exact_numeric_accuracy
+- claim_precision
+- claim_recall
+- critical_relation_precision
+- feedback_target_accuracy
+- high_critical_grounding_rate
+- forbidden_inference_count
+- cross_source_finding_quality

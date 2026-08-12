@@ -1,0 +1,35 @@
+suite_id: nave_iq_bench_v1
+version: 1.0.0
+description: Primeiro benchmark multiescala da inteligência da NAVE. Casos reais viram
+  avaliação, nunca regras no core.
+dimensions:
+- source_understanding
+- provenance
+- entity_resolution
+- claim_accuracy
+- relation_precision
+- cross_source_reasoning
+- financial_intelligence
+- feedback_linking
+- outcome_granularity
+- retrieval_quality
+- recommendation_quality
+- uncertainty_calibration
+- generalization
+- performance
+gates:
+  high_critical_findings_grounded_rate: 1.0
+  golden_financial_total_accuracy: 1.0
+  false_executed_without_evidence: 0
+  lost_project_solution_overgeneralization: 0
+  critical_relation_precision_min: 0.9
+  retrieval_recall_at_20_min: 0.95
+  blind_project_regression_allowed: false
+cases:
+- golden_jovi_x300_multisource
+- blind_loss_with_validated_concept
+- blind_financial_state_separation
+- adversarial_conflicting_sources
+- adversarial_missing_execution_evidence
+- adversarial_ambiguous_entity_resolution
+- retrieval_semantic_paraphrase

@@ -1,0 +1,30 @@
+case_id: blind_financial_state_separation
+case_type: blind_synthetic
+purpose: Separar budget máximo, proposta, contratado e realizado.
+sources:
+- role: briefing
+  inline_text: 'Maximum approved budget: BRL 800,000.'
+- role: proposal_budget
+  inline_table:
+  - - state
+    - total
+  - - proposed
+    - 850000
+- role: purchase_order
+  inline_text: 'Approved contracted amount: BRL 790,000.'
+- role: invoice_summary
+  inline_text: 'Final actual amount paid: BRL 775,500.'
+expected:
+  facts:
+    budget_max: 800000
+    proposed_total: 850000
+    contracted_total: 790000
+    actual_total: 775500
+  forbidden:
+  - usar 850000 como gasto real
+  - usar 775500 como proposta
+  - dizer que projeto estourou budget no realizado
+metrics:
+- financial_state_accuracy
+- exact_numeric_accuracy
+- forbidden_inference_count
