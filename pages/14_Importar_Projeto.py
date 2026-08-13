@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.6.0",
+    eyebrow="NAVE by VOE · V28.6.1",
 )
 
 client = get_nave_client()
@@ -79,11 +79,11 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     f"{outcome.get('errors', 0)} erro(s). A NAVE não considera a correção concluída enquanto briefing/apresentação esperados continuarem zerados."
                 )
             else:
-                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.6.0.")
+                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.6.1.")
                 st.session_state["nave_project_hub_focus_id"] = repair_options[repair_label]
 
             if counts:
-                metric_cols = st.columns(5)
+                metric_cols = st.columns(6)
                 metric_cols[0].metric("Briefings", counts.get("briefings", 0))
                 metric_cols[1].metric("Apresentações", counts.get("presentations", 0))
                 metric_cols[2].metric("Conteúdos", counts.get("contents", 0))
@@ -108,15 +108,16 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             cross = outcome.get("cross_source_intelligence") or {}
             if cross and str(cross.get("status") or "").startswith("completed"):
                 with st.expander("Intelligence Graph · conexões entre arquivos", expanded=False):
-                    c0, c1, c2, c3, c4 = st.columns(5)
+                    c0, c1, c2, c3, c4, c5 = st.columns(6)
                     canonical = outcome.get("canonical_entity_graph") or {}
                     c0.metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
                     c1.metric("Entidades unificadas", int(cross.get("entities_merged") or 0))
                     c2.metric("Solução ↔ custo", int(cross.get("cost_links") or 0))
-                    c3.metric("Evidências de execução", int(cross.get("execution_claims") or 0))
-                    c4.metric("Revisões sugeridas", int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0))
+                    c3.metric("Execuções ligadas", int(cross.get("execution_claims") or 0))
+                    c4.metric("Relações hierárquicas", int(cross.get("hierarchy_links") or 0))
+                    c5.metric("Revisões sugeridas", int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0))
                     st.caption(
-                        "A V28.6.0 cria entidades canônicas de projeto antes do cross-source linking, para conectar a mesma solução entre briefing, proposta, custos e pós-evento. "
+                        "A V28.6.1 liga ocorrências de proposta/pós-evento às entidades canônicas antes do cross-source linking, para conectar a mesma solução entre briefing, proposta, custos e pós-evento. "
                         "Vínculos ambíguos não são forçados: viram revisão/finding auditável."
                     )
 
@@ -143,12 +144,13 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             cross = finalization.get("cross_source") or {}
             if str(cross.get("status") or "").startswith("completed"):
                 st.success("Conexões inteligentes reconstruídas sem reprocessar os arquivos do projeto.")
-                cols = st.columns(5)
+                cols = st.columns(6)
                 cols[0].metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
                 cols[1].metric("Entidades unificadas", int(cross.get("entities_merged") or 0))
                 cols[2].metric("Solução ↔ custo", int(cross.get("cost_links") or 0))
-                cols[3].metric("Execução", int(cross.get("execution_claims") or 0))
-                cols[4].metric("Revisões", int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0))
+                cols[3].metric("Execuções ligadas", int(cross.get("execution_claims") or 0))
+                cols[4].metric("Relações hierárquicas", int(cross.get("hierarchy_links") or 0))
+                cols[5].metric("Revisões", int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0))
             else:
                 st.warning(
                     "A reconstrução terminou sem confirmação completa do Cross-Source Linker. "
@@ -465,13 +467,14 @@ if documents:
                 cross = result.get("cross_source_intelligence") or {}
                 if cross and str(cross.get("status") or "").startswith("completed"):
                     with st.expander("Intelligence Graph · conexões entre arquivos", expanded=False):
-                        c0, c1, c2, c3, c4 = st.columns(5)
+                        c0, c1, c2, c3, c4, c5 = st.columns(6)
                         canonical = result.get("canonical_entity_graph") or {}
                         c0.metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
                         c1.metric("Entidades unificadas", int(cross.get("entities_merged") or 0))
                         c2.metric("Solução ↔ custo", int(cross.get("cost_links") or 0))
-                        c3.metric("Evidências de execução", int(cross.get("execution_claims") or 0))
-                        c4.metric("Revisões sugeridas", int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0))
+                        c3.metric("Execuções ligadas", int(cross.get("execution_claims") or 0))
+                        c4.metric("Relações hierárquicas", int(cross.get("hierarchy_links") or 0))
+                        c5.metric("Revisões sugeridas", int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0))
                         st.caption(
                             "A NAVE conecta o mesmo conceito/solução/local ao longo dos diferentes documentos sem fazer merge silencioso quando a identidade é ambígua."
                         )

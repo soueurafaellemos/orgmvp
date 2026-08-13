@@ -26,15 +26,17 @@ from entity_resolution import (
     REVIEW_THRESHOLD,
     MatchResult,
     ResolutionEntity,
+    compatible_entity_types,
+    entity_family,
     entity_match_score,
     normalize_text,
     records_from_rows,
     resolve_entities,
 )
 
-CROSS_SOURCE_LINKER_VERSION = "cross-source-linker-v2.0"
+CROSS_SOURCE_LINKER_VERSION = "cross-source-linker-v2.1"
 CROSS_SOURCE_SCHEMA_VERSION = "1"
-CROSS_SOURCE_PROMPT_VERSION = "deterministic-2026-08-13.v2.0"
+CROSS_SOURCE_PROMPT_VERSION = "deterministic-2026-08-13.v2.1"
 
 _LINKABLE_COST_SOURCE_TYPES = {
     "activation", "solution", "venue", "venue_space", "product", "gift",
@@ -48,6 +50,7 @@ _STOP = {
     "a", "as", "o", "os", "um", "uma", "de", "da", "das", "do", "dos", "e", "em", "no", "na",
     "para", "por", "com", "sem", "the", "and", "of", "for", "in", "on", "with", "to",
     "ativacao", "activation", "gift", "brinde", "press", "kit", "item", "locacao", "servico", "servicos",
+    "oficina", "workshop", "atividade", "atividades",
 }
 _DIRECT_PAY_FAMILIES: dict[str, set[str]] = {
     "scenography": {"cenografia", "cenografico", "cenografica", "scenography", "infraestrutura", "estrutura", "casa", "stand", "booth", "portico", "paredes", "cobertura", "frontao"},
@@ -126,7 +129,7 @@ def _start_run(client: Any, project_entity_id: str, project_id: str) -> dict[str
         "scope_kind": "project",
         "scope_entity_id": project_entity_id,
         "pipeline_version": CROSS_SOURCE_LINKER_VERSION,
-        "code_version": "28.6.0",
+        "code_version": "28.6.1",
         "prompt_version": CROSS_SOURCE_PROMPT_VERSION,
         "schema_version": CROSS_SOURCE_SCHEMA_VERSION,
         "input_signature": _sha(f"{project_id}|{CROSS_SOURCE_LINKER_VERSION}"),
@@ -187,6 +190,7 @@ def _load_snapshot(client: Any, project_entity: Mapping[str, Any]) -> dict[str, 
             continue
         aliases_by_entity[str(row.get("entity_id"))].append(str(row.get("alias") or ""))
     mentions_by_entity: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    mentions_by_evidence: dict[str, list[dict[str, Any]]] = defaultdict(list)
     roles_by_entity: dict[str, set[str]] = defaultdict(set)
     evidence_ids_by_entity: dict[str, list[str]] = defaultdict(list)
     for mention in mentions:
@@ -195,6 +199,7 @@ def _load_snapshot(client: Any, project_entity: Mapping[str, Any]) -> dict[str, 
         if not entity_id or not evidence_id:
             continue
         mentions_by_entity[entity_id].append(mention)
+        mentions_by_evidence[evidence_id].append(mention)
         evidence_ids_by_entity[entity_id].append(evidence_id)
         ev = evidence_by_id.get(evidence_id) or {}
         roles_by_entity[entity_id].update(asset_roles.get(str(ev.get("source_asset_id") or ""), set()))
@@ -206,6 +211,7 @@ def _load_snapshot(client: Any, project_entity: Mapping[str, Any]) -> dict[str, 
         "entities_by_id": entities_by_id,
         "aliases_by_entity": aliases_by_entity,
         "mentions_by_entity": mentions_by_entity,
+        "mentions_by_evidence": mentions_by_evidence,
         "roles_by_entity": roles_by_entity,
         "evidence_ids_by_entity": evidence_ids_by_entity,
         "project_entity_id": project_entity_id,
@@ -234,6 +240,220 @@ def _ensure_alias(client: Any, canonical_id: str, alias: str, scope_entity_id: s
         }).execute()
     except Exception:
         pass
+
+
+def _entity_text_bundle(snapshot: Mapping[str, Any], entity_id: str) -> str:
+    row = snapshot["entities_by_id"].get(entity_id) or {}
+    values: list[str] = [str(row.get("canonical_name") or "")]
+    values.extend(snapshot["aliases_by_entity"].get(entity_id, []))
+    for mention in snapshot["mentions_by_entity"].get(entity_id, []):
+        values.append(str(mention.get("mention_text") or ""))
+        ev = snapshot["evidence_by_id"].get(str(mention.get("evidence_unit_id") or "")) or {}
+        values.append(str(ev.get("content_text") or ""))
+    return " ".join(v for v in values if str(v).strip())
+
+
+def _distinctive_phrase(value: Any) -> bool:
+    norm = _norm(value)
+    if not norm or not re.search(r"[a-z]", norm):
+        return False
+    toks = [t for t in _tokens(norm) if not t.isdigit()]
+    if len(toks) >= 2:
+        return True
+    return bool(toks and len(toks[0]) >= 5)
+
+
+def canonical_occurrence_score(
+    canonical: ResolutionEntity,
+    candidate: ResolutionEntity,
+    *,
+    candidate_text: str = "",
+    candidate_roles: Sequence[str] = (),
+) -> tuple[float, list[str]]:
+    if canonical.id == candidate.id:
+        return 1.0, ["mesmo registro"]
+    if canonical.entity_kind != "canonical" or candidate.entity_kind == "canonical":
+        return 0.0, ["par não é canônico → ocorrência"]
+    if candidate.entity_type in {"financial_line_item", "requirement", "project"}:
+        return 0.0, ["tipo não elegível para occurrence linking"]
+    if entity_family(canonical.entity_type) != "project_solution":
+        return 0.0, ["canônico fora da família de soluções do projeto"]
+    if entity_family(candidate.entity_type) != "project_solution" and not compatible_entity_types(canonical.entity_type, candidate.entity_type):
+        return 0.0, ["família semântica incompatível"]
+
+    base = entity_match_score(canonical, candidate)
+    score = float(base.score)
+    reasons = list(base.reasons)
+    text_norm = _norm(candidate_text)
+    text_tokens = _tokens(candidate_text)
+    phrase_hit = False
+    full_token_hit = False
+    for alias in (canonical.canonical_name, *canonical.aliases):
+        alias_norm = _norm(alias)
+        if not _distinctive_phrase(alias_norm):
+            continue
+        alias_tokens = _tokens(alias_norm)
+        if alias_norm and re.search(rf"(?:^|\s){re.escape(alias_norm)}(?:$|\s)", text_norm):
+            phrase_hit = True
+            score = max(score, 0.965 if len(alias_tokens) >= 2 else 0.94)
+            reasons.append("nome/alias canônico aparece explicitamente na evidência da ocorrência")
+            break
+        if alias_tokens and set(alias_tokens).issubset(text_tokens):
+            full_token_hit = True
+            if len(alias_tokens) >= 2:
+                score = max(score, 0.925)
+                reasons.append("todos os termos distintivos do canônico aparecem na mesma evidência")
+            elif len(next(iter(alias_tokens), "")) >= 6:
+                score = max(score, 0.90)
+                reasons.append("termo distintivo do canônico aparece na mesma evidência")
+
+    roles = set(str(v) for v in candidate_roles if str(v))
+    if score >= 0.88 and roles & {"proposal_presentation", "final_presentation", "post_event_report"}:
+        score = min(1.0, score + 0.02)
+        reasons.append("ocorrência está em fonte principal de proposta/execução")
+    if (phrase_hit or full_token_hit) and base.score < 0.30:
+        # A evidência pode corrigir um nome de entidade genérico; a margem contra o
+        # segundo melhor canônico continua impedindo merge quando a página contém
+        # várias soluções diferentes.
+        score = min(score, 0.94)
+    return round(score, 4), list(dict.fromkeys(reasons))
+
+
+def _persist_canonical_occurrence_links(client: Any, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    records = records_from_rows(
+        snapshot["entities"],
+        aliases_by_entity=snapshot["aliases_by_entity"],
+        mention_counts={entity_id: len(rows) for entity_id, rows in snapshot["mentions_by_entity"].items()},
+    )
+    canonicals: list[ResolutionEntity] = []
+    candidates: list[ResolutionEntity] = []
+    for entity in records:
+        attrs = entity.attributes or {}
+        if entity.entity_kind == "canonical" and attrs.get("semantic_family") == "project_solution":
+            canonicals.append(entity)
+        elif entity.entity_kind != "canonical" and entity.mention_count > 0 and not entity.domain_id:
+            candidates.append(entity)
+
+    merged = 0
+    reviews: list[MatchResult] = []
+    aliases_added = 0
+    for candidate in candidates:
+        scored: list[tuple[float, ResolutionEntity, list[str]]] = []
+        bundle = _entity_text_bundle(snapshot, candidate.id)
+        roles = snapshot["roles_by_entity"].get(candidate.id, set())
+        for canonical in canonicals:
+            score, reasons = canonical_occurrence_score(canonical, candidate, candidate_text=bundle, candidate_roles=tuple(roles))
+            if score >= 0.74:
+                scored.append((score, canonical, reasons))
+        scored.sort(key=lambda row: row[0], reverse=True)
+        if not scored:
+            continue
+        best_score, best, reasons = scored[0]
+        second = scored[1][0] if len(scored) > 1 else 0.0
+        if best_score >= 0.92 and best_score - second >= 0.05:
+            try:
+                client.table("knowledge_entities").update({
+                    "canonical_entity_id": best.id,
+                    "status": "merged",
+                    "confidence": max(float(candidate.confidence or 0.0), best_score),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", candidate.id).execute()
+                merged += 1
+                before = {_norm(v) for v in snapshot["aliases_by_entity"].get(best.id, [])}
+                alias_values = [candidate.canonical_name, *candidate.aliases]
+                alias_values.extend(str(m.get("mention_text") or "") for m in snapshot["mentions_by_entity"].get(candidate.id, []))
+                for alias in alias_values:
+                    if _distinctive_phrase(alias):
+                        _ensure_alias(client, best.id, alias, best.scope_entity_id, min(0.98, best_score))
+                        if _norm(alias) not in before:
+                            aliases_added += 1
+                            before.add(_norm(alias))
+            except Exception:
+                continue
+        elif best_score >= 0.78:
+            reviews.append(MatchResult(candidate.id, best.id, best_score, "REVIEW", tuple(reasons)))
+    return {"merged": merged, "reviews": reviews, "aliases_added": aliases_added}
+
+
+def _soft_token_set(value: Any) -> set[str]:
+    result: set[str] = set()
+    for token in _tokens(value):
+        result.add(token)
+        if token.endswith("s") and len(token) >= 5:
+            result.add(token[:-1])
+    return result
+
+
+def presskit_component_score(item_name: str, evidence_text: str) -> float:
+    name_norm = _norm(item_name)
+    text_norm = _norm(evidence_text)
+    if not _distinctive_phrase(name_norm):
+        return 0.0
+    if not any(marker in text_norm for marker in ("press kit", "presskit", "seeding", "influenciador", "influenciadores")):
+        return 0.0
+    toks = _tokens(name_norm)
+    if name_norm and re.search(rf"(?:^|\s){re.escape(name_norm)}(?:$|\s)", text_norm):
+        return 0.96 if len(toks) >= 2 else 0.92
+    soft_name = _soft_token_set(name_norm)
+    soft_text = _soft_token_set(text_norm)
+    core = {token[:-1] if token.endswith("s") and len(token) >= 5 else token for token in toks}
+    if core and core.issubset(soft_text):
+        return 0.90 if len(core) >= 2 else (0.90 if len(next(iter(core), "")) >= 4 else 0.0)
+    return 0.0
+
+
+def _persist_presskit_hierarchy(client: Any, snapshot: Mapping[str, Any], run_id: str | None) -> int:
+    canonical = _canonical_map(snapshot["entities"])
+    roots: dict[str, dict[str, Any]] = {}
+    aliases: dict[str, list[str]] = defaultdict(list)
+    for row in snapshot["entities"]:
+        entity_id = str(row.get("id") or "")
+        if not entity_id:
+            continue
+        root = canonical.get(entity_id, entity_id)
+        roots[root] = snapshot["entities_by_id"].get(root) or row
+        aliases[root].append(str(row.get("canonical_name") or ""))
+        aliases[root].extend(snapshot["aliases_by_entity"].get(entity_id, []))
+
+    presskits = [rid for rid, row in roots.items() if str(row.get("entity_type") or "") == "presskit"]
+    items = [rid for rid, row in roots.items() if str(row.get("entity_type") or "") in {"gift", "solution", "deliverable"}]
+    if not presskits or not items:
+        return 0
+    proposal_units = [
+        row for row in snapshot["evidence"]
+        if (snapshot["asset_roles"].get(str(row.get("source_asset_id") or ""), set()) & {"proposal_presentation", "final_presentation"})
+        and row.get("content_text")
+        and any(marker in _norm(row.get("content_text")) for marker in ("press kit", "presskit", "seeding", "influenciador"))
+    ]
+    count = 0
+    for presskit_id in presskits:
+        for item_id in items:
+            if item_id == presskit_id:
+                continue
+            item_names = [v for v in aliases[item_id] if _distinctive_phrase(v)]
+            best_score = 0.0
+            best_evidence: str | None = None
+            for unit in proposal_units:
+                text = str(unit.get("content_text") or "")
+                score = max((presskit_component_score(name, text) for name in item_names), default=0.0)
+                if score > best_score:
+                    best_score = score
+                    best_evidence = str(unit.get("id") or "")
+            if best_score >= 0.90 and best_evidence:
+                if _persist_relation(
+                    client,
+                    source_id=item_id,
+                    relation_type="part_of",
+                    target_id=presskit_id,
+                    scope_id=snapshot["project_entity_id"],
+                    confidence=best_score,
+                    run_id=run_id,
+                    evidence_ids=[best_evidence],
+                    relation_kind="inference",
+                    attributes={"method": "presskit_same_evidence_v1", "semantic_role": "presskit_component"},
+                ):
+                    count += 1
+    return count
 
 
 def _persist_entity_resolution(client: Any, snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -297,6 +517,7 @@ def cost_link_score(source: ResolutionEntity, line: ResolutionEntity) -> tuple[f
     target_text = " ".join(str(v or "") for v in (
         line.canonical_name, attrs.get("description"), attrs.get("category")
     ))
+    target_norm = _norm(target_text)
     target_tokens = _tokens(target_text)
     if not source_tokens or not target_tokens:
         return 0.0, ["texto insuficiente"]
@@ -307,6 +528,13 @@ def cost_link_score(source: ResolutionEntity, line: ResolutionEntity) -> tuple[f
     seq = SequenceMatcher(None, " ".join(sorted(source_tokens)), " ".join(sorted(target_tokens))).ratio()
     score = 0.50 * containment + 0.16 * reverse_containment + 0.16 * jaccard + 0.14 * seq
     reasons: list[str] = []
+    for alias in (source.canonical_name, *source.aliases):
+        alias_norm = _norm(alias)
+        alias_tokens = _tokens(alias_norm)
+        if _distinctive_phrase(alias_norm) and alias_norm and re.search(rf"(?:^|\s){re.escape(alias_norm)}(?:$|\s)", target_norm):
+            score = max(score, 0.96 if len(alias_tokens) >= 2 else 0.91)
+            reasons.append("nome distintivo da solução aparece explicitamente na linha financeira")
+            break
     if containment == 1.0 and len(source_tokens) >= 1:
         score = max(score, 0.93 if len(source_tokens) >= 2 else 0.86)
         reasons.append("todos os termos significativos da solução aparecem na linha financeira")
@@ -696,11 +924,12 @@ def _direct_pay_review_candidates(snapshot: Mapping[str, Any]) -> list[dict[str,
     return candidates
 
 
-def _execution_evidence(client: Any, snapshot: Mapping[str, Any], run_id: str | None, project_entity: Mapping[str, Any]) -> int:
+def _execution_evidence(client: Any, snapshot: Mapping[str, Any], run_id: str | None, project_entity: Mapping[str, Any]) -> dict[str, Any]:
     canonical = _canonical_map(snapshot["entities"])
     roots: dict[str, dict[str, Any]] = {}
     roles: dict[str, set[str]] = defaultdict(set)
     evidences: dict[str, list[str]] = defaultdict(list)
+    aliases: dict[str, list[str]] = defaultdict(list)
     for row in snapshot["entities"]:
         entity_id = str(row.get("id") or "")
         if not entity_id:
@@ -708,15 +937,44 @@ def _execution_evidence(client: Any, snapshot: Mapping[str, Any], run_id: str | 
         root = canonical.get(entity_id, entity_id)
         roots[root] = snapshot["entities_by_id"].get(root) or row
         roles[root].update(snapshot["roles_by_entity"].get(entity_id, set()))
+        aliases[root].append(str(row.get("canonical_name") or ""))
+        aliases[root].extend(snapshot["aliases_by_entity"].get(entity_id, []))
         for ev_id in snapshot["evidence_ids_by_entity"].get(entity_id, []):
             ev = snapshot["evidence_by_id"].get(ev_id) or {}
             if "post_event_report" in snapshot["asset_roles"].get(str(ev.get("source_asset_id") or ""), set()):
                 evidences[root].append(ev_id)
-    count = 0
+
+    report_units = [
+        row for row in snapshot["evidence"]
+        if "post_event_report" in snapshot["asset_roles"].get(str(row.get("source_asset_id") or ""), set())
+        and row.get("content_text")
+    ]
+
+    entity_claims = 0
     for root, row in roots.items():
         if str(row.get("entity_type") or "") not in _EXECUTABLE_TYPES:
             continue
-        if "post_event_report" not in roles[root] or not evidences[root]:
+        evidence_ids = list(dict.fromkeys(evidences[root]))
+        if not evidence_ids:
+            names = [v for v in aliases[root] if _distinctive_phrase(v)]
+            for unit in report_units:
+                text_norm = _norm(unit.get("content_text"))
+                text_tokens = _tokens(text_norm)
+                matched = False
+                for name in names:
+                    name_norm = _norm(name)
+                    name_tokens = _tokens(name_norm)
+                    if name_norm and re.search(rf"(?:^|\s){re.escape(name_norm)}(?:$|\s)", text_norm):
+                        matched = True
+                    elif len(name_tokens) >= 2 and set(name_tokens).issubset(text_tokens):
+                        matched = True
+                    elif len(name_tokens) == 1 and len(next(iter(name_tokens), "")) >= 7 and next(iter(name_tokens)) in text_tokens:
+                        matched = True
+                    if matched:
+                        break
+                if matched:
+                    evidence_ids.append(str(unit.get("id") or ""))
+        if not evidence_ids:
             continue
         if _persist_text_claim(
             client,
@@ -727,16 +985,11 @@ def _execution_evidence(client: Any, snapshot: Mapping[str, Any], run_id: str | 
             confidence=0.93,
             authority_score=0.96,
             run_id=run_id,
-            evidence_ids=evidences[root][:8],
+            evidence_ids=evidence_ids[:8],
             claim_kind="inference",
         ):
-            count += 1
+            entity_claims += 1
 
-    report_units = [
-        row for row in snapshot["evidence"]
-        if "post_event_report" in snapshot["asset_roles"].get(str(row.get("source_asset_id") or ""), set())
-        and row.get("content_text")
-    ]
     strong_markers = 0
     project_evidence: list[str] = []
     for row in report_units:
@@ -746,8 +999,9 @@ def _execution_evidence(client: Any, snapshot: Mapping[str, Any], run_id: str | 
         )):
             strong_markers += 1
             project_evidence.append(str(row.get("id")))
+    project_claim = False
     if strong_markers >= 2:
-        if _persist_text_claim(
+        project_claim = _persist_text_claim(
             client,
             subject_id=str(project_entity["id"]),
             predicate="execution_result",
@@ -758,10 +1012,8 @@ def _execution_evidence(client: Any, snapshot: Mapping[str, Any], run_id: str | 
             run_id=run_id,
             evidence_ids=project_evidence[:10],
             claim_kind="fact",
-        ):
-            count += 1
-    return count
-
+        )
+    return {"entity_claims": entity_claims, "project_claim": bool(project_claim)}
 
 def _project_numeric_claims(client: Any, project_entity_id: str) -> tuple[dict[str, float], dict[str, list[str]]]:
     try:
@@ -811,20 +1063,30 @@ def run_project_cross_source_intelligence(client: Any, project_id: str) -> dict[
     run_id = str(run.get("id")) if run and run.get("id") else None
     counts: dict[str, Any] = {
         "entities_merged": 0,
+        "occurrence_links": 0,
         "resolution_reviews": 0,
         "cost_links": 0,
         "cost_link_reviews": 0,
+        "hierarchy_links": 0,
         "paid_by_client_links": 0,
         "execution_claims": 0,
+        "project_execution_confirmed": False,
         "findings": 0,
     }
     try:
         snapshot = _load_snapshot(client, project)
-        resolution = _persist_entity_resolution(client, snapshot)
-        counts["entities_merged"] = int(resolution["merged"])
-        counts["resolution_reviews"] = len(resolution["reviews"])
+        occurrence = _persist_canonical_occurrence_links(client, snapshot)
+        counts["occurrence_links"] = int(occurrence["merged"])
 
-        for review in resolution["reviews"][:30]:
+        # O restante do run precisa usar canonical_entity_id já persistido.
+        snapshot = _load_snapshot(client, project)
+        resolution = _persist_entity_resolution(client, snapshot)
+        counts["entities_merged"] = int(occurrence["merged"]) + int(resolution["merged"])
+        all_resolution_reviews = list(occurrence["reviews"]) + list(resolution["reviews"])
+        counts["resolution_reviews"] = len(all_resolution_reviews)
+
+        snapshot = _load_snapshot(client, project)
+        for review in all_resolution_reviews[:30]:
             left = snapshot["entities_by_id"].get(review.left_id) or {}
             right = snapshot["entities_by_id"].get(review.right_id) or {}
             evidence_ids = list(dict.fromkeys(
@@ -849,11 +1111,10 @@ def run_project_cross_source_intelligence(client: Any, project_id: str) -> dict[
             ):
                 counts["findings"] += 1
 
-        # Refresh to include canonical_entity_id updates.
-        snapshot = _load_snapshot(client, project)
         cost_links, cost_reviews = _link_costs(client, snapshot, run_id)
         counts["cost_links"] = cost_links
         counts["cost_link_reviews"] = len(cost_reviews)
+        counts["hierarchy_links"] = _persist_presskit_hierarchy(client, snapshot, run_id)
         for review in cost_reviews[:30]:
             source = review["source"]
             target = review["target"]
@@ -899,7 +1160,9 @@ def run_project_cross_source_intelligence(client: Any, project_id: str) -> dict[
             ):
                 counts["findings"] += 1
 
-        counts["execution_claims"] = _execution_evidence(client, snapshot, run_id, project)
+        execution = _execution_evidence(client, snapshot, run_id, project)
+        counts["execution_claims"] = int(execution.get("entity_claims") or 0)
+        counts["project_execution_confirmed"] = bool(execution.get("project_claim"))
 
         values, claim_evidence = _project_numeric_claims(client, str(project["id"]))
         budget = values.get("budget_max")

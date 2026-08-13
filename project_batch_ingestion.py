@@ -20,7 +20,7 @@ from nave_storage import (
 )
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.6.0"
+WORKFLOW_VERSION = "28.6.1"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_MB = 300
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024

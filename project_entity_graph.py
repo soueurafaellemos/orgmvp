@@ -15,7 +15,7 @@ import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-CANONICAL_PROJECT_GRAPH_VERSION = "canonical-project-graph-v1"
+CANONICAL_PROJECT_GRAPH_VERSION = "canonical-project-graph-v1.1"
 
 _GENERIC_TITLES = {
     "brincadeiras", "ativacoes", "ativacoes e experiencias", "brindes", "press kit",
@@ -95,6 +95,29 @@ def _is_useful_name(name: str) -> bool:
     return bool(tokens) and len(norm) >= 3
 
 
+def _alias_variants(name: str) -> list[str]:
+    """Gera poucas variantes conservadoras para nomes editoriais do workspace.
+
+    O objetivo não é criar sinônimos criativos; é remover apenas prefixos estruturais
+    que frequentemente aparecem em apresentação/planilha, como ``Oficina de`` ou
+    ``Ativação -``. Variantes genéricas continuam bloqueadas por ``_is_useful_name``.
+    """
+    clean = re.sub(r"\s+", " ", str(name or "")).strip()
+    values = [clean] if clean else []
+    patterns = (
+        r"^(?:oficina(?:\s+de)?|workshop)\s+(.+)$",
+        r"^(?:ativacao|ativação|activation)\s*[-:–—]?\s*(.+)$",
+        r"^(?:brincadeira|experiencia|experiência)\s*[-:–—]?\s*(.+)$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, clean, flags=re.I)
+        if match:
+            candidate = re.sub(r"\s+", " ", match.group(1)).strip()
+            if _is_useful_name(candidate):
+                values.append(candidate)
+    return list(dict.fromkeys(v for v in values if _is_useful_name(v)))
+
+
 def _ensure_alias(client: Any, entity_id: str, alias: str, scope_id: str, confidence: float = 0.98) -> int:
     normalized = _norm(alias)
     if not normalized:
@@ -110,7 +133,7 @@ def _ensure_alias(client: Any, entity_id: str, alias: str, scope_id: str, confid
             "entity_id": entity_id,
             "alias": alias,
             "normalized_alias": normalized,
-            "alias_type": "workspace_title",
+            "alias_type": "other",
             "scope_entity_id": scope_id,
             "confidence": confidence,
             "active": True,
@@ -252,13 +275,17 @@ def materialize_project_canonical_entities(client: Any, project_id: str) -> dict
                 "semantic_family": "project_solution",
                 "section_key": row.get("section_key"),
                 "workspace_item_id": row.get("id"),
+                "workspace_summary": row.get("summary") or row.get("description"),
+                "workspace_source_text": row.get("source_text") or row.get("content_text"),
             },
         )
         counts["canonical_entities_created"] += int(created)
         if canonical:
-            counts["aliases_added"] += _ensure_alias(client, str(canonical["id"]), name, scope_id)
+            for alias in _alias_variants(name):
+                counts["aliases_added"] += _ensure_alias(client, str(canonical["id"]), alias, scope_id)
             summary = str(row.get("summary") or row.get("description") or "").strip()
-            # Um alias curto derivado só é aceito quando começa com o próprio título.
+            # Um alias textual maior só é aceito quando começa com o próprio título;
+            # isso ajuda a conectar ocorrências sem transformar o resumo inteiro em nome.
             if summary and _norm(summary).startswith(_norm(name)) and len(summary) <= 180:
                 counts["aliases_added"] += _ensure_alias(client, str(canonical["id"]), summary, scope_id, 0.88)
 
