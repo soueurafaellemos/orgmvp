@@ -50,7 +50,7 @@ def test_cost_evidence_uses_sheet_and_row_locator_not_global_ordinal():
 
 
 def test_sql_adds_transactionality_occurrences_provenance_and_governance():
-    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1_DOMAIN_INTEGRITY_PROVENANCE.sql").read_text(encoding="utf-8")
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1B_DOMAIN_INTEGRITY_SQL_COMPAT.sql").read_text(encoding="utf-8")
     folded = sql.casefold()
     for table in (
         "project_solution_occurrences",
@@ -68,7 +68,7 @@ def test_sql_adds_transactionality_occurrences_provenance_and_governance():
 
 
 def test_sql_projects_solution_status_only_from_current_outcomes():
-    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1_DOMAIN_INTEGRITY_PROVENANCE.sql").read_text(encoding="utf-8").casefold()
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1B_DOMAIN_INTEGRITY_SQL_COMPAT.sql").read_text(encoding="utf-8").casefold()
     assert "única projeção de status" in sql
     assert "from public.entity_current_outcomes eco" in sql
     assert "proposal_status = coalesce" in sql
@@ -152,7 +152,7 @@ def test_bundle_preserves_identity_occurrences_and_evidence_without_execution_ap
 
 
 def test_sql_enforces_field_level_authority_and_lifecycle_visibility():
-    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1_DOMAIN_INTEGRITY_PROVENANCE.sql").read_text(encoding="utf-8").casefold()
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1B_DOMAIN_INTEGRITY_SQL_COMPAT.sql").read_text(encoding="utf-8").casefold()
     assert "nave_domain_field_locked" in sql
     assert "nave_merge_field_authority" in sql
     assert "field_authority = public.nave_merge_field_authority" in sql
@@ -162,7 +162,7 @@ def test_sql_enforces_field_level_authority_and_lifecycle_visibility():
 
 
 def test_sql_uses_monotonic_null_safe_updates_for_existing_domain_knowledge():
-    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1_DOMAIN_INTEGRITY_PROVENANCE.sql").read_text(encoding="utf-8").casefold()
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1B_DOMAIN_INTEGRITY_SQL_COMPAT.sql").read_text(encoding="utf-8").casefold()
     assert "coalesce(excluded.description, public.project_solution_instances.description)" in sql
     assert "coalesce(excluded.base_total, public.financial_documents.base_total)" in sql
     assert "coalesce(excluded.total_value, public.financial_line_items.total_value)" in sql
@@ -183,7 +183,7 @@ def test_normalized_outcomes_are_versioned_to_supersede_pre_v2871_semantics():
     code = (Path(__file__).parents[1] / "project_domain_normalization.py").read_text(encoding="utf-8")
     assert "def _normalized_event_version_key" in code
     assert "|{DOMAIN_NORMALIZATION_VERSION}" in code
-    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1_DOMAIN_INTEGRITY_PROVENANCE.sql").read_text(encoding="utf-8").casefold()
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1B_DOMAIN_INTEGRITY_SQL_COMPAT.sql").read_text(encoding="utf-8").casefold()
     assert "superseded_by_outcome_id = v_domain_id" in sql
     assert "and event_status = 'active'" in sql
 
@@ -248,7 +248,7 @@ def test_legacy_confidence_label_does_not_become_source_authority_by_itself():
 
 
 def test_sql_removes_destructive_service_role_deletes_from_normalized_knowledge():
-    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1_DOMAIN_INTEGRITY_PROVENANCE.sql").read_text(encoding="utf-8").casefold()
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_1B_DOMAIN_INTEGRITY_SQL_COMPAT.sql").read_text(encoding="utf-8").casefold()
     for table in (
         "project_solution_instances",
         "project_requirements",

@@ -1206,7 +1206,16 @@ def _validate_bundle(bundle: Mapping[str, Any], data: Mapping[str, Any]) -> None
 # ---------------------------------------------------------------------------
 
 
-def _domain_schema_available(client: Any) -> tuple[bool, str | None]:
+def _schema_error_kind(exc: Exception) -> str:
+    """Classify schema-probe failures without turning every read error into "not installed"."""
+    text = str(exc)
+    folded = text.casefold()
+    if "pgrst205" in folded or "could not find the table" in folded or "schema cache" in folded:
+        return "schema_missing"
+    return "schema_check_error"
+
+
+def _domain_schema_available(client: Any) -> tuple[bool, str | None, str | None]:
     required = (
         "project_solution_instances",
         "project_requirements",
@@ -1221,9 +1230,19 @@ def _domain_schema_available(client: Any) -> tuple[bool, str | None]:
     try:
         for table in required:
             client.table(table).select("*").limit(1).execute()
-        return True, None
+        return True, None, None
     except Exception as exc:
-        return False, str(exc)
+        return False, _schema_error_kind(exc), str(exc)
+
+
+def probe_domain_schema(client: Any) -> dict[str, Any]:
+    """Public preflight used by orchestration before any downstream mutation."""
+    available, failure_kind, error = _domain_schema_available(client)
+    return {
+        "available": bool(available),
+        "status": "ready" if available else (failure_kind or "schema_check_error"),
+        "error": error,
+    }
 
 
 def _start_run(client: Any, *, project_id: str, bundle: Mapping[str, Any]) -> str:
@@ -1278,9 +1297,9 @@ def _rpc_result(response: Any) -> dict[str, Any]:
 
 
 def fetch_project_domain_status(client: Any, project_id: str) -> dict[str, Any]:
-    available, error = _domain_schema_available(client)
+    available, failure_kind, error = _domain_schema_available(client)
     if not available:
-        return {"status": "schema_missing", "project_id": project_id, "error": error}
+        return {"status": failure_kind or "schema_check_error", "project_id": project_id, "error": error}
     try:
         status_rows = _strict_rows(client, "project_domain_integrity_status", equals={"project_id": project_id})
         status = status_rows[0] if status_rows else {}
@@ -1366,15 +1385,16 @@ class DomainNormalizationResult:
 
 def sync_project_domain_normalization(client: Any, project_id: str) -> dict[str, Any]:
     """Normalize one project with strict reads and a single transactional apply."""
-    available, error = _domain_schema_available(client)
+    available, failure_kind, error = _domain_schema_available(client)
     if not available:
+        if failure_kind == "schema_missing":
+            headline = "Domain Integrity V28.7.1 não está visível no Data API. Execute/revalide o SQL V28.7.1B e recarregue o schema do PostgREST."
+        else:
+            headline = "Não foi possível validar o schema de Domain Integrity. O erro não será tratado como banco vazio ou migration ausente."
         return DomainNormalizationResult(
             project_id=project_id,
-            status="schema_missing",
-            warnings=[
-                "Domain Integrity V28.7.1 ainda não está instalada no banco. Execute NAVE_V28_7_1_DOMAIN_INTEGRITY_PROVENANCE.sql.",
-                error or "",
-            ],
+            status=failure_kind or "schema_check_error",
+            warnings=[headline, error or ""],
         ).as_dict()
 
     try:

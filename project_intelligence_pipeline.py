@@ -100,16 +100,49 @@ def auto_analyze_pending_reports(client: Any, project_id: str) -> dict[str, Any]
     return {"processed": processed, "errors": errors, "skipped": max(0, len(pending) - processed - len(errors))}
 
 
-def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any]:
+def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pending_reports: bool = True) -> dict[str, Any]:
     warnings: list[str] = []
-    report_result = auto_analyze_pending_reports(client, project_id)
-    warnings.extend(report_result.get("errors") or [])
-    if report_result.get("warning"):
-        warnings.append(str(report_result["warning"]))
 
-    # V28.6.2: links estruturados do workspace precisam existir ANTES do Entity
-    # Graph/Cross-Source. Na V28.6.1 eles eram criados depois, portanto o grafo só
-    # conseguia aproveitá-los em um clique seguinte.
+    # V28.7.1B — fail closed BEFORE report/prelink/graph mutations when the
+    # Domain Integrity schema is unavailable. A missing/stale schema cannot
+    # coexist with a green "updated" banner or a rebuilt compatibility graph.
+    try:
+        from project_domain_normalization import probe_domain_schema
+        schema_probe = probe_domain_schema(client)
+    except Exception as exc:
+        schema_probe = {"available": False, "status": "schema_check_error", "error": str(exc)}
+
+    if not schema_probe.get("available"):
+        failure_status = str(schema_probe.get("status") or "schema_check_error")
+        error = str(schema_probe.get("error") or "schema de domínio indisponível")
+        domain_normalization = {
+            "project_id": project_id,
+            "status": failure_status,
+            "warnings": [error],
+        }
+        warnings.append(f"Domain Normalization preflight: {error}")
+        return {
+            "status": "domain_blocked",
+            "project_id": project_id,
+            "report_analysis": {"status": "skipped_domain_blocked", "processed": 0, "errors": []},
+            "domain_normalization": domain_normalization,
+            "canonical_entity_graph": None,
+            "cross_source": {"status": "skipped_domain_blocked"},
+            "semantic_project_analysis": None,
+            "structured_prelinks": {"cost": 0, "briefing": 0, "status": "skipped_domain_blocked"},
+            "warnings": warnings[:40],
+        }
+
+    if analyze_pending_reports:
+        report_result = auto_analyze_pending_reports(client, project_id)
+        warnings.extend(report_result.get("errors") or [])
+        if report_result.get("warning"):
+            warnings.append(str(report_result["warning"]))
+    else:
+        report_result = {"status": "skipped_explicit_domain_refresh", "processed": 0, "errors": [], "skipped": 0}
+
+    # V28.6.2 compatibility prelinks remain legacy-only. They run only after
+    # the V28.7.1 schema preflight passed.
     prelinks = {"cost": 0, "briefing": 0}
     try:
         from project_workspace_db import fetch_project_workspace_snapshot
@@ -120,19 +153,35 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
     except Exception as exc:
         warnings.append(f"Structured prelinks: {exc}")
 
-    # V28.7.0 — Domain Normalization vem antes do Relation Graph, mas ainda em
-    # shadow/dual-write. Ela consolida as estruturas memory_* nos objetos de
-    # domínio corretos sem trocar a UI nem remover o legado.
     domain_normalization = None
     try:
         from project_domain_normalization import sync_project_domain_normalization
         domain_normalization = sync_project_domain_normalization(client, project_id)
-        if str((domain_normalization or {}).get("status") or "") not in {"completed", "ready"}:
-            for value in (domain_normalization or {}).get("warnings") or []:
-                if str(value).strip():
-                    warnings.append(f"Domain Normalization: {str(value)[:700]}")
     except Exception as exc:
-        warnings.append(f"Domain Normalization: {exc}")
+        domain_normalization = {
+            "project_id": project_id,
+            "status": "orchestration_error",
+            "warnings": [str(exc)],
+        }
+
+    domain_status = str((domain_normalization or {}).get("status") or "")
+    if domain_status != "completed":
+        for value in (domain_normalization or {}).get("warnings") or []:
+            if str(value).strip():
+                warnings.append(f"Domain Normalization: {str(value)[:700]}")
+        # Domain apply/gates are the prerequisite for any compatibility graph
+        # rebuild or semantic Project Intelligence promotion in this action.
+        return {
+            "status": "domain_blocked",
+            "project_id": project_id,
+            "report_analysis": report_result,
+            "domain_normalization": domain_normalization,
+            "canonical_entity_graph": None,
+            "cross_source": {"status": "skipped_domain_blocked"},
+            "semantic_project_analysis": None,
+            "structured_prelinks": prelinks,
+            "warnings": warnings[:40],
+        }
 
     canonical_graph = None
     try:
@@ -161,9 +210,6 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
         from project_analyst import analyze_project_snapshot, semantic_synthesis_findings
 
         snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
-        # Os links automáticos já foram materializados antes do Entity Graph.
-        # Recarregamos apenas para consumir o estado consolidado pós cross-source.
-        snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
         snapshot["unified_intelligence"] = build_unified_project_snapshot(snapshot)
         deterministic = build_project_intelligence(snapshot)
 
@@ -183,6 +229,7 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
         warnings.append(f"Project Intelligence finalization: {exc}")
 
     return {
+        "status": "completed",
         "project_id": project_id,
         "report_analysis": report_result,
         "domain_normalization": domain_normalization,

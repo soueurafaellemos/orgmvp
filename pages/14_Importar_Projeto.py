@@ -54,11 +54,18 @@ def _render_domain_normalization(container: dict, *, expanded: bool = False) -> 
     status = str(domain.get("status") or "")
     if status == "schema_missing":
         st.warning(
-            "Domain Normalization ainda não está instalada no banco. Execute o SQL "
-            "NAVE_V28_7_1_DOMAIN_INTEGRITY_PROVENANCE.sql e rode esta ação novamente."
+            "Domain Integrity V28.7.1 não está visível no Data API. Execute/revalide o SQL "
+            "NAVE_NAVE_V28_7_1B_DOMAIN_INTEGRITY_SQL_COMPAT.sql e rode esta ação novamente."
         )
         return
-    if status in {"read_or_validation_error", "transaction_error", "post_apply_read_error"}:
+    if status == "schema_check_error":
+        st.error(
+            "Não foi possível validar o schema de Domain Integrity. Isso não será tratado como migration ausente nem como banco vazio."
+        )
+        for warning in (domain.get("warnings") or [])[:8]:
+            st.caption("• " + str(warning))
+        return
+    if status in {"read_or_validation_error", "transaction_error", "post_apply_read_error", "orchestration_error", "completed_with_gate_warning"}:
         st.error("Domain Integrity não promoveu uma nova geração. O estado anterior permanece válido.")
         for warning in (domain.get("warnings") or [])[:8]:
             st.caption("• " + str(warning))
@@ -234,11 +241,14 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             from project_intelligence_pipeline import finalize_project_intelligence
 
             with st.spinner("Normalizando domínio e atualizando conexões entre as fontes já estruturadas..."):
-                finalization = finalize_project_intelligence(client, repair_options[repair_label])
+                finalization = finalize_project_intelligence(client, repair_options[repair_label], analyze_pending_reports=False)
             canonical = finalization.get("canonical_entity_graph") or {}
             cross = finalization.get("cross_source") or {}
             _render_domain_normalization(finalization, expanded=True)
-            if str(cross.get("status") or "").startswith("completed"):
+            domain = _domain_result(finalization)
+            domain_ok = str(domain.get("status") or "") == "completed"
+            cross_ok = str(cross.get("status") or "").startswith("completed")
+            if domain_ok and cross_ok:
                 st.success("Domain Integrity V28.7.1 atualizada sem reprocessar os arquivos. O Graph V28.6 também foi reconstruído apenas por compatibilidade.")
                 with st.expander("Compatibilidade temporária · Entity Graph V28.6.2", expanded=False):
                     cols = st.columns(6)
@@ -256,9 +266,13 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     if debug_rows:
                         with st.expander("Diagnóstico legado do Entity Resolution", expanded=False):
                             st.dataframe(pd.DataFrame(debug_rows), hide_index=True, width="stretch")
+            elif not domain_ok:
+                st.error(
+                    "Atualização interrompida: Domain Integrity não foi promovida. O Graph de compatibilidade e a síntese semântica não foram tratados como atualização válida."
+                )
             else:
                 st.warning(
-                    "A reconstrução terminou sem confirmação completa do Cross-Source Linker. "
+                    "Domain Integrity foi promovida, mas a reconstrução de compatibilidade terminou sem confirmação completa do Cross-Source Linker. "
                     + str((cross or {}).get("error") or "Consulte os avisos técnicos abaixo.")
                 )
             final_warnings = [str(v) for v in (finalization.get("warnings") or []) if str(v).strip()]
