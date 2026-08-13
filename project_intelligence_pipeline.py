@@ -107,6 +107,19 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
     if report_result.get("warning"):
         warnings.append(str(report_result["warning"]))
 
+    # V28.6.2: links estruturados do workspace precisam existir ANTES do Entity
+    # Graph/Cross-Source. Na V28.6.1 eles eram criados depois, portanto o grafo só
+    # conseguia aproveitá-los em um clique seguinte.
+    prelinks = {"cost": 0, "briefing": 0}
+    try:
+        from project_workspace_db import fetch_project_workspace_snapshot
+        from project_workspace_intelligence import ensure_automatic_briefing_links, ensure_automatic_cost_links
+        pre_snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
+        prelinks["cost"] = ensure_automatic_cost_links(client, project_id=project_id, snapshot=pre_snapshot)
+        prelinks["briefing"] = ensure_automatic_briefing_links(client, project_id=project_id, snapshot=pre_snapshot)
+    except Exception as exc:
+        warnings.append(f"Structured prelinks: {exc}")
+
     canonical_graph = None
     try:
         from project_entity_graph import materialize_project_canonical_entities
@@ -128,18 +141,14 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
         from project_workspace_db import fetch_project_workspace_snapshot
         from project_workspace_intelligence import (
             build_project_intelligence,
-            ensure_automatic_briefing_links,
-            ensure_automatic_cost_links,
             persist_project_intelligence,
         )
         from project_intelligence_unified import build_unified_project_snapshot
         from project_analyst import analyze_project_snapshot, semantic_synthesis_findings
 
         snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
-        snapshot["unified_intelligence"] = build_unified_project_snapshot(snapshot)
-        ensure_automatic_cost_links(client, project_id=project_id, snapshot=snapshot)
-        ensure_automatic_briefing_links(client, project_id=project_id, snapshot=snapshot)
-        # Recarrega após os links automáticos para que o snapshot final seja coerente.
+        # Os links automáticos já foram materializados antes do Entity Graph.
+        # Recarregamos apenas para consumir o estado consolidado pós cross-source.
         snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
         snapshot["unified_intelligence"] = build_unified_project_snapshot(snapshot)
         deterministic = build_project_intelligence(snapshot)
@@ -165,5 +174,6 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
         "canonical_entity_graph": canonical_graph,
         "cross_source": cross_source,
         "semantic_project_analysis": semantic,
+        "structured_prelinks": prelinks,
         "warnings": warnings[:40],
     }

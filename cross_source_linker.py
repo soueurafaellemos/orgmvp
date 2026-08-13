@@ -34,9 +34,9 @@ from entity_resolution import (
     resolve_entities,
 )
 
-CROSS_SOURCE_LINKER_VERSION = "cross-source-linker-v2.1"
+CROSS_SOURCE_LINKER_VERSION = "cross-source-linker-v2.2"
 CROSS_SOURCE_SCHEMA_VERSION = "1"
-CROSS_SOURCE_PROMPT_VERSION = "deterministic-2026-08-13.v2.1"
+CROSS_SOURCE_PROMPT_VERSION = "deterministic-2026-08-13.v2.2"
 
 _LINKABLE_COST_SOURCE_TYPES = {
     "activation", "solution", "venue", "venue_space", "product", "gift",
@@ -129,7 +129,7 @@ def _start_run(client: Any, project_entity_id: str, project_id: str) -> dict[str
         "scope_kind": "project",
         "scope_entity_id": project_entity_id,
         "pipeline_version": CROSS_SOURCE_LINKER_VERSION,
-        "code_version": "28.6.1",
+        "code_version": "28.6.2",
         "prompt_version": CROSS_SOURCE_PROMPT_VERSION,
         "schema_version": CROSS_SOURCE_SCHEMA_VERSION,
         "input_signature": _sha(f"{project_id}|{CROSS_SOURCE_LINKER_VERSION}"),
@@ -203,6 +203,12 @@ def _load_snapshot(client: Any, project_entity: Mapping[str, Any]) -> dict[str, 
         evidence_ids_by_entity[entity_id].append(evidence_id)
         ev = evidence_by_id.get(evidence_id) or {}
         roles_by_entity[entity_id].update(asset_roles.get(str(ev.get("source_asset_id") or ""), set()))
+    def workspace_rows(table: str) -> list[dict[str, Any]]:
+        try:
+            return _rows(client.table(table).select("*").eq("project_id", str(project_entity.get("domain_id") or "")).execute())
+        except Exception:
+            return []
+
     return {
         "asset_roles": asset_roles,
         "evidence": evidence,
@@ -215,6 +221,15 @@ def _load_snapshot(client: Any, project_entity: Mapping[str, Any]) -> dict[str, 
         "roles_by_entity": roles_by_entity,
         "evidence_ids_by_entity": evidence_ids_by_entity,
         "project_entity_id": project_entity_id,
+        # Structured workspace sources are already normalized by specialized parsers.
+        # V28.6.2 promotes them to first-class inputs of the Entity Graph instead of
+        # asking the generic File Analyst to rediscover the same identity.
+        "workspace_items": workspace_rows("memory_items"),
+        "workspace_costs": workspace_rows("memory_cost_items"),
+        "workspace_cost_links": workspace_rows("memory_cost_links"),
+        "workspace_requirements": workspace_rows("memory_briefing_requirements"),
+        "workspace_briefing_links": workspace_rows("memory_briefing_links"),
+        "workspace_outcomes": workspace_rows("memory_item_outcomes"),
     }
 
 
@@ -625,6 +640,287 @@ def _persist_relation(
     except Exception:
         return False
 
+
+
+def _domain_entity_index(snapshot: Mapping[str, Any], domain_table: str) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("domain_id") or ""): row
+        for row in snapshot.get("entities") or []
+        if str(row.get("domain_table") or "") == domain_table and row.get("domain_id")
+    }
+
+
+def _root_for_domain(snapshot: Mapping[str, Any], domain_table: str, domain_id: Any) -> str | None:
+    row = _domain_entity_index(snapshot, domain_table).get(str(domain_id or ""))
+    if not row:
+        return None
+    entity_id = str(row.get("id") or "")
+    if not entity_id:
+        return None
+    canonical = _canonical_map(snapshot.get("entities") or [])
+    return canonical.get(entity_id, str(row.get("canonical_entity_id") or entity_id))
+
+
+def _structured_workspace_relations(client: Any, snapshot: Mapping[str, Any], run_id: str | None) -> dict[str, Any]:
+    """Projecta os vínculos já estruturados do workspace para o Knowledge Graph.
+
+    Esta é a principal mudança da V28.6.2: memória especializada deixa de ser um
+    silo paralelo. Cost links, briefing links e item outcomes já carregam identidade
+    suficiente para virar relações/claims no grafo sem um novo fuzzy match textual.
+    """
+    counts = {
+        "cost_links": 0,
+        "briefing_links": 0,
+        "execution_claims": 0,
+        "reviews": [],
+    }
+    cost_entities = _domain_entity_index(snapshot, "memory_cost_items")
+    requirement_entities = _domain_entity_index(snapshot, "memory_briefing_requirements")
+    outcome_entities = _domain_entity_index(snapshot, "memory_item_outcomes")
+
+    for link in snapshot.get("workspace_cost_links") or []:
+        if str(link.get("link_status") or "").casefold() == "rejected":
+            continue
+        source_id = _root_for_domain(snapshot, "memory_items", link.get("memory_item_id"))
+        cost_row = cost_entities.get(str(link.get("cost_item_id") or ""))
+        target_id = str((cost_row or {}).get("id") or "")
+        try:
+            score = float(link.get("match_score") or 0.0)
+        except Exception:
+            score = 0.0
+        if not source_id or not target_id:
+            continue
+        status = str(link.get("link_status") or "suggested").casefold()
+        if status in {"confirmed", "accepted", "approved"}:
+            score = max(score, 0.97)
+        if score >= 0.74:
+            if _persist_relation(
+                client,
+                source_id=source_id,
+                relation_type="costed_by",
+                target_id=target_id,
+                scope_id=snapshot["project_entity_id"],
+                confidence=max(0.74, min(score, 0.995)),
+                run_id=run_id,
+                relation_kind="fact" if status in {"confirmed", "accepted", "approved"} else "inference",
+                attributes={
+                    "method": "structured_workspace_cost_link_v1",
+                    "workspace_link_id": link.get("id"),
+                    "workspace_link_status": link.get("link_status"),
+                    "match_reason": link.get("match_reason"),
+                },
+            ):
+                counts["cost_links"] += 1
+        elif score >= 0.58:
+            counts["reviews"].append({
+                "kind": "cost",
+                "source_id": source_id,
+                "target_id": target_id,
+                "score": score,
+                "reason": link.get("match_reason") or "workspace suggestion below graph threshold",
+            })
+
+    for link in snapshot.get("workspace_briefing_links") or []:
+        if str(link.get("link_status") or "").casefold() == "rejected":
+            continue
+        source_id = _root_for_domain(snapshot, "memory_items", link.get("memory_item_id"))
+        req_row = requirement_entities.get(str(link.get("requirement_id") or ""))
+        target_id = str((req_row or {}).get("id") or "")
+        try:
+            score = float(link.get("match_score") or 0.0)
+        except Exception:
+            score = 0.0
+        if not source_id or not target_id:
+            continue
+        status = str(link.get("link_status") or "suggested").casefold()
+        if status in {"confirmed", "accepted", "approved"}:
+            score = max(score, 0.97)
+        # Briefing links have historically been noisier than cost links; use a
+        # stricter threshold so 'restrição de verba' never vira 'cadarço' só por
+        # proximidade lexical de um slide longo.
+        if score >= 0.80:
+            if _persist_relation(
+                client,
+                source_id=source_id,
+                relation_type="responds_to",
+                target_id=target_id,
+                scope_id=snapshot["project_entity_id"],
+                confidence=min(score, 0.995),
+                run_id=run_id,
+                relation_kind="fact" if status in {"confirmed", "accepted", "approved"} else "inference",
+                attributes={
+                    "method": "structured_workspace_briefing_link_v1",
+                    "workspace_link_id": link.get("id"),
+                    "adherence_status": link.get("adherence_status"),
+                    "match_reason": link.get("match_reason"),
+                },
+            ):
+                counts["briefing_links"] += 1
+        elif score >= 0.60:
+            counts["reviews"].append({
+                "kind": "briefing",
+                "source_id": source_id,
+                "target_id": target_id,
+                "score": score,
+                "reason": link.get("match_reason") or "workspace suggestion below graph threshold",
+            })
+
+    executable = {"executed", "partially_executed", "approved", "approved_with_changes"}
+    nonexecuted = {"not_executed", "not_approved", "removed_budget", "removed_timeline"}
+    for outcome in snapshot.get("workspace_outcomes") or []:
+        canonical_id = _root_for_domain(snapshot, "memory_items", outcome.get("item_id"))
+        outcome_row = outcome_entities.get(str(outcome.get("id") or ""))
+        if not canonical_id:
+            continue
+        status = str(outcome.get("outcome_status") or "").casefold()
+        if status not in executable | nonexecuted:
+            continue
+        value = "executed" if status in executable else "not_executed"
+        confidence_level = str(outcome.get("confidence_level") or "").casefold()
+        authority = 0.96 if confidence_level in {"client_confirmed", "voe_confirmed"} else 0.90
+        if _persist_text_claim(
+            client,
+            subject_id=canonical_id,
+            predicate="execution_result",
+            value_text=value,
+            scope_id=snapshot["project_entity_id"],
+            confidence=authority,
+            authority_score=authority,
+            run_id=run_id,
+            evidence_ids=(),
+            claim_kind="fact" if str(outcome.get("information_source") or "") == "document" else "inference",
+        ):
+            counts["execution_claims"] += 1
+        # Mantém uma relação explícita ao registro estruturado para auditoria.
+        outcome_entity_id = str((outcome_row or {}).get("id") or "")
+        if outcome_entity_id:
+            _persist_relation(
+                client,
+                source_id=canonical_id,
+                relation_type="has_execution_record",
+                target_id=outcome_entity_id,
+                scope_id=snapshot["project_entity_id"],
+                confidence=authority,
+                run_id=run_id,
+                relation_kind="fact",
+                attributes={"method": "structured_workspace_outcome_v1", "outcome_status": status},
+            )
+    return counts
+
+
+def _graph_state_totals(client: Any, snapshot: Mapping[str, Any]) -> dict[str, int]:
+    scope_id = snapshot["project_entity_id"]
+    entities = snapshot.get("entities") or []
+    canonical = _canonical_map(entities)
+    unified_occurrences = 0
+    role_by_root: dict[str, set[str]] = defaultdict(set)
+    for row in entities:
+        entity_id = str(row.get("id") or "")
+        root = canonical.get(entity_id, entity_id)
+        if row.get("canonical_entity_id"):
+            unified_occurrences += 1
+        table = str(row.get("domain_table") or "")
+        attrs = row.get("attributes") if isinstance(row.get("attributes"), Mapping) else {}
+        role = str(attrs.get("occurrence_role") or "")
+        if table == "memory_items":
+            role = role or "proposal"
+        elif table == "memory_item_outcomes":
+            role = role or "execution"
+        elif table == "memory_cost_items":
+            role = role or "cost"
+        elif table == "memory_briefing_requirements":
+            role = role or "briefing"
+        if role and root:
+            role_by_root[root].add(role)
+        for source_role in snapshot.get("roles_by_entity", {}).get(entity_id, set()):
+            if source_role in {"proposal_presentation", "final_presentation"}:
+                role_by_root[root].add("proposal")
+            elif source_role == "post_event_report":
+                role_by_root[root].add("execution")
+            elif source_role == "briefing_original":
+                role_by_root[root].add("briefing")
+    multi_source = sum(1 for roles in role_by_root.values() if len(roles & {"proposal", "execution", "briefing"}) >= 2)
+
+    try:
+        relations = _rows(client.table("knowledge_relations").select("relation_type,status").eq("scope_entity_id", scope_id).execute())
+    except Exception:
+        relations = []
+    active_rel = [row for row in relations if str(row.get("status") or "active") != "rejected"]
+    cost_total = sum(1 for row in active_rel if str(row.get("relation_type") or "") == "costed_by")
+    hierarchy_total = sum(1 for row in active_rel if str(row.get("relation_type") or "") in {"part_of", "contains"})
+    briefing_total = sum(1 for row in active_rel if str(row.get("relation_type") or "") == "responds_to")
+    try:
+        claims = _rows(client.table("knowledge_claims").select("subject_entity_id,predicate,value_text,status").eq("scope_entity_id", scope_id).eq("predicate", "execution_result").execute())
+    except Exception:
+        claims = []
+    execution_subjects = {
+        str(row.get("subject_entity_id") or "") for row in claims
+        if str(row.get("status") or "active") == "active" and str(row.get("value_text") or "") in {"executed", "partially_executed"}
+        and str(row.get("subject_entity_id") or "") != scope_id
+    }
+    return {
+        "unified_occurrences_total": unified_occurrences,
+        "multi_source_entities_total": multi_source,
+        "cost_links_total": cost_total,
+        "hierarchy_links_total": hierarchy_total,
+        "briefing_links_total": briefing_total,
+        "execution_claims_total": len(execution_subjects),
+    }
+
+
+def _resolution_debug_rows(client: Any, snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Retorna diagnóstico por canônico para responder 'por que não ligou?'."""
+    entities = snapshot.get("entities") or []
+    canonical_map = _canonical_map(entities)
+    roots = [row for row in entities if str(row.get("entity_kind") or "") == "canonical" and (row.get("attributes") or {}).get("semantic_family") == "project_solution"]
+    try:
+        relations = _rows(client.table("knowledge_relations").select("*").eq("scope_entity_id", snapshot["project_entity_id"]).execute())
+    except Exception:
+        relations = []
+    relations_by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for rel in relations:
+        relations_by_source[str(rel.get("source_entity_id") or "")].append(rel)
+    rows: list[dict[str, Any]] = []
+    for root in sorted(roots, key=lambda row: str(row.get("canonical_name") or "")):
+        root_id = str(root.get("id") or "")
+        occurrences = [row for row in entities if canonical_map.get(str(row.get("id") or ""), str(row.get("id") or "")) == root_id and str(row.get("id") or "") != root_id]
+        roles: set[str] = set()
+        for occ in occurrences:
+            attrs = occ.get("attributes") if isinstance(occ.get("attributes"), Mapping) else {}
+            role = str(attrs.get("occurrence_role") or "")
+            if role:
+                roles.add(role)
+            table = str(occ.get("domain_table") or "")
+            if table == "memory_items": roles.add("proposal")
+            if table == "memory_item_outcomes": roles.add("execution")
+        rels = relations_by_source.get(root_id, [])
+        cost = [r for r in rels if r.get("relation_type") == "costed_by" and r.get("status") != "rejected"]
+        brief = [r for r in rels if r.get("relation_type") == "responds_to" and r.get("status") != "rejected"]
+        hierarchy = [r for r in rels if r.get("relation_type") in {"part_of", "contains"} and r.get("status") != "rejected"]
+        evidence_roles: set[str] = set()
+        for eid, mapped in canonical_map.items():
+            if mapped == root_id:
+                evidence_roles.update(snapshot.get("roles_by_entity", {}).get(eid, set()))
+        has_exec = "execution" in roles or "post_event_report" in evidence_roles
+        notes: list[str] = []
+        if not has_exec:
+            notes.append("sem ocorrência/menção pós-evento ligada")
+        if not cost:
+            notes.append("sem costed_by")
+        if str(root.get("entity_type") or "") == "presskit" and not hierarchy:
+            notes.append("press kit sem componentes ligados")
+        rows.append({
+            "Entidade": root.get("canonical_name") or "—",
+            "Tipo": root.get("entity_type") or "—",
+            "Proposta": "sim" if "proposal" in roles or evidence_roles & {"proposal_presentation", "final_presentation"} else "não",
+            "Execução": "sim" if has_exec else "não",
+            "Custos": len(cost),
+            "Briefing": len(brief),
+            "Hierarquia": len(hierarchy),
+            "Ocorrências": len(occurrences),
+            "Diagnóstico": "; ".join(notes) or "conectada",
+        })
+    return rows
 
 def _persist_text_claim(
     client: Any,
@@ -1066,12 +1362,22 @@ def run_project_cross_source_intelligence(client: Any, project_id: str) -> dict[
         "occurrence_links": 0,
         "resolution_reviews": 0,
         "cost_links": 0,
+        "structured_cost_links": 0,
+        "briefing_links": 0,
         "cost_link_reviews": 0,
         "hierarchy_links": 0,
         "paid_by_client_links": 0,
         "execution_claims": 0,
+        "structured_execution_claims": 0,
         "project_execution_confirmed": False,
         "findings": 0,
+        "unified_occurrences_total": 0,
+        "multi_source_entities_total": 0,
+        "cost_links_total": 0,
+        "briefing_links_total": 0,
+        "hierarchy_links_total": 0,
+        "execution_claims_total": 0,
+        "resolution_debug": [],
     }
     try:
         snapshot = _load_snapshot(client, project)
@@ -1111,9 +1417,17 @@ def run_project_cross_source_intelligence(client: Any, project_id: str) -> dict[
             ):
                 counts["findings"] += 1
 
+        structured = _structured_workspace_relations(client, snapshot, run_id)
+        counts["structured_cost_links"] = int(structured.get("cost_links") or 0)
+        counts["briefing_links"] = int(structured.get("briefing_links") or 0)
+        counts["structured_execution_claims"] = int(structured.get("execution_claims") or 0)
+
+        # Recarrega novamente: relações estruturadas e occurrences de domínio já
+        # precisam participar dos links heurísticos e da hierarquia do mesmo run.
+        snapshot = _load_snapshot(client, project)
         cost_links, cost_reviews = _link_costs(client, snapshot, run_id)
-        counts["cost_links"] = cost_links
-        counts["cost_link_reviews"] = len(cost_reviews)
+        counts["cost_links"] = cost_links + counts["structured_cost_links"]
+        counts["cost_link_reviews"] = len(cost_reviews) + len(structured.get("reviews") or [])
         counts["hierarchy_links"] = _persist_presskit_hierarchy(client, snapshot, run_id)
         for review in cost_reviews[:30]:
             source = review["source"]
@@ -1161,8 +1475,20 @@ def run_project_cross_source_intelligence(client: Any, project_id: str) -> dict[
                 counts["findings"] += 1
 
         execution = _execution_evidence(client, snapshot, run_id, project)
-        counts["execution_claims"] = int(execution.get("entity_claims") or 0)
+        counts["execution_claims"] = int(execution.get("entity_claims") or 0) + counts["structured_execution_claims"]
         counts["project_execution_confirmed"] = bool(execution.get("project_claim"))
+
+        # O painel deve mostrar o estado consolidado do grafo, não apenas quantas
+        # inserts aconteceram neste clique. Isso evita o enganoso 14/1/2/1 quando
+        # relações válidas já existiam em runs anteriores.
+        snapshot = _load_snapshot(client, project)
+        totals = _graph_state_totals(client, snapshot)
+        counts.update(totals)
+        counts["entities_merged"] = int(totals.get("unified_occurrences_total") or 0)
+        counts["cost_links"] = int(totals.get("cost_links_total") or 0)
+        counts["hierarchy_links"] = int(totals.get("hierarchy_links_total") or 0)
+        counts["execution_claims"] = int(totals.get("execution_claims_total") or 0)
+        counts["resolution_debug"] = _resolution_debug_rows(client, snapshot)
 
         values, claim_evidence = _project_numeric_claims(client, str(project["id"]))
         budget = values.get("budget_max")
