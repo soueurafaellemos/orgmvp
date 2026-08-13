@@ -31,10 +31,61 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.6.2",
+    eyebrow="NAVE by VOE · V28.7.0",
 )
 
 client = get_nave_client()
+
+
+def _domain_result(container: dict) -> dict:
+    direct = container.get("domain_normalization") if isinstance(container, dict) else None
+    if isinstance(direct, dict):
+        return direct
+    finalization = container.get("project_intelligence_finalization") if isinstance(container, dict) else None
+    if isinstance(finalization, dict) and isinstance(finalization.get("domain_normalization"), dict):
+        return finalization["domain_normalization"]
+    return {}
+
+
+def _render_domain_normalization(container: dict, *, expanded: bool = False) -> None:
+    domain = _domain_result(container)
+    if not domain:
+        return
+    status = str(domain.get("status") or "")
+    if status == "schema_missing":
+        st.warning(
+            "Domain Normalization ainda não está instalada no banco. Execute o SQL "
+            "NAVE_V28_7_0_DOMAIN_NORMALIZATION_FOUNDATION.sql e rode esta ação novamente."
+        )
+        return
+    parity = domain.get("parity") or {}
+    normalized = parity.get("normalized") or {}
+    legacy = parity.get("legacy") or {}
+    with st.expander("Domain Normalization · nova camada de domínio", expanded=expanded):
+        cols = st.columns(5)
+        cols[0].metric("Soluções do projeto", int(normalized.get("solution_instances") or domain.get("solution_instances") or 0))
+        cols[1].metric("Requisitos", int(normalized.get("requirements") or domain.get("requirements") or 0))
+        cols[2].metric("Docs financeiros", int(normalized.get("financial_documents") or domain.get("financial_documents") or 0))
+        cols[3].metric("Linhas financeiras", int(normalized.get("financial_line_items") or domain.get("financial_line_items") or 0))
+        cols[4].metric("Outcomes", int(normalized.get("outcomes") or 0))
+        reduction = int(parity.get("solution_occurrence_reduction") or 0)
+        if reduction > 0:
+            st.success(
+                f"{reduction} ocorrência(s) memory_items foram consolidadas em instâncias de solução do projeto, sem perder os registros legados."
+            )
+        st.caption(
+            "V28.7.0 é uma migração em shadow/dual-write: memory_* continua preservado, mas a NAVE passa a ter objetos de domínio próprios para solução, requisito, custo e outcome. "
+            "Nenhum registro normalizado é apagado automaticamente durante a transição."
+        )
+        if legacy:
+            st.caption(
+                "Paridade legacy → domínio: "
+                f"memory_items {int(legacy.get('memory_items') or 0)} · "
+                f"requisitos {int(legacy.get('requirements') or 0)} · "
+                f"docs custo {int(legacy.get('cost_documents') or 0)} · "
+                f"linhas custo {int(legacy.get('cost_items') or 0)}."
+            )
+
 
 # Migrações/reprocessamentos são explícitos. Abrir a página nunca altera dados.
 # A rotina legada continua disponível somente quando o usuário solicita correção.
@@ -79,7 +130,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     f"{outcome.get('errors', 0)} erro(s). A NAVE não considera a correção concluída enquanto briefing/apresentação esperados continuarem zerados."
                 )
             else:
-                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.6.2.")
+                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.7.0.")
                 st.session_state["nave_project_hub_focus_id"] = repair_options[repair_label]
 
             if counts:
@@ -105,6 +156,8 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                 with st.expander("Diagnóstico arquivo por arquivo", expanded=bool(outcome.get("errors") or outcome.get("incomplete"))):
                     st.dataframe(pd.DataFrame(diagnostic_rows), hide_index=True, width="stretch")
 
+            _render_domain_normalization(outcome, expanded=False)
+
             cross = outcome.get("cross_source_intelligence") or {}
             if cross and str(cross.get("status") or "").startswith("completed"):
                 with st.expander("Intelligence Graph · conexões entre arquivos", expanded=False):
@@ -118,7 +171,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     c5.metric("Relações hierárquicas", int(cross.get("hierarchy_links_total") or cross.get("hierarchy_links") or 0))
                     reviews = int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0)
                     st.caption(
-                        "A V28.6.2 registra ocorrências estruturadas de proposta e execução no próprio Entity Graph e reaproveita vínculos de briefing/custo antes do cross-source linking. "
+                        "O Entity Graph V28.6.2 permanece ativo durante a migração; a V28.7.0 adiciona Domain Normalization em paralelo sem trocar ainda a fonte das telas. "
                         f"Revisões ambíguas pendentes: {reviews}."
                     )
                     debug_rows = cross.get("resolution_debug") or []
@@ -136,20 +189,21 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
         if st.button(
-            "Reconstruir apenas conexões inteligentes",
+            "Atualizar domínio e conexões inteligentes",
             width="stretch",
             disabled=not confirm_reprocess,
             key="v286_rebuild_intelligence_graph",
-            help="Recria entidades canônicas, vínculos solução↔custo e conexões cross-source sem rematerializar briefing, proposta, planilha ou relatório.",
+            help="Normaliza soluções/requisitos/custos/outcomes e atualiza o grafo cross-source sem rematerializar briefing, proposta, planilha ou relatório.",
         ):
             from project_intelligence_pipeline import finalize_project_intelligence
 
-            with st.spinner("Reconstruindo entidades canônicas e conexões entre as fontes já estruturadas..."):
+            with st.spinner("Normalizando domínio e atualizando conexões entre as fontes já estruturadas..."):
                 finalization = finalize_project_intelligence(client, repair_options[repair_label])
             canonical = finalization.get("canonical_entity_graph") or {}
             cross = finalization.get("cross_source") or {}
+            _render_domain_normalization(finalization, expanded=True)
             if str(cross.get("status") or "").startswith("completed"):
-                st.success("Conexões inteligentes reconstruídas sem reprocessar os arquivos do projeto.")
+                st.success("Domínio normalizado e conexões inteligentes atualizadas sem reprocessar os arquivos do projeto.")
                 cols = st.columns(6)
                 cols[0].metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
                 cols[1].metric("Entidades multi-fonte", int(cross.get("multi_source_entities_total") or 0))
@@ -477,6 +531,8 @@ if documents:
                         st.caption(
                             "Um arquivo pode estar preservado e ainda assim ter falha na leitura estruturada. Este quadro separa as duas situações."
                         )
+                _render_domain_normalization(result, expanded=False)
+
                 cross = result.get("cross_source_intelligence") or {}
                 if cross and str(cross.get("status") or "").startswith("completed"):
                     with st.expander("Intelligence Graph · conexões entre arquivos", expanded=False):

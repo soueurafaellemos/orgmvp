@@ -38,6 +38,15 @@ CROSS_SOURCE_LINKER_VERSION = "cross-source-linker-v2.2"
 CROSS_SOURCE_SCHEMA_VERSION = "1"
 CROSS_SOURCE_PROMPT_VERSION = "deterministic-2026-08-13.v2.2"
 
+# V28.7.0 — Domain Normalization roda em shadow mode nesta versão. O Relation
+# Graph V28.6 continua lendo somente os mirrors legados até o cutover V2, para
+# não duplicar candidatos financeiros/soluções durante a migração.
+_SHADOW_DOMAIN_TABLES = {
+    "project_solution_instances",
+    "project_requirements",
+    "financial_line_items",
+}
+
 _LINKABLE_COST_SOURCE_TYPES = {
     "activation", "solution", "venue", "venue_space", "product", "gift",
     "presskit", "deliverable", "communication_asset", "technology",
@@ -182,6 +191,12 @@ def _load_snapshot(client: Any, project_entity: Mapping[str, Any]) -> dict[str, 
     )
     entity_ids = mentioned_entity_ids | {str(row.get("id")) for row in scoped_entities if row.get("id")} | {project_entity_id}
     entities = _select_in(client, "knowledge_entities", "id", list(entity_ids), "*")
+    entities = [
+        row for row in entities
+        if str(row.get("domain_table") or "") not in _SHADOW_DOMAIN_TABLES
+        or str(row.get("id") or "") == project_entity_id
+    ]
+    entity_ids = {str(row.get("id")) for row in entities if row.get("id")}
     entities_by_id = {str(row["id"]): row for row in entities if row.get("id")}
     aliases = _select_in(client, "entity_aliases", "entity_id", list(entity_ids), "entity_id,alias,normalized_alias,active")
     aliases_by_entity: dict[str, list[str]] = defaultdict(list)

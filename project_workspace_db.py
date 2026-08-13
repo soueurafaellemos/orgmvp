@@ -1170,5 +1170,15 @@ def save_project_report_analysis(
     except Exception:
         pass
 
+    # V28.7.0 — o relatório continua gravando no legado durante a transição,
+    # porém sincroniza imediatamente os outcomes/solution instances normalizados.
+    # Falha aqui não invalida o salvamento do relatório; a sincronização é
+    # idempotente e será refeita na próxima finalização do projeto.
+    try:
+        from project_domain_normalization import sync_project_domain_normalization
+        sync_project_domain_normalization(client, project_id)
+    except Exception:
+        pass
+
     return dict(inserted.data[0]) if inserted.data else payload
 

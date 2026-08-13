@@ -120,6 +120,20 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
     except Exception as exc:
         warnings.append(f"Structured prelinks: {exc}")
 
+    # V28.7.0 — Domain Normalization vem antes do Relation Graph, mas ainda em
+    # shadow/dual-write. Ela consolida as estruturas memory_* nos objetos de
+    # domínio corretos sem trocar a UI nem remover o legado.
+    domain_normalization = None
+    try:
+        from project_domain_normalization import sync_project_domain_normalization
+        domain_normalization = sync_project_domain_normalization(client, project_id)
+        if str((domain_normalization or {}).get("status") or "") not in {"completed", "ready"}:
+            for value in (domain_normalization or {}).get("warnings") or []:
+                if str(value).strip():
+                    warnings.append(f"Domain Normalization: {str(value)[:700]}")
+    except Exception as exc:
+        warnings.append(f"Domain Normalization: {exc}")
+
     canonical_graph = None
     try:
         from project_entity_graph import materialize_project_canonical_entities
@@ -171,6 +185,7 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
     return {
         "project_id": project_id,
         "report_analysis": report_result,
+        "domain_normalization": domain_normalization,
         "canonical_entity_graph": canonical_graph,
         "cross_source": cross_source,
         "semantic_project_analysis": semantic,

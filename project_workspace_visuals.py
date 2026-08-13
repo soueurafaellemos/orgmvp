@@ -415,6 +415,12 @@ def ensure_visual_page_items(
             created += 1
         except Exception:
             continue
+    if created:
+        try:
+            from project_domain_normalization import sync_project_domain_normalization
+            sync_project_domain_normalization(client, project_id)
+        except Exception:
+            pass
     return created
 
 
