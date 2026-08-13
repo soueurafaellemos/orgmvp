@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.7.0",
+    eyebrow="NAVE by VOE · V28.7.1",
 )
 
 client = get_nave_client()
@@ -55,27 +55,56 @@ def _render_domain_normalization(container: dict, *, expanded: bool = False) -> 
     if status == "schema_missing":
         st.warning(
             "Domain Normalization ainda não está instalada no banco. Execute o SQL "
-            "NAVE_V28_7_0_DOMAIN_NORMALIZATION_FOUNDATION.sql e rode esta ação novamente."
+            "NAVE_V28_7_1_DOMAIN_INTEGRITY_PROVENANCE.sql e rode esta ação novamente."
         )
+        return
+    if status in {"read_or_validation_error", "transaction_error", "post_apply_read_error"}:
+        st.error("Domain Integrity não promoveu uma nova geração. O estado anterior permanece válido.")
+        for warning in (domain.get("warnings") or [])[:8]:
+            st.caption("• " + str(warning))
         return
     parity = domain.get("parity") or {}
     normalized = parity.get("normalized") or {}
     legacy = parity.get("legacy") or {}
-    with st.expander("Domain Normalization · nova camada de domínio", expanded=expanded):
-        cols = st.columns(5)
-        cols[0].metric("Soluções do projeto", int(normalized.get("solution_instances") or domain.get("solution_instances") or 0))
-        cols[1].metric("Requisitos", int(normalized.get("requirements") or domain.get("requirements") or 0))
-        cols[2].metric("Docs financeiros", int(normalized.get("financial_documents") or domain.get("financial_documents") or 0))
-        cols[3].metric("Linhas financeiras", int(normalized.get("financial_line_items") or domain.get("financial_line_items") or 0))
-        cols[4].metric("Outcomes", int(normalized.get("outcomes") or 0))
+    with st.expander("Domain Integrity & Provenance · V28.7.1", expanded=expanded):
+        cols = st.columns(6)
+        cols[0].metric("Soluções", int(normalized.get("solution_instances") or domain.get("solution_instances") or 0))
+        cols[1].metric("Ocorrências", int(normalized.get("solution_occurrences") or domain.get("solution_occurrences") or 0))
+        cols[2].metric("Requisitos", int(normalized.get("requirements") or domain.get("requirements") or 0))
+        cols[3].metric("Docs financeiros", int(normalized.get("financial_documents") or domain.get("financial_documents") or 0))
+        cols[4].metric("Linhas financeiras", int(normalized.get("financial_line_items") or domain.get("financial_line_items") or 0))
+        cols[5].metric("Outcomes atuais", int(normalized.get("outcomes") or 0))
+
+        integrity = parity.get("integrity") or {}
+        evidence_cols = st.columns(4)
+        evidence_cols[0].metric("Evidence links", int(normalized.get("evidence_links") or domain.get("evidence_links") or 0))
+        evidence_cols[1].metric(
+            "Ocorrências com evidência",
+            f"{int(normalized.get('occurrences_with_evidence') or 0)}/{int(normalized.get('solution_occurrences') or 0)}",
+        )
+        evidence_cols[2].metric(
+            "Requisitos com evidência",
+            f"{int(normalized.get('requirements_with_evidence') or 0)}/{int(normalized.get('requirements') or 0)}",
+        )
+        evidence_cols[3].metric(
+            "Custos com evidência",
+            f"{int(normalized.get('financial_lines_with_evidence') or 0)}/{int(normalized.get('financial_line_items') or 0)}",
+        )
+        migration_mode = str(integrity.get("migration_mode") or "legacy_shadow")
+        schema_version = str(integrity.get("domain_schema_version") or "28.7.1")
+        st.caption(f"Migration mode: {migration_mode} · Domain schema: {schema_version} · Run: {domain.get('run_id') or integrity.get('last_completed_run_id') or '—'}")
+        breakdown = integrity.get("outcome_breakdown") or {}
+        if breakdown:
+            st.caption("Current outcomes: " + " · ".join(f"{key} {value}" for key, value in sorted(breakdown.items())))
+
         reduction = int(parity.get("solution_occurrence_reduction") or 0)
         if reduction > 0:
             st.success(
                 f"{reduction} ocorrência(s) memory_items foram consolidadas em instâncias de solução do projeto, sem perder os registros legados."
             )
         st.caption(
-            "V28.7.0 é uma migração em shadow/dual-write: memory_* continua preservado, mas a NAVE passa a ter objetos de domínio próprios para solução, requisito, custo e outcome. "
-            "Nenhum registro normalizado é apagado automaticamente durante a transição."
+            "V28.7.1 mantém a migração em legacy_shadow e endurece integridade/provenance: strict reads, occurrences, evidence binding e apply transacional. "
+            "Nenhum cutover para domain_primary é automático."
         )
         if legacy:
             st.caption(
@@ -85,6 +114,13 @@ def _render_domain_normalization(container: dict, *, expanded: bool = False) -> 
                 f"docs custo {int(legacy.get('cost_documents') or 0)} · "
                 f"linhas custo {int(legacy.get('cost_items') or 0)}."
             )
+        domain_warnings = [str(v) for v in (domain.get("warnings") or []) if str(v).strip()]
+        if domain_warnings:
+            with st.expander(f"Lacunas de provenance / integridade ({len(domain_warnings)})", expanded=False):
+                for warning in domain_warnings[:20]:
+                    st.caption("• " + warning)
+                if len(domain_warnings) > 20:
+                    st.caption(f"… e mais {len(domain_warnings) - 20} aviso(s). Ausência de evidence_unit é diagnóstico; a NAVE não inventa vínculo para fechar cobertura.")
 
 
 # Migrações/reprocessamentos são explícitos. Abrir a página nunca altera dados.
@@ -171,7 +207,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     c5.metric("Relações hierárquicas", int(cross.get("hierarchy_links_total") or cross.get("hierarchy_links") or 0))
                     reviews = int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0)
                     st.caption(
-                        "O Entity Graph V28.6.2 permanece ativo durante a migração; a V28.7.0 adiciona Domain Normalization em paralelo sem trocar ainda a fonte das telas. "
+                        "O Entity Graph V28.6.2 permanece ativo apenas por compatibilidade durante a migração; a V28.7.1 mantém o domínio em legacy_shadow, com provenance e integridade transacional. "
                         f"Revisões ambíguas pendentes: {reviews}."
                     )
                     debug_rows = cross.get("resolution_debug") or []
@@ -203,21 +239,23 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             cross = finalization.get("cross_source") or {}
             _render_domain_normalization(finalization, expanded=True)
             if str(cross.get("status") or "").startswith("completed"):
-                st.success("Domínio normalizado e conexões inteligentes atualizadas sem reprocessar os arquivos do projeto.")
-                cols = st.columns(6)
-                cols[0].metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
-                cols[1].metric("Entidades multi-fonte", int(cross.get("multi_source_entities_total") or 0))
-                cols[2].metric("Ocorrências ligadas", int(cross.get("unified_occurrences_total") or cross.get("entities_merged") or 0))
-                cols[3].metric("Solução ↔ custo", int(cross.get("cost_links_total") or cross.get("cost_links") or 0))
-                cols[4].metric("Execuções ligadas", int(cross.get("execution_claims_total") or cross.get("execution_claims") or 0))
-                cols[5].metric("Relações hierárquicas", int(cross.get("hierarchy_links_total") or cross.get("hierarchy_links") or 0))
-                reviews = int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0)
-                st.caption(f"Revisões ambíguas pendentes: {reviews}.")
-                debug_rows = cross.get("resolution_debug") or []
-                if debug_rows:
-                    with st.expander("Diagnóstico do Entity Resolution · por entidade", expanded=True):
-                        st.dataframe(pd.DataFrame(debug_rows), hide_index=True, width="stretch")
-                        st.caption("O objetivo desta rodada é eliminar os silos: cada linha mostra se a mesma entidade já chegou a proposta, execução, custo, briefing e relações de composição.")
+                st.success("Domain Integrity V28.7.1 atualizada sem reprocessar os arquivos. O Graph V28.6 também foi reconstruído apenas por compatibilidade.")
+                with st.expander("Compatibilidade temporária · Entity Graph V28.6.2", expanded=False):
+                    cols = st.columns(6)
+                    cols[0].metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
+                    cols[1].metric("Entidades multi-fonte", int(cross.get("multi_source_entities_total") or 0))
+                    cols[2].metric("Ocorrências ligadas", int(cross.get("unified_occurrences_total") or cross.get("entities_merged") or 0))
+                    cols[3].metric("Solução ↔ custo", int(cross.get("cost_links_total") or cross.get("cost_links") or 0))
+                    cols[4].metric("Execuções ligadas", int(cross.get("execution_claims_total") or cross.get("execution_claims") or 0))
+                    cols[5].metric("Relações hierárquicas", int(cross.get("hierarchy_links_total") or cross.get("hierarchy_links") or 0))
+                    reviews = int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0)
+                    st.caption(
+                        f"Revisões ambíguas pendentes: {reviews}. Estes contadores NÃO validam a V28.7.1 e não são mais o source of truth alvo."
+                    )
+                    debug_rows = cross.get("resolution_debug") or []
+                    if debug_rows:
+                        with st.expander("Diagnóstico legado do Entity Resolution", expanded=False):
+                            st.dataframe(pd.DataFrame(debug_rows), hide_index=True, width="stretch")
             else:
                 st.warning(
                     "A reconstrução terminou sem confirmação completa do Cross-Source Linker. "

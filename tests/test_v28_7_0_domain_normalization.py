@@ -46,7 +46,7 @@ def test_presskit_is_container_not_generic_gift():
 def test_legacy_status_separates_proposal_from_execution():
     assert _proposal_execution_status({"item_status": "Proposto"}) == ("proposed", "not_confirmed")
     assert _proposal_execution_status({"item_status": "Aprovado"}) == ("approved", "not_confirmed")
-    assert _proposal_execution_status({"item_status": "Executado"}) == ("approved", "executed")
+    assert _proposal_execution_status({"item_status": "Executado"}) == ("unknown", "executed")
 
 
 def test_financial_state_and_payment_responsibility_are_preserved():

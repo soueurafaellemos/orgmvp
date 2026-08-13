@@ -304,23 +304,60 @@ def _finish_run(client: Any, run: Mapping[str, Any], *, started_monotonic: float
 
 
 def _content_hash(unit: EvidenceUnit) -> str:
+    # content_sha256 fingerprints the evidence CONTENT only. Identity is formed
+    # separately by source_asset + unit_type + locator_sha256 + this hash. Ordinal
+    # is deliberately excluded because parser ordering may change without the
+    # underlying evidence changing.
     payload = {
-        "type": unit.unit_type,
-        "ordinal": unit.ordinal,
-        "locator": unit.locator,
         "text": unit.content_text,
         "json": unit.content_json,
     }
-    return _sha_text(json.dumps(_safe(payload), ensure_ascii=False, sort_keys=True))
+    return _sha_text(json.dumps(_safe(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _locator_hash(locator: Mapping[str, Any] | None) -> str:
+    payload = json.dumps(_safe(dict(locator or {})), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return _sha_text(payload)
 
 
 def _persist_evidence(client: Any, source_asset_id: str, run_id: str, units: list[EvidenceUnit]) -> dict[str, str]:
+    """Persist evidence by source + type + locator + content.
+
+    V28.7.1 fixes a subtle identity bug: two fragments on the same page/slide may
+    share an ordinal but have different locators. We supersede only evidence at the
+    SAME canonical locator. Database/read errors are no longer converted into an
+    empty set, because that could silently invalidate prior evidence.
+    """
     refs: dict[str, str] = {}
     for unit in units:
         content_hash = _content_hash(unit)
-        existing_rows = []
-        try:
-            query = (
+        locator_hash = _locator_hash(unit.locator)
+        target_locator = _safe(dict(unit.locator or {}))
+
+        # Fast path for evidence written by V28.7.1+. We still compare the
+        # locator object itself before trusting the hash: the hash is an index,
+        # not business truth.
+        fast_query = (
+            client.table("evidence_units")
+            .select("*")
+            .eq("source_asset_id", source_asset_id)
+            .eq("unit_type", unit.unit_type)
+            .eq("locator_sha256", locator_hash)
+            .eq("is_current", True)
+        )
+        candidates = _rows(fast_query.limit(24).execute())
+        existing_rows = [
+            row for row in candidates
+            if _safe(dict(row.get("locator") or {})) == target_locator
+        ]
+
+        # Compatibility path for evidence created before locator_sha256 used the
+        # Python canonical hash. SQL backfill fingerprints may differ in textual
+        # JSON formatting, so a hash-only lookup would orphan prior evidence.
+        # Ordinal narrows the legacy search without a global arbitrary row cap;
+        # exact locator equality remains the final identity check.
+        if not existing_rows:
+            legacy_query = (
                 client.table("evidence_units")
                 .select("*")
                 .eq("source_asset_id", source_asset_id)
@@ -328,24 +365,35 @@ def _persist_evidence(client: Any, source_asset_id: str, run_id: str, units: lis
                 .eq("is_current", True)
             )
             if unit.ordinal is not None:
-                query = query.eq("ordinal", unit.ordinal)
-            existing_rows = _rows(query.limit(4).execute())
-        except Exception:
-            existing_rows = []
-        same = next((row for row in existing_rows if str(row.get("content_sha256")) == content_hash), None)
-        if same:
+                legacy_query = legacy_query.eq("ordinal", unit.ordinal).limit(48)
+            legacy_candidates = _rows(legacy_query.execute())
+            existing_rows = [
+                row for row in legacy_candidates
+                if _safe(dict(row.get("locator") or {})) == target_locator
+            ]
+        same_rows = [row for row in existing_rows if str(row.get("content_sha256")) == content_hash]
+        if same_rows:
+            # Collapse accidental duplicate-current rows at the same exact locator.
+            same = max(same_rows, key=lambda row: str(row.get("created_at") or ""))
+            for duplicate in existing_rows:
+                if str(duplicate.get("id")) != str(same.get("id")):
+                    client.table("evidence_units").update({"is_current": False}).eq("id", duplicate["id"]).execute()
             refs[unit.ref] = str(same["id"])
             continue
-        for old in existing_rows:
-            try:
+
+        supersedes_id = None
+        if existing_rows:
+            current = max(existing_rows, key=lambda row: str(row.get("created_at") or ""))
+            supersedes_id = str(current.get("id") or "") or None
+            for old in existing_rows:
                 client.table("evidence_units").update({"is_current": False}).eq("id", old["id"]).execute()
-            except Exception:
-                pass
+
         payload = {
             "source_asset_id": source_asset_id,
             "unit_type": unit.unit_type,
             "ordinal": unit.ordinal,
             "locator": unit.locator,
+            "locator_sha256": locator_hash,
             "content_text": unit.content_text,
             "content_json": unit.content_json,
             "content_sha256": content_hash,
@@ -353,11 +401,13 @@ def _persist_evidence(client: Any, source_asset_id: str, run_id: str, units: lis
             "extraction_confidence": unit.extraction_confidence,
             "language": unit.language,
             "intelligence_run_id": run_id,
+            "supersedes_evidence_id": supersedes_id,
             "is_current": True,
         }
         rows = _rows(client.table("evidence_units").insert(_safe(payload)).execute())
-        if rows:
-            refs[unit.ref] = str(rows[0]["id"])
+        if not rows:
+            raise RuntimeError(f"Supabase não confirmou evidence_unit {unit.ref}")
+        refs[unit.ref] = str(rows[0]["id"])
     return refs
 
 
