@@ -20,7 +20,7 @@ from nave_storage import (
 )
 
 PROJECT_FILES_BUCKET = "nave-project-files"
-WORKFLOW_VERSION = "28.5.0"
+WORKFLOW_VERSION = "28.6.0"
 MAX_TEXT_CHARS = 60000
 MAX_FILE_MB = 300
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
@@ -1170,12 +1170,14 @@ def save_project_bundle(
         # no mesmo cérebro: relatório pós-evento, Cross-Source Linker, Unified
         # Snapshot e Project Analyst. Isso elimina o antigo cenário em que o Graph
         # sabia algo que o workspace ainda ignorava.
+        canonical_entity_graph: dict[str, Any] | None = None
         cross_source_intelligence: dict[str, Any] | None = None
         project_intelligence_finalization: dict[str, Any] | None = None
         try:
             from project_intelligence_pipeline import finalize_project_intelligence
 
             project_intelligence_finalization = finalize_project_intelligence(client, project_id)
+            canonical_entity_graph = project_intelligence_finalization.get("canonical_entity_graph")
             cross_source_intelligence = project_intelligence_finalization.get("cross_source")
             workspace_warnings.extend(
                 str(value)[:900]
@@ -1238,6 +1240,7 @@ def save_project_bundle(
             "workspace_errors": workspace_errors,
             "workspace_warnings": workspace_warnings[:40],
             "materialization_results": materialization_results,
+            "canonical_entity_graph": canonical_entity_graph,
             "cross_source_intelligence": cross_source_intelligence,
             "project_intelligence_finalization": project_intelligence_finalization,
         }

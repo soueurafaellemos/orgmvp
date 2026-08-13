@@ -32,9 +32,9 @@ from entity_resolution import (
     resolve_entities,
 )
 
-CROSS_SOURCE_LINKER_VERSION = "cross-source-linker-v1.1"
+CROSS_SOURCE_LINKER_VERSION = "cross-source-linker-v2.0"
 CROSS_SOURCE_SCHEMA_VERSION = "1"
-CROSS_SOURCE_PROMPT_VERSION = "deterministic-2026-08-12.v1.1"
+CROSS_SOURCE_PROMPT_VERSION = "deterministic-2026-08-13.v2.0"
 
 _LINKABLE_COST_SOURCE_TYPES = {
     "activation", "solution", "venue", "venue_space", "product", "gift",
@@ -126,7 +126,7 @@ def _start_run(client: Any, project_entity_id: str, project_id: str) -> dict[str
         "scope_kind": "project",
         "scope_entity_id": project_entity_id,
         "pipeline_version": CROSS_SOURCE_LINKER_VERSION,
-        "code_version": "28.2.2",
+        "code_version": "28.6.0",
         "prompt_version": CROSS_SOURCE_PROMPT_VERSION,
         "schema_version": CROSS_SOURCE_SCHEMA_VERSION,
         "input_signature": _sha(f"{project_id}|{CROSS_SOURCE_LINKER_VERSION}"),
@@ -302,13 +302,22 @@ def cost_link_score(source: ResolutionEntity, line: ResolutionEntity) -> tuple[f
         return 0.0, ["texto insuficiente"]
     overlap = source_tokens & target_tokens
     containment = len(overlap) / max(1, len(source_tokens))
+    reverse_containment = len(overlap) / max(1, len(target_tokens))
     jaccard = len(overlap) / max(1, len(source_tokens | target_tokens))
     seq = SequenceMatcher(None, " ".join(sorted(source_tokens)), " ".join(sorted(target_tokens))).ratio()
-    score = 0.58 * containment + 0.18 * jaccard + 0.18 * seq
+    score = 0.50 * containment + 0.16 * reverse_containment + 0.16 * jaccard + 0.14 * seq
     reasons: list[str] = []
     if containment == 1.0 and len(source_tokens) >= 1:
         score = max(score, 0.93 if len(source_tokens) >= 2 else 0.86)
         reasons.append("todos os termos significativos da solução aparecem na linha financeira")
+    elif (
+        reverse_containment == 1.0
+        and source.entity_type in {"activation", "solution", "deliverable", "technology"}
+        and len(target_tokens) >= 1
+        and all(len(token) >= 5 for token in target_tokens)
+    ):
+        score = max(score, 0.87)
+        reasons.append("a linha financeira usa um nome mais curto, mas distintivo, contido na solução")
     category = _norm(attrs.get("category"))
     category_boost = {
         "activation": ("ativacao",),
@@ -544,8 +553,15 @@ def _link_costs(client: Any, snapshot: Mapping[str, Any], run_id: str | None) ->
         entity = _canonical_resolution_entity(row, aliases_by_root[root], len(evidence_by_root[root]))
         if entity.entity_type == "financial_line_item":
             lines.append(entity)
-        elif entity.entity_type in _LINKABLE_COST_SOURCE_TYPES and roles_by_root[root] & {"proposal_presentation", "final_presentation", "post_event_report", "briefing_original"}:
-            sources.append(entity)
+        elif entity.entity_type in _LINKABLE_COST_SOURCE_TYPES:
+            attrs = entity.attributes or {}
+            has_source_role = bool(roles_by_root[root] & {"proposal_presentation", "final_presentation", "post_event_report", "briefing_original"})
+            is_workspace_canonical = bool(
+                entity.entity_kind == "canonical"
+                and (attrs.get("semantic_family") == "project_solution" or attrs.get("workspace_item_id"))
+            )
+            if has_source_role or is_workspace_canonical:
+                sources.append(entity)
 
     linked = 0
     review_candidates: list[dict[str, Any]] = []
@@ -573,7 +589,7 @@ def _link_costs(client: Any, snapshot: Mapping[str, Any], run_id: str | None) ->
                 run_id=run_id,
                 evidence_ids=evidence,
                 relation_kind="inference",
-                attributes={"method": "cross_source_cost_link_v1", "reasons": reasons},
+                attributes={"method": "cross_source_cost_link_v2", "reasons": reasons},
             ):
                 linked += 1
         elif best_score >= 0.74:

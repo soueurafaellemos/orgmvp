@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping, Sequence
 
-ENTITY_RESOLVER_VERSION = "entity-resolution-v1.1"
+ENTITY_RESOLVER_VERSION = "entity-resolution-v2.0"
 AUTO_MERGE_THRESHOLD = 0.91
 REVIEW_THRESHOLD = 0.74
 
@@ -43,6 +43,57 @@ _GLOBAL_CANONICAL_TYPES = {
     "client", "brand", "supplier", "venue", "venue_space", "product", "platform",
     "technology", "location", "person", "partner",
 }
+_ENTITY_FAMILY = {
+    "activation": "project_solution",
+    "solution": "project_solution",
+    "deliverable": "project_solution",
+    "gift": "project_solution",
+    "presskit": "project_solution",
+    "communication_asset": "project_solution",
+    "technology": "project_solution",
+    "concept": "strategy",
+    "strategy": "strategy",
+    "venue": "place",
+    "venue_space": "place",
+}
+
+_GENERIC_NAMES = {
+    "ativacao", "ativacoes", "activation", "experiencia", "experiencias",
+    "brincadeira", "brincadeiras", "oficina", "oficinas", "brinde", "brindes",
+    "conteudo", "conteudos", "material", "materiais", "comunicacao",
+    "cenografia", "ambiente", "ambientes", "jornada", "operacao",
+}
+
+def entity_family(entity_type: str) -> str:
+    return _ENTITY_FAMILY.get(str(entity_type or ""), str(entity_type or ""))
+
+def compatible_entity_types(left_type: str, right_type: str) -> bool:
+    if left_type == right_type:
+        return True
+    pair = frozenset((str(left_type or ""), str(right_type or "")))
+    compatible_pairs = {
+        frozenset(("activation", "solution")),
+        frozenset(("activation", "deliverable")),
+        frozenset(("solution", "deliverable")),
+        frozenset(("gift", "presskit")),
+        frozenset(("communication_asset", "deliverable")),
+        frozenset(("venue", "venue_space")),
+        frozenset(("concept", "strategy")),
+    }
+    return pair in compatible_pairs
+
+def _distinctive_alias(value: str, entity_type: str) -> bool:
+    normalized = normalize_text(value)
+    if not normalized or normalized in _GENERIC_NAMES:
+        return False
+    toks = _tokens(normalized, entity_type=entity_type)
+    if not toks:
+        return False
+    if len(toks) >= 2:
+        return True
+    token = toks[0]
+    return len(token) >= 5 and token not in _GENERIC_NAMES
+
 
 
 @dataclass(frozen=True)
@@ -125,8 +176,11 @@ def entity_match_score(left: ResolutionEntity, right: ResolutionEntity) -> Match
     reasons: list[str] = []
     if left.id == right.id:
         return MatchResult(left.id, right.id, 1.0, "AUTO_MERGE", ("mesmo registro",))
-    if left.entity_type != right.entity_type:
-        return MatchResult(left.id, right.id, 0.0, "DISTINCT", ("tipos de entidade diferentes",))
+    if left.entity_type != right.entity_type and not compatible_entity_types(left.entity_type, right.entity_type):
+        return MatchResult(left.id, right.id, 0.0, "DISTINCT", ("tipos/famílias de entidade incompatíveis",))
+    cross_type = left.entity_type != right.entity_type
+    if cross_type:
+        reasons.append(f"tipos compatíveis na família {entity_family(left.entity_type)}")
     if left.scope_entity_id and right.scope_entity_id and left.scope_entity_id != right.scope_entity_id:
         # Project instances from different projects are never merged by this project resolver.
         if left.entity_type not in _GLOBAL_CANONICAL_TYPES:
@@ -134,9 +188,15 @@ def entity_match_score(left: ResolutionEntity, right: ResolutionEntity) -> Match
 
     left_aliases = _aliases(left)
     right_aliases = _aliases(right)
-    exact = {value for value in (left_aliases & right_aliases) if re.search(r"[a-z]", value) and len(value) >= 3}
+    exact = {
+        value for value in (left_aliases & right_aliases)
+        if re.search(r"[a-z]", value) and len(value) >= 3
+        and _distinctive_alias(value, left.entity_type)
+    }
     if exact:
-        return MatchResult(left.id, right.id, 0.995, "AUTO_MERGE", ("nome/alias normalizado idêntico e distintivo",))
+        score = 0.995 if not cross_type else 0.985
+        exact_reasons = list(reasons) + ["nome/alias normalizado idêntico e distintivo"]
+        return MatchResult(left.id, right.id, score, "AUTO_MERGE", tuple(exact_reasons))
 
     best = 0.0
     best_pair: tuple[str, str] | None = None
@@ -180,6 +240,8 @@ def entity_match_score(left: ResolutionEntity, right: ResolutionEntity) -> Match
                     score = max(score, 0.95)
                 elif left.entity_type in _GLOBAL_CANONICAL_TYPES and len(short_raw) >= 8:
                     score = max(score, 0.93)
+                elif entity_family(left.entity_type) == "project_solution" and _distinctive_alias(short_raw, left.entity_type):
+                    score = max(score, 0.93)
                 else:
                     score = max(score, 0.82)
             elif phrase and len(set(ta)) >= 2:
@@ -192,6 +254,8 @@ def entity_match_score(left: ResolutionEntity, right: ResolutionEntity) -> Match
 
     bonus, attr_reasons = _attribute_bonus(left, right)
     best = max(0.0, min(1.0, best + bonus))
+    if cross_type and best < 0.97:
+        best = max(0.0, best - 0.025)
     reasons.extend(attr_reasons)
     if best_pair:
         reasons.append(f"similaridade nominal entre '{best_pair[0]}' e '{best_pair[1]}'")
@@ -213,8 +277,8 @@ def entity_match_score(left: ResolutionEntity, right: ResolutionEntity) -> Match
 def choose_canonical(entities: Sequence[ResolutionEntity]) -> ResolutionEntity:
     def key(entity: ResolutionEntity) -> tuple[int, int, int, float, int]:
         return (
-            1 if entity.domain_id and entity.domain_table else 0,
             1 if entity.entity_kind == "canonical" else 0,
+            1 if entity.domain_id and entity.domain_table else 0,
             int(entity.mention_count or 0),
             float(entity.confidence or 0.0),
             min(len(_tokens(entity.canonical_name, entity_type=entity.entity_type)), 8),

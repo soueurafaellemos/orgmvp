@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.5.0",
+    eyebrow="NAVE by VOE · V28.6.0",
 )
 
 client = get_nave_client()
@@ -79,7 +79,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     f"{outcome.get('errors', 0)} erro(s). A NAVE não considera a correção concluída enquanto briefing/apresentação esperados continuarem zerados."
                 )
             else:
-                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.5.0.")
+                st.success(f"{outcome.get('processed', 0)} arquivo(s) reprocessado(s) com a leitura especializada da V28.6.0.")
                 st.session_state["nave_project_hub_focus_id"] = repair_options[repair_label]
 
             if counts:
@@ -108,13 +108,15 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             cross = outcome.get("cross_source_intelligence") or {}
             if cross and str(cross.get("status") or "").startswith("completed"):
                 with st.expander("Intelligence Graph · conexões entre arquivos", expanded=False):
-                    c1, c2, c3, c4 = st.columns(4)
+                    c0, c1, c2, c3, c4 = st.columns(5)
+                    canonical = outcome.get("canonical_entity_graph") or {}
+                    c0.metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
                     c1.metric("Entidades unificadas", int(cross.get("entities_merged") or 0))
                     c2.metric("Solução ↔ custo", int(cross.get("cost_links") or 0))
                     c3.metric("Evidências de execução", int(cross.get("execution_claims") or 0))
                     c4.metric("Revisões sugeridas", int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0))
                     st.caption(
-                        "A V28.5.0 preserva conhecimento anterior e transforma a inteligência consolidada em uma experiência mais executiva, visual e rigorosa, sem expor linguagem de backend. "
+                        "A V28.6.0 cria entidades canônicas de projeto antes do cross-source linking, para conectar a mesma solução entre briefing, proposta, custos e pós-evento. "
                         "Vínculos ambíguos não são forçados: viram revisão/finding auditável."
                     )
 
@@ -125,6 +127,38 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                         st.caption("• " + warning)
 
             st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
+
+        if st.button(
+            "Reconstruir apenas conexões inteligentes",
+            width="stretch",
+            disabled=not confirm_reprocess,
+            key="v286_rebuild_intelligence_graph",
+            help="Recria entidades canônicas, vínculos solução↔custo e conexões cross-source sem rematerializar briefing, proposta, planilha ou relatório.",
+        ):
+            from project_intelligence_pipeline import finalize_project_intelligence
+
+            with st.spinner("Reconstruindo entidades canônicas e conexões entre as fontes já estruturadas..."):
+                finalization = finalize_project_intelligence(client, repair_options[repair_label])
+            canonical = finalization.get("canonical_entity_graph") or {}
+            cross = finalization.get("cross_source") or {}
+            if str(cross.get("status") or "").startswith("completed"):
+                st.success("Conexões inteligentes reconstruídas sem reprocessar os arquivos do projeto.")
+                cols = st.columns(5)
+                cols[0].metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
+                cols[1].metric("Entidades unificadas", int(cross.get("entities_merged") or 0))
+                cols[2].metric("Solução ↔ custo", int(cross.get("cost_links") or 0))
+                cols[3].metric("Execução", int(cross.get("execution_claims") or 0))
+                cols[4].metric("Revisões", int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0))
+            else:
+                st.warning(
+                    "A reconstrução terminou sem confirmação completa do Cross-Source Linker. "
+                    + str((cross or {}).get("error") or "Consulte os avisos técnicos abaixo.")
+                )
+            final_warnings = [str(v) for v in (finalization.get("warnings") or []) if str(v).strip()]
+            if final_warnings:
+                with st.expander("Avisos da reconstrução", expanded=False):
+                    for warning in final_warnings[:30]:
+                        st.caption("• " + warning)
 
 st.markdown("### 1. Arquivos do projeto")
 st.caption(
@@ -431,7 +465,9 @@ if documents:
                 cross = result.get("cross_source_intelligence") or {}
                 if cross and str(cross.get("status") or "").startswith("completed"):
                     with st.expander("Intelligence Graph · conexões entre arquivos", expanded=False):
-                        c1, c2, c3, c4 = st.columns(4)
+                        c0, c1, c2, c3, c4 = st.columns(5)
+                        canonical = result.get("canonical_entity_graph") or {}
+                        c0.metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
                         c1.metric("Entidades unificadas", int(cross.get("entities_merged") or 0))
                         c2.metric("Solução ↔ custo", int(cross.get("cost_links") or 0))
                         c3.metric("Evidências de execução", int(cross.get("execution_claims") or 0))

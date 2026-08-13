@@ -31,7 +31,7 @@ from project_analyst import (
 )
 from gemini_extractor import _structured_call, get_client
 
-WORKFLOW_VERSION = "28.5.0"
+WORKFLOW_VERSION = "28.6.0"
 LEGACY_MATERIALIZER_VERSIONS = {"28.1.1", "28.1.5", "28.1.6", "28.1.7", "28.1.7.1", "28.1.7.2", "28.1.7.3", "28.2.0", "28.2.1", "28.2.2", "28.2.2.1", "28.2.2.2"}
 PROJECT_FILES_BUCKET = "nave-project-files"
 MAX_SOURCE_FILES_REPAIR = 250
@@ -2375,6 +2375,7 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
     # inteligência. Isso evita resultados diferentes dependendo de como o projeto
     # entrou na NAVE.
     cross_source_intelligence: dict[str, Any] | None = None
+    canonical_entity_graph: dict[str, Any] | None = None
     semantic_project_analysis: dict[str, Any] | None = None
     project_intelligence_finalization: dict[str, Any] | None = None
     if actual_errors == 0:
@@ -2382,6 +2383,7 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
             from project_intelligence_pipeline import finalize_project_intelligence
 
             project_intelligence_finalization = finalize_project_intelligence(client, project_id)
+            canonical_entity_graph = project_intelligence_finalization.get("canonical_entity_graph")
             cross_source_intelligence = project_intelligence_finalization.get("cross_source")
             semantic_project_analysis = project_intelligence_finalization.get("semantic_project_analysis")
             all_warnings.extend(
@@ -2404,6 +2406,7 @@ def reprocess_project_semantically(client: Any, project_id: str) -> dict[str, An
         "workspace_counts": counts,
         "resolved_roles": sorted(resolved_roles),
         "semantic_project_analysis": semantic_project_analysis,
+        "canonical_entity_graph": canonical_entity_graph,
         "cross_source_intelligence": cross_source_intelligence,
         "project_intelligence_finalization": project_intelligence_finalization,
     }

@@ -107,6 +107,13 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
     if report_result.get("warning"):
         warnings.append(str(report_result["warning"]))
 
+    canonical_graph = None
+    try:
+        from project_entity_graph import materialize_project_canonical_entities
+        canonical_graph = materialize_project_canonical_entities(client, project_id)
+    except Exception as exc:
+        warnings.append(f"Canonical Entity Graph: {exc}")
+
     cross_source = None
     try:
         from cross_source_linker import run_project_cross_source_intelligence
@@ -155,6 +162,7 @@ def finalize_project_intelligence(client: Any, project_id: str) -> dict[str, Any
     return {
         "project_id": project_id,
         "report_analysis": report_result,
+        "canonical_entity_graph": canonical_graph,
         "cross_source": cross_source,
         "semantic_project_analysis": semantic,
         "warnings": warnings[:40],
