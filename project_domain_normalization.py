@@ -26,7 +26,10 @@ import unicodedata
 from typing import Any, Iterable, Mapping, Sequence
 from uuid import uuid4
 
-DOMAIN_NORMALIZATION_VERSION = "V28.7.1D"
+from docx_control_text import extract_docx_paragraphs_preserving_controls
+from nave_storage import get_bytes
+
+DOMAIN_NORMALIZATION_VERSION = "V28.7.1D2"
 DOMAIN_SCHEMA_VERSION = "28.7.1d"
 NORMALIZATION_RPC = "apply_project_domain_normalization_v2871d"
 
@@ -763,13 +766,19 @@ def _direct_commercial_process_evidence(
     briefing_documents: Sequence[Mapping[str, Any]],
     asset_by_sha: Mapping[str, Mapping[str, Any]],
     evidence_by_asset: Mapping[str, Sequence[Mapping[str, Any]]],
+    client: Any | None = None,
 ) -> dict[str, Any] | None:
     """Find direct/non-competition wording without project-specific rules.
 
-    Supports ordinary prose and checkbox briefings such as
-    ``CONCORRENCIA: ☐SIM ... ☒NÃO``. If the same fact is materialized at more
-    than one Evidence Unit granularity, choose the most atomic current fragment
-    instead of failing only because a document/page wrapper also contains it.
+    Two paths are supported:
+    1. current Evidence Unit text already preserves the checkbox state;
+    2. legacy DOCX Evidence Units lost nested Word content controls because
+       ``Paragraph.text`` omitted ``w:sdt`` children. In that case we read the
+       already-stored source file, recover the visible checkbox state from OOXML,
+       and map it back to the exact current paragraph Evidence Unit by locator.
+
+    The fallback does *not* guess from ``SIM ... NÃO`` ordering. If the source
+    bytes cannot prove which control is checked, the rule fails closed.
     """
     patterns = (
         "concorrencia nao",
@@ -799,9 +808,64 @@ def _direct_commercial_process_evidence(
         if not asset:
             continue
         asset_id = str(asset.get("id") or "")
-        for ev in evidence_by_asset.get(asset_id) or []:
+        current_units = [dict(ev) for ev in (evidence_by_asset.get(asset_id) or [])]
+        for ev in current_units:
             if supports_direct(ev.get("content_text")):
-                matches.append(dict(ev))
+                matches.append(ev)
+
+        # Transitional recovery for Evidence Units created before DOCX content
+        # controls were preserved by File Analyst. We only run it when the DB
+        # contains an ambiguous concorrencia paragraph and no current EU for this
+        # asset already proves the state.
+        if any(str(ev.get("id") or "") in {str(m.get("id") or "") for m in matches} for ev in current_units):
+            continue
+        ambiguous = [
+            ev for ev in current_units
+            if "concorrencia" in _norm(ev.get("content_text"))
+            and "sim" in _norm(ev.get("content_text"))
+            and "nao" in _norm(ev.get("content_text"))
+        ]
+        if not ambiguous or client is None:
+            continue
+
+        bucket = asset.get("storage_bucket") or doc.get("storage_bucket")
+        path = asset.get("storage_path") or doc.get("storage_path")
+        try:
+            payload = get_bytes(client, bucket_name=bucket, path=path)
+        except Exception:
+            payload = None
+        if not payload:
+            continue
+        try:
+            raw_paragraphs = extract_docx_paragraphs_preserving_controls(payload)
+        except Exception:
+            raw_paragraphs = []
+
+        units_by_paragraph_index: dict[int, list[dict[str, Any]]] = {}
+        for ev in ambiguous:
+            locator = ev.get("locator") if isinstance(ev.get("locator"), Mapping) else {}
+            try:
+                paragraph_index = int((locator or {}).get("paragraph_index"))
+            except Exception:
+                continue
+            units_by_paragraph_index.setdefault(paragraph_index, []).append(ev)
+
+        for raw in raw_paragraphs:
+            try:
+                paragraph_index = int(raw.get("paragraph_index"))
+            except Exception:
+                continue
+            raw_text = str(raw.get("text") or "")
+            if not supports_direct(raw_text):
+                continue
+            candidates = units_by_paragraph_index.get(paragraph_index) or []
+            if len(candidates) != 1:
+                continue
+            recovered = dict(candidates[0])
+            recovered["_source_semantic_text"] = raw_text
+            recovered["_semantic_recovery_method"] = "stored_docx_ooxml_controls"
+            matches.append(recovered)
+
     if not matches:
         return None
 
@@ -809,7 +873,7 @@ def _direct_commercial_process_evidence(
     unit_priority = {"sentence": 0, "paragraph": 1, "row": 1, "cell": 1, "page": 2, "slide": 2, "document": 3}
     matches.sort(key=lambda ev: (
         unit_priority.get(str(ev.get("unit_type") or "").casefold(), 4),
-        len(str(ev.get("content_text") or "")),
+        len(str(ev.get("_source_semantic_text") or ev.get("content_text") or "")),
         int(ev.get("ordinal") or 0),
         str(ev.get("id") or ""),
     ))
@@ -951,7 +1015,7 @@ def _project_name(project: Mapping[str, Any], project_id: str) -> str:
     )
 
 
-def _build_bundle(project_id: str, data: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def _build_bundle(project_id: str, data: Mapping[str, Any], *, client: Any | None = None) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
     project = data["project"]
     project_mirror = data.get("project_mirror") or {}
@@ -1324,10 +1388,11 @@ def _build_bundle(project_id: str, data: Mapping[str, Any]) -> tuple[dict[str, A
         briefing_documents=data.get("briefing_documents") or [],
         asset_by_sha=asset_by_sha,
         evidence_by_asset=evidence_by_asset,
+        client=client,
     )
     if direct_process_evidence and direct_process_evidence.get("id"):
         evidence_id = str(direct_process_evidence["id"])
-        direct_reason = _clean(direct_process_evidence.get("content_text"))
+        direct_reason = _clean(direct_process_evidence.get("_source_semantic_text") or direct_process_evidence.get("content_text"))
         for outcome_type, outcome_status in (("process_type", "direct"), ("commercial_result", "not_applicable")):
             outcomes.append({
                 "entity_id": project_entity_id,
@@ -1343,6 +1408,7 @@ def _build_bundle(project_id: str, data: Mapping[str, Any]) -> tuple[dict[str, A
                 "attributes": {
                     "normalized_by": DOMAIN_NORMALIZATION_VERSION,
                     "semantic_rule": "non_competition_implies_direct_not_applicable",
+                    "semantic_recovery_method": direct_process_evidence.get("_semantic_recovery_method") or "evidence_unit_text",
                 },
                 "legacy_source_table": "domain_rule_v2871d",
                 "legacy_source_id": project_id,
@@ -1649,7 +1715,7 @@ def sync_project_domain_normalization(client: Any, project_id: str) -> dict[str,
 
     try:
         data = _read_project_inputs(client, project_id)
-        bundle, warnings = _build_bundle(project_id, data)
+        bundle, warnings = _build_bundle(project_id, data, client=client)
         _validate_bundle(bundle, data)
     except Exception as exc:
         # No write occurred before this point.

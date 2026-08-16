@@ -11,6 +11,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from docx_control_text import cell_text_preserving_controls, paragraph_text_preserving_controls
+
 from nave_storage import (
     NaveStorageError,
     delete_objects,
@@ -372,10 +374,15 @@ def _docx_text(data: bytes) -> str:
     try:
         from docx import Document  # type: ignore
         document = Document(io.BytesIO(data))
-        chunks = [p.text for p in document.paragraphs if p.text]
+        chunks = []
+        for paragraph in document.paragraphs:
+            paragraph_text = paragraph_text_preserving_controls(paragraph)
+            if paragraph_text:
+                chunks.append(paragraph_text)
         for table in document.tables[:20]:
             for row in table.rows[:60]:
-                chunks.append(" | ".join(cell.text for cell in row.cells if cell.text))
+                cell_values = [cell_text_preserving_controls(cell) for cell in row.cells]
+                chunks.append(" | ".join(value for value in cell_values if value))
                 if sum(len(x) for x in chunks) >= MAX_TEXT_CHARS:
                     break
         return _clip("\n".join(chunks))

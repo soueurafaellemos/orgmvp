@@ -28,6 +28,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, Field
 
+from docx_control_text import cell_text_preserving_controls, paragraph_text_preserving_controls
+
 
 FILE_ANALYST_VERSION = "file-analyst-v1.1"
 FILE_ANALYST_SCHEMA_VERSION = "1"
@@ -266,7 +268,7 @@ def _extract_docx_units(name: str, data: bytes) -> list[EvidenceUnit]:
     units: list[EvidenceUnit] = []
     ordinal = 0
     for p_index, paragraph in enumerate(doc.paragraphs, start=1):
-        text = paragraph.text.strip()
+        text = paragraph_text_preserving_controls(paragraph).strip()
         if not text:
             continue
         ordinal += 1
@@ -283,7 +285,7 @@ def _extract_docx_units(name: str, data: bytes) -> list[EvidenceUnit]:
     for t_index, table in enumerate(doc.tables, start=1):
         rows: list[list[str]] = []
         for row in table.rows:
-            rows.append([cell.text.strip() for cell in row.cells])
+            rows.append([cell_text_preserving_controls(cell).strip() for cell in row.cells])
         if not any(any(cell for cell in row) for row in rows):
             continue
         ordinal += 1
