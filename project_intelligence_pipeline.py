@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-"""NAVE V28.7.1D — safe project intelligence finalization.
+"""NAVE V28.7.2A — evidence-led domain reconciliation finalization.
 
-V28.6 graph/cross-source synthesis is intentionally frozen. The current action
-normalizes the Domain Layer, applies the Truth Gate and publishes deterministic
-Coverage/Identity findings. No new semantic synthesis is allowed to depend on
-the legacy V28.6 graph while the project remains ``legacy_shadow``.
+V28.6 graph/cross-source synthesis remains intentionally frozen. The current action
+first preserves the V28.7.1D compatibility normalization/Truth Gate, then runs the
+V28.7.2A Semantic Observation -> Reconciliation kernel, and finally publishes
+Coverage/Identity findings. No semantic synthesis depends on the legacy Graph.
 """
 
 import os
@@ -194,13 +194,41 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
             "warnings": warnings[:40],
         }
 
+    # V28.7.2A: reconcile evidence-led semantic observations after the approved
+    # Truth Gate baseline exists. This stays legacy_shadow and never rebuilds V28.6.
+    try:
+        from project_domain_reconciliation import reconcile_project_domain
+
+        domain_reconciliation = reconcile_project_domain(client, project_id)
+    except Exception as exc:
+        domain_reconciliation = {"status": "orchestration_error", "warnings": [str(exc)]}
+
+    reconciliation_status = str(domain_reconciliation.get("status") or "")
+    if reconciliation_status != "completed":
+        for value in domain_reconciliation.get("warnings") or []:
+            if str(value).strip():
+                warnings.append(f"Domain Reconciliation: {str(value)[:700]}")
+        return {
+            "status": "domain_reconciliation_blocked",
+            "project_id": project_id,
+            "report_analysis": report_result,
+            "domain_normalization": domain_normalization,
+            "domain_reconciliation": domain_reconciliation,
+            "domain_audits": {"status": "skipped_reconciliation_blocked"},
+            "canonical_entity_graph": None,
+            "cross_source": frozen_graph,
+            "semantic_project_analysis": None,
+            "structured_prelinks": frozen_prelinks,
+            "warnings": warnings[:40],
+        }
+
     try:
         from project_domain_truth_audit import run_project_domain_truth_audits
 
         audits = run_project_domain_truth_audits(
             client,
             project_id,
-            parent_run_id=str(domain_normalization.get("run_id") or "") or None,
+            parent_run_id=str(domain_reconciliation.get("run_id") or domain_normalization.get("run_id") or "") or None,
         )
     except Exception as exc:
         audits = {"status": "error", "error": str(exc)}
@@ -218,6 +246,7 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
             "project_id": project_id,
             "report_analysis": report_result,
             "domain_normalization": domain_normalization,
+            "domain_reconciliation": domain_reconciliation,
             "domain_audits": audits,
             "canonical_entity_graph": None,
             "cross_source": frozen_graph,
@@ -226,13 +255,14 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
             "warnings": warnings[:40],
         }
 
-    # V28.7.1D: intentionally stop here. No V28.6 graph rebuild, no old
-    # cross-source linker, no semantic Project Analyst synthesis from that graph.
+    # V28.7.2A: intentionally stop here after reconciliation + audits. No V28.6
+    # graph rebuild, no old cross-source linker, no Project Analyst synthesis.
     return {
         "status": "completed",
         "project_id": project_id,
         "report_analysis": report_result,
         "domain_normalization": domain_normalization,
+        "domain_reconciliation": domain_reconciliation,
         "domain_audits": audits,
         "canonical_entity_graph": None,
         "cross_source": frozen_graph,

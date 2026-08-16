@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.7.1D",
+    eyebrow="NAVE by VOE · V28.7.2A",
 )
 
 client = get_nave_client()
@@ -45,6 +45,93 @@ def _domain_result(container: dict) -> dict:
     if isinstance(finalization, dict) and isinstance(finalization.get("domain_normalization"), dict):
         return finalization["domain_normalization"]
     return {}
+
+
+def _reconciliation_result(container: dict) -> dict:
+    direct = container.get("domain_reconciliation") if isinstance(container, dict) else None
+    if isinstance(direct, dict):
+        return direct
+    finalization = container.get("project_intelligence_finalization") if isinstance(container, dict) else None
+    if isinstance(finalization, dict) and isinstance(finalization.get("domain_reconciliation"), dict):
+        return finalization["domain_reconciliation"]
+    return {}
+
+
+def _render_domain_reconciliation(container: dict, *, expanded: bool = False) -> None:
+    result = _reconciliation_result(container)
+    if not result:
+        return
+    status = str(result.get("status") or "")
+    if status == "schema_missing":
+        st.warning(
+            "Semantic Domain Reconciliation V28.7.2A ainda não está visível no Data API. "
+            "Execute NAVE_V28_7_2A_RECONCILIATION_KERNEL.sql no Supabase e rode novamente."
+        )
+        return
+    if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"}:
+        st.error("A V28.7.2A não aplicou uma nova reconciliação. O domínio anterior permanece válido.")
+        for warning in (result.get("warnings") or [])[:10]:
+            if str(warning).strip():
+                st.caption("• " + str(warning))
+        return
+    if status != "completed":
+        st.warning(f"Semantic Domain Reconciliation: {status or 'status desconhecido'}.")
+        return
+
+    rec = result.get("reconciliation") or {}
+    actions = result.get("actions") or {}
+    with st.expander("Core Semantic Domains · Reconciliation Kernel · V28.7.2A", expanded=expanded):
+        cols = st.columns(7)
+        cols[0].metric("Observações", int(rec.get("observations_total") or actions.get("observations") or 0))
+        cols[1].metric("Open", int(rec.get("observations_open") or 0))
+        cols[2].metric("Reconciliadas", int(rec.get("observations_reconciled") or 0))
+        cols[3].metric("Review required", int(rec.get("observations_review_required") or 0))
+        cols[4].metric("No-domain", int(rec.get("observations_no_domain_object") or 0))
+        cols[5].metric("Soluções", int(rec.get("solution_instances") or 0))
+        cols[6].metric("Cobertura evidence-led", f"{float(rec.get('evidence_reconciliation_coverage_pct') or 0):.1f}%")
+
+        lifecycle_cols = st.columns(5)
+        lifecycle_cols[0].metric("Soluções reconciliadas por evidence", int(rec.get("evidence_reconciled_solutions") or 0))
+        lifecycle_cols[1].metric("Novas evidence-led", int(rec.get("evidence_led_created_solutions") or actions.get("new_solutions") or 0))
+        lifecycle_cols[2].metric("Execuções com evidence", int(rec.get("execution_occurrences_with_evidence") or 0))
+        lifecycle_cols[3].metric("Execution truth verified", int(rec.get("verified_execution_outcomes") or 0))
+        lifecycle_cols[4].metric("Constraints", int(rec.get("requirement_constraints") or 0))
+
+        context_cols = st.columns(4)
+        context_cols[0].metric("Context elements", int(rec.get("context_elements") or 0))
+        context_cols[1].metric("Ocorrências aplicadas", int(actions.get("occurrences") or 0))
+        context_cols[2].metric("Outcomes de execução", int(actions.get("execution_outcomes") or 0))
+        context_cols[3].metric("Outcomes de proposta", int(actions.get("proposal_outcomes") or 0))
+
+        st.caption(
+            f"Migration mode: {rec.get('migration_mode') or 'legacy_shadow'} · "
+            f"Domain schema: {rec.get('domain_schema_version') or '28.7.2a'} · "
+            f"Run: {result.get('run_id') or rec.get('last_completed_run_id') or '—'}"
+        )
+        st.caption(
+            "Evidence → Semantic Observation → Reconciliation → Domain. Cobertura evidence-led é um proxy de reconciliação, não um gate de cutover. "
+            "A V28.7.2A pode anexar uma nova ocorrência a uma identidade inequívoca, mas nunca faz auto-merge de duas identities existentes. "
+            "Graph V28.6 continua congelado e migration_mode permanece legacy_shadow."
+        )
+
+        new_names = [str(v) for v in (actions.get("new_solution_names") or []) if str(v).strip()]
+        review_names = [str(v) for v in (actions.get("review_names") or []) if str(v).strip()]
+        no_domain_names = [str(v) for v in (actions.get("no_domain_names") or []) if str(v).strip()]
+        execution_names = [str(v) for v in (actions.get("execution_names") or []) if str(v).strip()]
+        if new_names or review_names or no_domain_names or execution_names:
+            with st.expander("Reconciliation · decisões desta run", expanded=False):
+                if new_names:
+                    st.markdown("**Novas Project Solution Instances evidence-led**")
+                    st.caption(" · ".join(new_names))
+                if execution_names:
+                    st.markdown("**Execuções ligadas a Evidence**")
+                    st.caption(" · ".join(execution_names))
+                if review_names:
+                    st.markdown("**Observações bloqueadas para revisão**")
+                    st.caption(" · ".join(review_names))
+                if no_domain_names:
+                    st.markdown("**Observações preservadas sem virar Solution**")
+                    st.caption(" · ".join(no_domain_names))
 
 
 def _render_domain_normalization(container: dict, *, expanded: bool = False) -> None:
@@ -265,27 +352,30 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
         if st.button(
-            "Atualizar domínio e auditar verdade",
+            "Reconciliar domínio semântico · V28.7.2A",
             width="stretch",
             disabled=not confirm_reprocess,
-            key="v2871d_refresh_domain_truth",
-            help="Aplica Domain Truth Gate, corrige provenance determinística e roda Coverage/Identity Audits. Não reconstrói o Graph V28.6.",
+            key="v2872a_reconcile_domain",
+            help="Executa Truth Gate baseline, Semantic Observations, reconciliation evidence-led e Coverage/Identity Audits. Não reconstrói o Graph V28.6.",
         ):
             from project_intelligence_pipeline import finalize_project_intelligence
 
-            with st.spinner("Aplicando Truth Gate e auditando cobertura/identidade sem reconstruir o Graph legado..."):
+            with st.spinner("Aplicando Truth Gate, coletando Semantic Observations e reconciliando o domínio sem reconstruir o Graph legado..."):
                 finalization = finalize_project_intelligence(client, repair_options[repair_label], analyze_pending_reports=False)
-            _render_domain_normalization(finalization, expanded=True)
+            _render_domain_normalization(finalization, expanded=False)
+            _render_domain_reconciliation(finalization, expanded=True)
             domain = _domain_result(finalization)
+            reconciliation = _reconciliation_result(finalization)
             audits = finalization.get("domain_audits") or {}
             domain_ok = str(domain.get("status") or "") == "completed"
+            reconciliation_ok = str(reconciliation.get("status") or "") == "completed"
             audits_ok = str(audits.get("status") or "") == "completed"
-            if domain_ok and audits_ok:
+            if domain_ok and reconciliation_ok and audits_ok:
                 coverage = audits.get("coverage") or {}
                 identity = audits.get("identity") or {}
                 st.success(
-                    "V28.7.1D atualizada sem reprocessar os masters. O Graph V28.6 permaneceu congelado; "
-                    "current truth agora é provenance-gated."
+                    "V28.7.2A reconciliada em legacy_shadow. Evidence → Observation → Domain foi aplicado; "
+                    "o Truth Gate permaneceu ativo e o Graph V28.6 continuou congelado."
                 )
                 st.caption(
                     f"Domain Coverage Audit: {int(coverage.get('findings') or 0)} gap(s) · "
@@ -304,14 +394,19 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                             st.markdown("**Conflitos de identidade para revisão**")
                             for left, right, *_rest in conflict_pairs:
                                 st.caption(f"• {left} ↔ {right}")
-                        st.caption("A V28.7.1D apenas sinaliza. Merge, split, criação e reclassificação continuam bloqueados até a Semantic Domain Reconciliation.")
+                        st.caption("Na V28.7.2A, Coverage é validado depois da reconciliation. Identity conflict entre identities existentes continua review-required; não existe auto-merge.")
             elif not domain_ok:
                 st.error(
                     "Atualização interrompida: Domain Truth Gate não foi promovido. O Graph V28.6 permaneceu congelado e nenhuma síntese nova foi promovida."
                 )
+            elif not reconciliation_ok:
+                st.error(
+                    "O Truth Gate foi aplicado, mas a Semantic Domain Reconciliation não terminou. "
+                    "Nenhum cutover foi promovido e o Graph V28.6 permaneceu congelado."
+                )
             else:
                 st.error(
-                    "Domain Truth Gate foi aplicado, mas um dos audits de Coverage/Identity não terminou corretamente. "
+                    "Truth Gate e reconciliation foram aplicados, mas um dos audits de Coverage/Identity não terminou corretamente. "
                     "O Graph V28.6 permaneceu congelado; consulte os avisos técnicos."
                 )
             final_warnings = [str(v) for v in (finalization.get("warnings") or []) if str(v).strip()]
