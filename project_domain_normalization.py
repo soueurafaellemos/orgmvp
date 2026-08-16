@@ -764,7 +764,13 @@ def _direct_commercial_process_evidence(
     asset_by_sha: Mapping[str, Mapping[str, Any]],
     evidence_by_asset: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> dict[str, Any] | None:
-    """Find direct/non-competition wording without using project-specific names."""
+    """Find direct/non-competition wording without project-specific rules.
+
+    Supports ordinary prose and checkbox briefings such as
+    ``CONCORRENCIA: ☐SIM ... ☒NÃO``. If the same fact is materialized at more
+    than one Evidence Unit granularity, choose the most atomic current fragment
+    instead of failing only because a document/page wrapper also contains it.
+    """
     patterns = (
         "concorrencia nao",
         "sem concorrencia",
@@ -773,6 +779,20 @@ def _direct_commercial_process_evidence(
         "contratacao direta",
         "processo direto",
     )
+
+    def supports_direct(raw: Any) -> bool:
+        source = str(raw or "")
+        text = _norm(source)
+        if any(pattern in text for pattern in patterns):
+            return True
+        if "concorrencia" not in text:
+            return False
+        folded = unicodedata.normalize("NFKD", source.casefold())
+        folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+        checked_no = re.search(r"(?:☒|☑|\[x\]|\bx\b)\s*nao\b", folded, flags=re.IGNORECASE)
+        checked_yes = re.search(r"(?:☒|☑|\[x\]|\bx\b)\s*sim\b", folded, flags=re.IGNORECASE)
+        return bool(checked_no and not checked_yes)
+
     matches: list[dict[str, Any]] = []
     for doc in briefing_documents:
         asset = asset_by_sha.get(str(doc.get("content_sha256") or ""))
@@ -780,12 +800,20 @@ def _direct_commercial_process_evidence(
             continue
         asset_id = str(asset.get("id") or "")
         for ev in evidence_by_asset.get(asset_id) or []:
-            text = _norm(ev.get("content_text"))
-            if any(pattern in text for pattern in patterns):
+            if supports_direct(ev.get("content_text")):
                 matches.append(dict(ev))
-    # Same fact duplicated into multiple parser fragments is ambiguous for a
-    # singular source_evidence_id; fail closed instead of selecting by confidence.
-    return _conservative_evidence_match(matches, text_hints=patterns)
+    if not matches:
+        return None
+
+    # Prefer the most atomic representation of the same documented fact.
+    unit_priority = {"sentence": 0, "paragraph": 1, "row": 1, "cell": 1, "page": 2, "slide": 2, "document": 3}
+    matches.sort(key=lambda ev: (
+        unit_priority.get(str(ev.get("unit_type") or "").casefold(), 4),
+        len(str(ev.get("content_text") or "")),
+        int(ev.get("ordinal") or 0),
+        str(ev.get("id") or ""),
+    ))
+    return matches[0]
 
 def _evidence_for_cost_item(
     row: Mapping[str, Any],

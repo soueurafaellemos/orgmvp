@@ -83,3 +83,33 @@ def test_non_competition_wording_can_ground_direct_process_rule():
         }]},
     )
     assert match and match["id"] == "competition"
+
+
+def test_non_competition_checkbox_wording_can_ground_direct_process_rule():
+    match = _direct_commercial_process_evidence(
+        briefing_documents=[{"content_sha256": "sha"}],
+        asset_by_sha={"sha": {"id": "asset"}},
+        evidence_by_asset={"asset": [
+            {
+                "id": "document-wrapper", "unit_type": "document", "ordinal": 1,
+                "content_text": "INFOS GERAIS\nCONCORRENCIA: ☐SIM, Quais agências: ☒NÃO\nORÇAMENTO: ☒COMPLETO",
+            },
+            {
+                "id": "competition-paragraph", "unit_type": "paragraph", "ordinal": 2,
+                "content_text": "CONCORRENCIA: ☐SIM, Quais agências: ☒NÃO",
+            },
+        ]},
+    )
+    assert match and match["id"] == "competition-paragraph"
+
+
+def test_checked_yes_competition_does_not_become_direct():
+    match = _direct_commercial_process_evidence(
+        briefing_documents=[{"content_sha256": "sha"}],
+        asset_by_sha={"sha": {"id": "asset"}},
+        evidence_by_asset={"asset": [{
+            "id": "competition", "unit_type": "paragraph", "ordinal": 3,
+            "content_text": "CONCORRENCIA: ☒SIM, Quais agências: ☐NÃO",
+        }]},
+    )
+    assert match is None

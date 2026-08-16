@@ -55,6 +55,90 @@ def _tokens(value: Any) -> set[str]:
     return {token for token in _norm(value).split() if len(token) >= 3 or token.isdigit()}
 
 
+def _name_token(token: str) -> str:
+    """Light deterministic normalization for obvious Portuguese singular/plural aliases."""
+    value = _norm(token)
+    if value.endswith("ens") and len(value) > 5:
+        value = value[:-3] + "em"
+    elif value.endswith("s") and len(value) > 5:
+        value = value[:-1]
+    return value
+
+
+def _name_tokens(value: Any) -> set[str]:
+    stop = {"de", "da", "do", "das", "dos", "e", "em", "para", "com", "por"}
+    return {_name_token(token) for token in _norm(value).split() if token not in stop and len(token) >= 4}
+
+
+def _unique_anchor_solution_match(name: str, solutions: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Resolve clear report aliases without doing full entity resolution.
+
+    This intentionally handles only low-risk cases: token-subset aliases (e.g.
+    Oficina de Origami -> Oficina Origami de Coração) and a single distinctive
+    anchor that occurs in exactly one project solution (e.g. Mascote ...).
+    """
+    candidate = _name_tokens(name)
+    if not candidate:
+        return None
+    solution_tokens = [(dict(row), _name_tokens(row.get("name"))) for row in solutions]
+
+    subset_matches = []
+    for row, tokens in solution_tokens:
+        shared = candidate & tokens
+        if not shared:
+            continue
+        if (candidate <= tokens or tokens <= candidate) and (len(shared) >= 2 or max(map(len, shared)) >= 7):
+            subset_matches.append(row)
+    if len(subset_matches) == 1:
+        return subset_matches[0]
+
+    generic = {"ativacao", "solucao", "produto", "brinde", "oficina", "jogo", "press", "item", "distribuicao"}
+    token_frequency: dict[str, int] = {}
+    for _row, tokens in solution_tokens:
+        for token in tokens:
+            token_frequency[token] = token_frequency.get(token, 0) + 1
+    anchored = []
+    for row, tokens in solution_tokens:
+        anchors = {
+            token for token in candidate & tokens
+            if len(token) >= 7 and token not in generic and token_frequency.get(token) == 1
+        }
+        if anchors:
+            anchored.append(row)
+    return anchored[0] if len(anchored) == 1 else None
+
+
+def _compositional_identity_signal(left_name: str, right_name: str, evidence_text: Any) -> bool:
+    """Detect one noun phrase being split into two identities.
+
+    Sharing a page/slide is not enough. We require either strong name similarity
+    or an explicit connective phrase such as 'chaveiro de pelúcia'. This rejects
+    sibling labels such as 'ASAS / MEIAS / BRINDES'.
+    """
+    left = _norm(left_name)
+    right = _norm(right_name)
+    text = _norm(evidence_text)
+    if not left or not right or not text:
+        return False
+    if _similarity(left_name, right_name) >= 0.82:
+        return True
+    positions = []
+    for first, second in ((left, right), (right, left)):
+        start = text.find(first)
+        if start < 0:
+            continue
+        second_start = text.find(second, start + len(first))
+        if second_start < 0:
+            continue
+        between = text[start + len(first):second_start].strip()
+        between_tokens = between.split()
+        relational = {"de", "do", "da", "dos", "das", "com", "em", "para", "tipo"}
+        allowed = relational | {"e"}
+        if 1 <= len(between_tokens) <= 4 and set(between_tokens) <= allowed and set(between_tokens) & relational:
+            return True
+    return False
+
+
 def _sha(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -91,8 +175,9 @@ def _solution_is_resolved(name: str, solutions: Sequence[Mapping[str, Any]]) -> 
     _best, best_score, second_score = _best_solution_match(name, solutions)
     if best_score >= 0.92:
         return True
-    # Conservative alias tolerance: a lower fuzzy match must also be unique.
-    return best_score >= 0.82 and (best_score - second_score) >= 0.10
+    if best_score >= 0.82 and (best_score - second_score) >= 0.10:
+        return True
+    return _unique_anchor_solution_match(name, solutions) is not None
 
 
 def _report_result_candidates(report_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -300,6 +385,11 @@ def _coverage_audit(client: Any, project_id: str, project_entity_id: str, parent
         missing_names: list[str] = []
         for candidate in candidates:
             name = str(candidate.get("name") or "").strip()
+            # item_results in closure reports are logistics/material outputs, not
+            # automatically Project Solution Instances. Only activation-level
+            # results are eligible for a missing-solution coverage finding.
+            if "activation_result" not in set(candidate.get("result_kinds") or []):
+                continue
             if not name or _solution_is_resolved(name, solutions):
                 continue
 
@@ -408,15 +498,16 @@ def _identity_audit(client: Any, project_id: str, project_entity_id: str, parent
                         # this audit focuses on two distinct identities sharing evidence.
                         continue
                     shared_evidence = evidence_by_id.get(evidence_id) or {}
-                    evidence_text = _norm(shared_evidence.get("content_text"))
+                    evidence_text_raw = str(shared_evidence.get("content_text") or "")
+                    evidence_text = _norm(evidence_text_raw)
                     left_supported = _norm(left_name) in evidence_text or _similarity(left_name, evidence_text) >= 0.68
                     right_supported = _norm(right_name) in evidence_text or _similarity(right_name, evidence_text) >= 0.68
-                    # A page/slide container can legitimately contain unrelated solutions.
-                    # Duplicate-identity review is reserved for a compact shared fragment
-                    # that materially supports both observed names.
                     if not (left_supported and right_supported):
                         continue
-                    if len(evidence_text) > 260 and _similarity(left_name, right_name) < 0.55:
+                    # Same page/slide is not an identity conflict. Require a semantic
+                    # split signal: near-alias names or an explicit compositional noun
+                    # phrase (e.g. 'chaveiro de pelúcia').
+                    if not _compositional_identity_signal(left_name, right_name, evidence_text_raw):
                         continue
                     _insert_finding(
                         client,
