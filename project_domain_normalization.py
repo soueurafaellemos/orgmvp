@@ -19,6 +19,7 @@ Regras de contrato:
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from collections import Counter
 import hashlib
 import json
 import re
@@ -1467,6 +1468,48 @@ def _build_bundle(project_id: str, data: Mapping[str, Any], *, client: Any | Non
     return bundle, list(dict.fromkeys(warnings))
 
 
+def _legacy_occurrence_coverage(
+    memory_items: Sequence[Mapping[str, Any]],
+    occurrence_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Validate legacy compatibility occurrences without forbidding semantic growth.
+
+    V28.7.1D originally used total occurrence count == memory_items count as a
+    migration parity gate. Once V28.7.2A legitimately adds proposal, execution,
+    budget and other evidence-led occurrences, total cardinality is expected to
+    grow. The compatibility invariant we actually need is narrower and stronger:
+
+    * every current memory_item with an id is still represented by exactly one
+      occurrence carrying that legacy_memory_item_id;
+    * extra semantic occurrences are allowed and must not fail the gate.
+
+    This keeps legacy preservation fail-closed while making repeated semantic
+    reconciliation idempotent-compatible.
+    """
+    expected_ids = {str(row.get("id")) for row in (memory_items or []) if row.get("id")}
+    legacy_refs = [
+        str(row.get("legacy_memory_item_id"))
+        for row in (occurrence_rows or [])
+        if row.get("legacy_memory_item_id") and str(row.get("legacy_memory_item_id")) in expected_ids
+    ]
+    counts = Counter(legacy_refs)
+    missing_ids = sorted(expected_ids - set(counts))
+    duplicate_ids = sorted(key for key, count in counts.items() if count != 1)
+    represented = sum(1 for key in expected_ids if counts.get(key) == 1)
+    compatibility_occurrences = sum(counts.values())
+    total_occurrences = len(list(occurrence_rows or []))
+    return {
+        "ok": not missing_ids and not duplicate_ids,
+        "expected": len(expected_ids),
+        "represented_exactly_once": represented,
+        "compatibility_occurrences": compatibility_occurrences,
+        "semantic_or_other_occurrences": max(0, total_occurrences - compatibility_occurrences),
+        "total_occurrences": total_occurrences,
+        "missing_ids": missing_ids,
+        "duplicate_ids": duplicate_ids,
+    }
+
+
 def _validate_bundle(bundle: Mapping[str, Any], data: Mapping[str, Any]) -> None:
     errors: list[str] = []
     if len(bundle.get("requirements") or []) < len(data.get("requirements") or []):
@@ -1758,9 +1801,36 @@ def sync_project_domain_normalization(client: Any, project_id: str) -> dict[str,
     normalized = status.get("normalized") or {}
     legacy = status.get("legacy") or {}
     integrity = status.get("integrity") or {}
+
+    # V28.7.2A compatibility hotfix: total occurrences are allowed to grow after
+    # evidence-led reconciliation. Verify preservation by legacy reference, not by
+    # total cardinality. This is both less brittle and stricter about missing/duplicate
+    # compatibility occurrences.
+    try:
+        occurrence_rows = _strict_rows(
+            client,
+            "project_solution_occurrences",
+            equals={"project_id": project_id},
+            columns="id,legacy_memory_item_id",
+        )
+    except DomainReadError as exc:
+        return DomainNormalizationResult(
+            project_id=project_id,
+            status="post_apply_read_error",
+            warnings=[*warnings, f"Falha validando cobertura das occurrences legadas: {exc}"],
+            run_id=run_id,
+        ).as_dict()
+
+    legacy_occurrence_coverage = _legacy_occurrence_coverage(
+        data.get("memory_items") or [],
+        occurrence_rows,
+    )
     parity = {
         "solution_occurrence_reduction": max(0, int(legacy.get("memory_items") or 0) - int(normalized.get("solution_instances") or 0)),
-        "occurrence_parity": int(normalized.get("solution_occurrences") or 0) == int(legacy.get("memory_items") or 0),
+        # Keep the historical key for UI/backward compatibility, but its semantic
+        # meaning is now legacy occurrence coverage rather than total-count equality.
+        "occurrence_parity": bool(legacy_occurrence_coverage.get("ok")),
+        "legacy_occurrence_coverage": legacy_occurrence_coverage,
         "requirements_parity": int(normalized.get("requirements") or 0) >= int(legacy.get("requirements") or 0),
         "financial_documents_parity": int(normalized.get("financial_documents") or 0) >= int(legacy.get("cost_documents") or 0),
         "financial_line_items_parity": int(normalized.get("financial_line_items") or 0) >= int(legacy.get("cost_items") or 0),
