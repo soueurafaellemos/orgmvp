@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.1 — Domain Integrity & Provenance.
+"""NAVE V28.7.1D — Domain Truth Gate & Legacy Isolation.
 
 Esta versão endurece a Domain Normalization V28.7.0 sem antecipar os domínios
 semânticos da V28.7.2. O fluxo passa a ser:
@@ -26,9 +26,9 @@ import unicodedata
 from typing import Any, Iterable, Mapping, Sequence
 from uuid import uuid4
 
-DOMAIN_NORMALIZATION_VERSION = "V28.7.1"
-DOMAIN_SCHEMA_VERSION = "28.7.1"
-NORMALIZATION_RPC = "apply_project_domain_normalization_v2871"
+DOMAIN_NORMALIZATION_VERSION = "V28.7.1D"
+DOMAIN_SCHEMA_VERSION = "28.7.1d"
+NORMALIZATION_RPC = "apply_project_domain_normalization_v2871d"
 
 
 class DomainReadError(RuntimeError):
@@ -565,6 +565,148 @@ def _evidence_for_memory_item(
     return asset_id, match
 
 
+def _numeric_signals(value: Any) -> set[int]:
+    """Extract comparable integer-scale numbers without inventing semantics.
+
+    Used only to bind already-extracted requirements back to the same source.
+    It does not decide whether a number is a maximum, envelope, target or range.
+    """
+    if value in (None, ""):
+        return set()
+    if isinstance(value, (int, float)):
+        try:
+            return {int(round(float(value)))}
+        except Exception:
+            return set()
+
+    text = str(value)
+    out: set[int] = set()
+    for raw in re.findall(r"\d[\d\s.,]*", text):
+        token = re.sub(r"\s+", "", raw).strip(".,")
+        if not token:
+            continue
+        # BR thousands: 400.000 / 6.000; US thousands: 400,000.
+        if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", token):
+            digits = re.sub(r"[.,]", "", token)
+            out.add(int(digits))
+            continue
+        # Decimal values are safe to compare at integer scale only when integral.
+        if re.fullmatch(r"\d+[.,]\d{1,2}", token):
+            try:
+                number = float(token.replace(",", "."))
+                if number.is_integer():
+                    out.add(int(number))
+            except Exception:
+                pass
+            continue
+        digits = re.sub(r"\D", "", token)
+        if digits:
+            out.add(int(digits))
+    return out
+
+
+_REQUIREMENT_STOPWORDS = {
+    "para", "com", "sem", "uma", "umas", "uns", "que", "dos", "das", "por", "como",
+    "deve", "devem", "ser", "esta", "este", "isso", "principal", "informado", "informada",
+    "identificado", "identificada", "briefing", "projeto", "evento",
+}
+
+_REQUIREMENT_FAMILY_TERMS = {
+    "audience": {"publico", "audiencia", "pessoas", "pais", "criancas", "idade", "idades", "anos", "classe", "classes"},
+    "objective": {"objetivo", "objetivos", "meta", "proposito", "criar", "construir", "gerar"},
+    "budget": {"budget", "orcamento", "verba", "investimento", "valor", "reais"},
+    "deliverable": {"entrega", "entregavel", "entregaveis", "escopo"},
+    "mandatory": {"obrigatorio", "obrigatoria", "necessario", "necessaria", "deve"},
+    "restriction": {"restricao", "restricoes", "nao", "proibido", "limite"},
+    "logistics": {"logistica", "montagem", "desmontagem", "acesso", "carga", "horario"},
+    "operation": {"operacao", "staff", "equipe", "promotor", "promotores", "fluxo"},
+    "communication": {"comunicacao", "convite", "conteudo", "midia", "social"},
+    "kpi": {"kpi", "meta", "resultado", "participantes", "alcance"},
+}
+
+
+def _semantic_tokens(value: Any) -> set[str]:
+    return {
+        token for token in _norm(value).split()
+        if (len(token) >= 3 or token.isdigit()) and token not in _REQUIREMENT_STOPWORDS
+    }
+
+
+def _unique_requirement_semantic_match(
+    row: Mapping[str, Any],
+    doc: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Deterministic, same-source fallback for legacy requirement provenance.
+
+    Exact quote/reference remains the first choice. This fallback only promotes a
+    binding when the requirement content or a typed briefing field points to one
+    unique Evidence Unit with a material margin over alternatives.
+    """
+    requirement_type = _norm(row.get("requirement_type")).replace(" ", "_")
+    source_hints: list[Any] = [row.get("description"), row.get("title")]
+    if requirement_type == "objective":
+        source_hints.append(doc.get("objective"))
+    elif requirement_type == "audience":
+        source_hints.append(doc.get("audience"))
+
+    normalized_hints = [_norm(v) for v in source_hints if _norm(v) and len(_norm(v)) >= 6]
+    exact_matches = [
+        dict(ev) for ev in candidates
+        if any(hint in _norm(ev.get("content_text")) for hint in normalized_hints)
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+
+    # Budget is compared numerically only for provenance binding. No <= / envelope
+    # semantics are inferred in V28.7.1D.
+    if requirement_type == "budget":
+        expected_numbers = _numeric_signals(doc.get("budget_amount")) | _numeric_signals(row.get("description"))
+        if expected_numbers:
+            budget_terms = _REQUIREMENT_FAMILY_TERMS["budget"]
+            numeric_matches = []
+            for ev in candidates:
+                content = ev.get("content_text")
+                if not (expected_numbers & _numeric_signals(content)):
+                    continue
+                ev_tokens = _semantic_tokens(content)
+                if budget_terms & ev_tokens or "r" in _norm(content).split():
+                    numeric_matches.append(dict(ev))
+            if len(numeric_matches) == 1:
+                return numeric_matches[0]
+
+    target_tokens = set()
+    for hint in source_hints:
+        target_tokens |= _semantic_tokens(hint)
+    family_terms = _REQUIREMENT_FAMILY_TERMS.get(requirement_type, set())
+    if not target_tokens and not family_terms:
+        return None
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for raw in candidates:
+        ev = dict(raw)
+        ev_tokens = _semantic_tokens(ev.get("content_text"))
+        if not ev_tokens:
+            continue
+        overlap = len(target_tokens & ev_tokens)
+        overlap_ratio = overlap / max(len(target_tokens), 1)
+        family_hit = 1.0 if family_terms and (family_terms & ev_tokens) else 0.0
+        # Require content support, not just a generic family word such as "objetivo".
+        if overlap < 2 and overlap_ratio < 0.45:
+            continue
+        score = min(1.0, (0.72 * overlap_ratio) + (0.18 * min(overlap / 4.0, 1.0)) + (0.10 * family_hit))
+        scored.append((score, ev))
+
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score, best = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else 0.0
+    if best_score >= 0.58 and (best_score - second_score) >= 0.12:
+        return best
+    return None
+
+
 def _evidence_for_requirement(
     row: Mapping[str, Any],
     *,
@@ -587,8 +729,6 @@ def _evidence_for_requirement(
         match = _conservative_evidence_match(matches, text_hints=(row.get("source_quote"), row.get("title")))
         if match:
             return asset_id, match
-        # An exact quote that occurs in multiple evidence units is ambiguous; do
-        # not silently select the highest-confidence extraction.
 
     ref = str(row.get("source_reference") or "")
     numbers = [int(v) for v in re.findall(r"\d+", ref)]
@@ -608,14 +748,44 @@ def _evidence_for_requirement(
         locator_key = "slide" if "slide" in unit_types and len(unit_types) == 1 else "page" if "page" in unit_types and len(unit_types) == 1 else "paragraph" if "paragraph" in unit_types and len(unit_types) == 1 else None
         match = _conservative_evidence_match(
             matches,
-            text_hints=(row.get("source_quote"), row.get("title")),
+            text_hints=(row.get("source_quote"), row.get("description"), row.get("title")),
             locator_key=locator_key,
             locator_value=ordinal if locator_key else None,
         )
         if match:
             return asset_id, match
-    return asset_id, None
 
+    return asset_id, _unique_requirement_semantic_match(row, doc, candidates)
+
+
+def _direct_commercial_process_evidence(
+    *,
+    briefing_documents: Sequence[Mapping[str, Any]],
+    asset_by_sha: Mapping[str, Mapping[str, Any]],
+    evidence_by_asset: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> dict[str, Any] | None:
+    """Find direct/non-competition wording without using project-specific names."""
+    patterns = (
+        "concorrencia nao",
+        "sem concorrencia",
+        "nao ha concorrencia",
+        "nao e concorrencia",
+        "contratacao direta",
+        "processo direto",
+    )
+    matches: list[dict[str, Any]] = []
+    for doc in briefing_documents:
+        asset = asset_by_sha.get(str(doc.get("content_sha256") or ""))
+        if not asset:
+            continue
+        asset_id = str(asset.get("id") or "")
+        for ev in evidence_by_asset.get(asset_id) or []:
+            text = _norm(ev.get("content_text"))
+            if any(pattern in text for pattern in patterns):
+                matches.append(dict(ev))
+    # Same fact duplicated into multiple parser fragments is ambiguous for a
+    # singular source_evidence_id; fail closed instead of selecting by confidence.
+    return _conservative_evidence_match(matches, text_hints=patterns)
 
 def _evidence_for_cost_item(
     row: Mapping[str, Any],
@@ -1122,6 +1292,35 @@ def _build_bundle(project_id: str, data: Mapping[str, Any]) -> tuple[dict[str, A
             "legacy_version_key": _normalized_event_version_key(row),
         })
 
+    direct_process_evidence = _direct_commercial_process_evidence(
+        briefing_documents=data.get("briefing_documents") or [],
+        asset_by_sha=asset_by_sha,
+        evidence_by_asset=evidence_by_asset,
+    )
+    if direct_process_evidence and direct_process_evidence.get("id"):
+        evidence_id = str(direct_process_evidence["id"])
+        direct_reason = _clean(direct_process_evidence.get("content_text"))
+        for outcome_type, outcome_status in (("process_type", "direct"), ("commercial_result", "not_applicable")):
+            outcomes.append({
+                "entity_id": project_entity_id,
+                "outcome_type": outcome_type,
+                "outcome_status": outcome_status,
+                "outcome_at": None,
+                "reason": direct_reason,
+                "source_claim_id": None,
+                "source_evidence_id": evidence_id,
+                "confidence": 0.99,
+                "authority_score": 0.92,
+                "is_human_confirmed": False,
+                "attributes": {
+                    "normalized_by": DOMAIN_NORMALIZATION_VERSION,
+                    "semantic_rule": "non_competition_implies_direct_not_applicable",
+                },
+                "legacy_source_table": "domain_rule_v2871d",
+                "legacy_source_id": project_id,
+                "legacy_version_key": f"{evidence_id}|{DOMAIN_NORMALIZATION_VERSION}|{outcome_type}",
+            })
+
     memory_project_outcome = data["project_outcomes"][0] if data["project_outcomes"] else None
     if memory_project_outcome:
         confidence, authority, human = _confidence_from_legacy(memory_project_outcome.get("confidence_level"))
@@ -1226,14 +1425,23 @@ def _domain_schema_available(client: Any) -> tuple[bool, str | None, str | None]
         "domain_object_evidence",
         "domain_object_governance",
         "project_domain_migration_state",
+        "entity_outcome_truth_status",
+        "intelligence_reviews",
+        "intelligence_findings",
+        "finding_evidence",
+        "finding_entities",
     )
     try:
         for table in required:
             client.table(table).select("*").limit(1).execute()
+        # The V28.7.1D integrity view appends these fields. This prevents a
+        # V28.7.1B schema from being mistaken for the new Truth Gate.
+        client.table("project_domain_integrity_status").select(
+            "project_id,outcomes_total,outcomes_verified,outcomes_legacy_unverified,outcomes_conflicted,truth_gate_passed"
+        ).limit(1).execute()
         return True, None, None
     except Exception as exc:
         return False, _schema_error_kind(exc), str(exc)
-
 
 def probe_domain_schema(client: Any) -> dict[str, Any]:
     """Public preflight used by orchestration before any downstream mutation."""
@@ -1323,6 +1531,11 @@ def fetch_project_domain_status(client: Any, project_id: str) -> dict[str, Any]:
         "financial_lines_with_evidence": int(status.get("financial_lines_with_evidence") or 0),
         "outcomes": int(status.get("current_outcomes") or 0),
         "evidence_links": int(status.get("evidence_links") or 0),
+        "outcomes_total": int(status.get("outcomes_total") or 0),
+        "outcomes_verified": int(status.get("outcomes_verified") or 0),
+        "outcomes_inferred": int(status.get("outcomes_inferred") or 0),
+        "outcomes_legacy_unverified": int(status.get("outcomes_legacy_unverified") or 0),
+        "outcomes_conflicted": int(status.get("outcomes_conflicted") or 0),
     }
     legacy = {
         "memory_items": int(status.get("legacy_memory_items") or 0),
@@ -1335,6 +1548,15 @@ def fetch_project_domain_status(client: Any, project_id: str) -> dict[str, Any]:
         "domain_schema_version": status.get("domain_schema_version") or DOMAIN_SCHEMA_VERSION,
         "last_completed_run_id": status.get("last_completed_run_id"),
         "outcome_breakdown": outcome_breakdown,
+        "proposal_outcomes_total": int(status.get("proposal_outcomes_total") or 0),
+        "proposal_outcomes_verified": int(status.get("proposal_outcomes_verified") or 0),
+        "execution_outcomes_total": int(status.get("execution_outcomes_total") or 0),
+        "execution_outcomes_verified": int(status.get("execution_outcomes_verified") or 0),
+        "commercial_outcomes_total": int(status.get("commercial_outcomes_total") or 0),
+        "commercial_outcomes_verified": int(status.get("commercial_outcomes_verified") or 0),
+        "coverage_findings_open": int(status.get("coverage_findings_open") or 0),
+        "identity_conflicts_open": int(status.get("identity_conflicts_open") or 0),
+        "truth_gate_passed": bool(status.get("truth_gate_passed")),
         "occurrence_evidence_coverage": (
             normalized["occurrences_with_evidence"] / normalized["solution_occurrences"]
             if normalized["solution_occurrences"] else None
@@ -1388,7 +1610,7 @@ def sync_project_domain_normalization(client: Any, project_id: str) -> dict[str,
     available, failure_kind, error = _domain_schema_available(client)
     if not available:
         if failure_kind == "schema_missing":
-            headline = "Domain Integrity V28.7.1 não está visível no Data API. Execute/revalide o SQL V28.7.1B e recarregue o schema do PostgREST."
+            headline = "Domain Truth Gate V28.7.1D não está visível no Data API. Execute/revalide o SQL V28.7.1D e recarregue o schema do PostgREST."
         else:
             headline = "Não foi possível validar o schema de Domain Integrity. O erro não será tratado como banco vazio ou migration ausente."
         return DomainNormalizationResult(

@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.7.1",
+    eyebrow="NAVE by VOE · V28.7.1D",
 )
 
 client = get_nave_client()
@@ -54,35 +54,60 @@ def _render_domain_normalization(container: dict, *, expanded: bool = False) -> 
     status = str(domain.get("status") or "")
     if status == "schema_missing":
         st.warning(
-            "Domain Integrity V28.7.1 não está visível no Data API. Execute/revalide o SQL "
-            "NAVE_NAVE_V28_7_1B_DOMAIN_INTEGRITY_SQL_COMPAT.sql e rode esta ação novamente."
+            "Domain Truth Gate V28.7.1D não está visível no Data API. Execute/revalide o SQL "
+            "NAVE_V28_7_1D_DOMAIN_TRUTH_GATE_LEGACY_ISOLATION.sql e rode esta ação novamente."
         )
         return
     if status == "schema_check_error":
         st.error(
-            "Não foi possível validar o schema de Domain Integrity. Isso não será tratado como migration ausente nem como banco vazio."
+            "Não foi possível validar o schema de Domain Truth Gate. Isso não será tratado como migration ausente nem como banco vazio."
         )
         for warning in (domain.get("warnings") or [])[:8]:
             st.caption("• " + str(warning))
         return
     if status in {"read_or_validation_error", "transaction_error", "post_apply_read_error", "orchestration_error", "completed_with_gate_warning"}:
-        st.error("Domain Integrity não promoveu uma nova geração. O estado anterior permanece válido.")
+        st.error("Domain Truth Gate não promoveu uma nova geração. O estado anterior permanece válido.")
         for warning in (domain.get("warnings") or [])[:8]:
             st.caption("• " + str(warning))
         return
+
     parity = domain.get("parity") or {}
     normalized = parity.get("normalized") or {}
     legacy = parity.get("legacy") or {}
-    with st.expander("Domain Integrity & Provenance · V28.7.1", expanded=expanded):
+    integrity = parity.get("integrity") or {}
+
+    with st.expander("Domain Truth Gate & Legacy Isolation · V28.7.1D", expanded=expanded):
         cols = st.columns(6)
         cols[0].metric("Soluções", int(normalized.get("solution_instances") or domain.get("solution_instances") or 0))
         cols[1].metric("Ocorrências", int(normalized.get("solution_occurrences") or domain.get("solution_occurrences") or 0))
         cols[2].metric("Requisitos", int(normalized.get("requirements") or domain.get("requirements") or 0))
-        cols[3].metric("Docs financeiros", int(normalized.get("financial_documents") or domain.get("financial_documents") or 0))
-        cols[4].metric("Linhas financeiras", int(normalized.get("financial_line_items") or domain.get("financial_line_items") or 0))
-        cols[5].metric("Outcomes atuais", int(normalized.get("outcomes") or 0))
+        cols[3].metric("Linhas financeiras", int(normalized.get("financial_line_items") or domain.get("financial_line_items") or 0))
+        cols[4].metric("Current truth", int(normalized.get("outcomes") or 0))
+        cols[5].metric(
+            "Outcomes verificáveis",
+            f"{int(normalized.get('outcomes_verified') or 0)}/{int(normalized.get('outcomes_total') or 0)}",
+        )
 
-        integrity = parity.get("integrity") or {}
+        truth_cols = st.columns(5)
+        truth_cols[0].metric("Verified", int(normalized.get("outcomes_verified") or 0))
+        truth_cols[1].metric("Legacy unverified", int(normalized.get("outcomes_legacy_unverified") or 0))
+        truth_cols[2].metric("Inferred", int(normalized.get("outcomes_inferred") or 0))
+        truth_cols[3].metric("Conflicted", int(normalized.get("outcomes_conflicted") or 0))
+        truth_cols[4].metric("Truth Gate", "PASS" if integrity.get("truth_gate_passed") else "REVIEW")
+
+        proposal_total = int(integrity.get("proposal_outcomes_total") or 0)
+        proposal_verified = int(integrity.get("proposal_outcomes_verified") or 0)
+        execution_total = int(integrity.get("execution_outcomes_total") or 0)
+        execution_verified = int(integrity.get("execution_outcomes_verified") or 0)
+        commercial_total = int(integrity.get("commercial_outcomes_total") or 0)
+        commercial_verified = int(integrity.get("commercial_outcomes_verified") or 0)
+        st.caption(
+            "Outcome provenance · "
+            f"proposal {proposal_verified}/{proposal_total} · "
+            f"execution {execution_verified}/{execution_total} · "
+            f"commercial {commercial_verified}/{commercial_total}."
+        )
+
         evidence_cols = st.columns(4)
         evidence_cols[0].metric("Evidence links", int(normalized.get("evidence_links") or domain.get("evidence_links") or 0))
         evidence_cols[1].metric(
@@ -97,12 +122,20 @@ def _render_domain_normalization(container: dict, *, expanded: bool = False) -> 
             "Custos com evidência",
             f"{int(normalized.get('financial_lines_with_evidence') or 0)}/{int(normalized.get('financial_line_items') or 0)}",
         )
+
+        audit_cols = st.columns(2)
+        audit_cols[0].metric("Coverage gaps", int(integrity.get("coverage_findings_open") or 0))
+        audit_cols[1].metric("Identity conflicts", int(integrity.get("identity_conflicts_open") or 0))
+
         migration_mode = str(integrity.get("migration_mode") or "legacy_shadow")
-        schema_version = str(integrity.get("domain_schema_version") or "28.7.1")
-        st.caption(f"Migration mode: {migration_mode} · Domain schema: {schema_version} · Run: {domain.get('run_id') or integrity.get('last_completed_run_id') or '—'}")
+        schema_version = str(integrity.get("domain_schema_version") or "28.7.1d")
+        st.caption(
+            f"Migration mode: {migration_mode} · Domain schema: {schema_version} · "
+            f"Run: {domain.get('run_id') or integrity.get('last_completed_run_id') or '—'}"
+        )
         breakdown = integrity.get("outcome_breakdown") or {}
         if breakdown:
-            st.caption("Current outcomes: " + " · ".join(f"{key} {value}" for key, value in sorted(breakdown.items())))
+            st.caption("Current truth por tipo: " + " · ".join(f"{key} {value}" for key, value in sorted(breakdown.items())))
 
         reduction = int(parity.get("solution_occurrence_reduction") or 0)
         if reduction > 0:
@@ -110,8 +143,8 @@ def _render_domain_normalization(container: dict, *, expanded: bool = False) -> 
                 f"{reduction} ocorrência(s) memory_items foram consolidadas em instâncias de solução do projeto, sem perder os registros legados."
             )
         st.caption(
-            "V28.7.1 mantém a migração em legacy_shadow e endurece integridade/provenance: strict reads, occurrences, evidence binding e apply transacional. "
-            "Nenhum cutover para domain_primary é automático."
+            "V28.7.1D mantém legacy_shadow. Outcome legado sem Evidence Unit, Claim auditável ou Human Review continua preservado, "
+            "mas não pode decidir current truth. O Graph V28.6 permanece congelado e não participa destes gates."
         )
         if legacy:
             st.caption(
@@ -232,52 +265,58 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
         if st.button(
-            "Atualizar domínio e conexões inteligentes",
+            "Atualizar domínio e auditar verdade",
             width="stretch",
             disabled=not confirm_reprocess,
-            key="v286_rebuild_intelligence_graph",
-            help="Normaliza soluções/requisitos/custos/outcomes e atualiza o grafo cross-source sem rematerializar briefing, proposta, planilha ou relatório.",
+            key="v2871d_refresh_domain_truth",
+            help="Aplica Domain Truth Gate, corrige provenance determinística e roda Coverage/Identity Audits. Não reconstrói o Graph V28.6.",
         ):
             from project_intelligence_pipeline import finalize_project_intelligence
 
-            with st.spinner("Normalizando domínio e atualizando conexões entre as fontes já estruturadas..."):
+            with st.spinner("Aplicando Truth Gate e auditando cobertura/identidade sem reconstruir o Graph legado..."):
                 finalization = finalize_project_intelligence(client, repair_options[repair_label], analyze_pending_reports=False)
-            canonical = finalization.get("canonical_entity_graph") or {}
-            cross = finalization.get("cross_source") or {}
             _render_domain_normalization(finalization, expanded=True)
             domain = _domain_result(finalization)
+            audits = finalization.get("domain_audits") or {}
             domain_ok = str(domain.get("status") or "") == "completed"
-            cross_ok = str(cross.get("status") or "").startswith("completed")
-            if domain_ok and cross_ok:
-                st.success("Domain Integrity V28.7.1 atualizada sem reprocessar os arquivos. O Graph V28.6 também foi reconstruído apenas por compatibilidade.")
-                with st.expander("Compatibilidade temporária · Entity Graph V28.6.2", expanded=False):
-                    cols = st.columns(6)
-                    cols[0].metric("Entidades canônicas", int(canonical.get("memory_items_considered") or 0))
-                    cols[1].metric("Entidades multi-fonte", int(cross.get("multi_source_entities_total") or 0))
-                    cols[2].metric("Ocorrências ligadas", int(cross.get("unified_occurrences_total") or cross.get("entities_merged") or 0))
-                    cols[3].metric("Solução ↔ custo", int(cross.get("cost_links_total") or cross.get("cost_links") or 0))
-                    cols[4].metric("Execuções ligadas", int(cross.get("execution_claims_total") or cross.get("execution_claims") or 0))
-                    cols[5].metric("Relações hierárquicas", int(cross.get("hierarchy_links_total") or cross.get("hierarchy_links") or 0))
-                    reviews = int(cross.get("resolution_reviews") or 0) + int(cross.get("cost_link_reviews") or 0)
-                    st.caption(
-                        f"Revisões ambíguas pendentes: {reviews}. Estes contadores NÃO validam a V28.7.1 e não são mais o source of truth alvo."
-                    )
-                    debug_rows = cross.get("resolution_debug") or []
-                    if debug_rows:
-                        with st.expander("Diagnóstico legado do Entity Resolution", expanded=False):
-                            st.dataframe(pd.DataFrame(debug_rows), hide_index=True, width="stretch")
+            audits_ok = str(audits.get("status") or "") == "completed"
+            if domain_ok and audits_ok:
+                coverage = audits.get("coverage") or {}
+                identity = audits.get("identity") or {}
+                st.success(
+                    "V28.7.1D atualizada sem reprocessar os masters. O Graph V28.6 permaneceu congelado; "
+                    "current truth agora é provenance-gated."
+                )
+                st.caption(
+                    f"Domain Coverage Audit: {int(coverage.get('findings') or 0)} gap(s) · "
+                    f"Identity Audit: {int(identity.get('findings') or 0)} conflito(s). "
+                    "Findings não criam, unem ou reclassificam soluções automaticamente."
+                )
+                missing_names = [str(v) for v in (coverage.get("missing_names") or []) if str(v).strip()]
+                conflict_pairs = [pair for pair in (identity.get("conflict_pairs") or []) if isinstance(pair, (list, tuple)) and len(pair) >= 2]
+                if missing_names or conflict_pairs:
+                    with st.expander("Domain Coverage & Identity Audit · detalhes", expanded=True):
+                        if missing_names:
+                            st.markdown("**Possíveis soluções ausentes do domínio**")
+                            for name in missing_names:
+                                st.caption("• " + name)
+                        if conflict_pairs:
+                            st.markdown("**Conflitos de identidade para revisão**")
+                            for left, right, *_rest in conflict_pairs:
+                                st.caption(f"• {left} ↔ {right}")
+                        st.caption("A V28.7.1D apenas sinaliza. Merge, split, criação e reclassificação continuam bloqueados até a Semantic Domain Reconciliation.")
             elif not domain_ok:
                 st.error(
-                    "Atualização interrompida: Domain Integrity não foi promovida. O Graph de compatibilidade e a síntese semântica não foram tratados como atualização válida."
+                    "Atualização interrompida: Domain Truth Gate não foi promovido. O Graph V28.6 permaneceu congelado e nenhuma síntese nova foi promovida."
                 )
             else:
-                st.warning(
-                    "Domain Integrity foi promovida, mas a reconstrução de compatibilidade terminou sem confirmação completa do Cross-Source Linker. "
-                    + str((cross or {}).get("error") or "Consulte os avisos técnicos abaixo.")
+                st.error(
+                    "Domain Truth Gate foi aplicado, mas um dos audits de Coverage/Identity não terminou corretamente. "
+                    "O Graph V28.6 permaneceu congelado; consulte os avisos técnicos."
                 )
             final_warnings = [str(v) for v in (finalization.get("warnings") or []) if str(v).strip()]
             if final_warnings:
-                with st.expander("Avisos da reconstrução", expanded=False):
+                with st.expander("Avisos da atualização", expanded=False):
                     for warning in final_warnings[:30]:
                         st.caption("• " + warning)
 

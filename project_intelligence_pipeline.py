@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-"""Finalização única de inteligência após uma importação/reprocessamento.
+"""NAVE V28.7.1D — safe project intelligence finalization.
 
-A regra arquitetural é simples: novos arquivos não podem alimentar só o workspace ou
-só o Intelligence Graph. Ao terminar um lote, a NAVE fecha relatório pós-evento,
-cross-source linking, snapshot unificado e Project Analyst no mesmo pipeline.
+V28.6 graph/cross-source synthesis is intentionally frozen. The current action
+normalizes the Domain Layer, applies the Truth Gate and publishes deterministic
+Coverage/Identity findings. No new semantic synthesis is allowed to depend on
+the legacy V28.6 graph while the project remains ``legacy_shadow``.
 """
 
 import os
@@ -54,7 +55,7 @@ def _pending_report_files(client: Any, project_id: str) -> list[dict[str, Any]]:
 
 
 def auto_analyze_pending_reports(client: Any, project_id: str) -> dict[str, Any]:
-    """Estrutura relatórios já anexados automaticamente, sem depender de um clique manual."""
+    """Structure reports already attached. This precedes the deterministic Truth Gate."""
     pending = _pending_report_files(client, project_id)
     if not pending:
         return {"processed": 0, "errors": [], "skipped": 0}
@@ -100,12 +101,34 @@ def auto_analyze_pending_reports(client: Any, project_id: str) -> dict[str, Any]
     return {"processed": processed, "errors": errors, "skipped": max(0, len(pending) - processed - len(errors))}
 
 
+def _refresh_domain_result(client: Any, project_id: str, domain_normalization: dict[str, Any]) -> dict[str, Any]:
+    """Refresh Truth/Audit counters after analysts publish their findings."""
+    try:
+        from project_domain_normalization import fetch_project_domain_status
+
+        latest = fetch_project_domain_status(client, project_id)
+        if latest.get("status") != "ready":
+            return domain_normalization
+        parity = domain_normalization.setdefault("parity", {})
+        parity["normalized"] = latest.get("normalized") or parity.get("normalized") or {}
+        parity["legacy"] = latest.get("legacy") or parity.get("legacy") or {}
+        parity["integrity"] = latest.get("integrity") or parity.get("integrity") or {}
+        return domain_normalization
+    except Exception:
+        return domain_normalization
+
+
 def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pending_reports: bool = True) -> dict[str, Any]:
     warnings: list[str] = []
+    frozen_graph = {
+        "status": "frozen_v28_6",
+        "version": "V28.6",
+        "reason": "V28.7.1D congela o Graph legado; Domain Refresh não o reconstrói nem usa seus contadores como truth gate.",
+    }
+    frozen_prelinks = {"cost": 0, "briefing": 0, "status": "frozen_v28_6"}
 
-    # V28.7.1B — fail closed BEFORE report/prelink/graph mutations when the
-    # Domain Integrity schema is unavailable. A missing/stale schema cannot
-    # coexist with a green "updated" banner or a rebuilt compatibility graph.
+    # Fail closed before report/domain mutations if the V28.7.1D Truth Gate is
+    # unavailable. A stale V28.7.1B schema cannot be presented as the new gate.
     try:
         from project_domain_normalization import probe_domain_schema
         schema_probe = probe_domain_schema(client)
@@ -120,16 +143,17 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
             "status": failure_status,
             "warnings": [error],
         }
-        warnings.append(f"Domain Normalization preflight: {error}")
+        warnings.append(f"Domain Truth Gate preflight: {error}")
         return {
             "status": "domain_blocked",
             "project_id": project_id,
             "report_analysis": {"status": "skipped_domain_blocked", "processed": 0, "errors": []},
             "domain_normalization": domain_normalization,
+            "domain_audits": {"status": "skipped_domain_blocked"},
             "canonical_entity_graph": None,
-            "cross_source": {"status": "skipped_domain_blocked"},
+            "cross_source": frozen_graph,
             "semantic_project_analysis": None,
-            "structured_prelinks": {"cost": 0, "briefing": 0, "status": "skipped_domain_blocked"},
+            "structured_prelinks": frozen_prelinks,
             "warnings": warnings[:40],
         }
 
@@ -141,19 +165,7 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
     else:
         report_result = {"status": "skipped_explicit_domain_refresh", "processed": 0, "errors": [], "skipped": 0}
 
-    # V28.6.2 compatibility prelinks remain legacy-only. They run only after
-    # the V28.7.1 schema preflight passed.
-    prelinks = {"cost": 0, "briefing": 0}
-    try:
-        from project_workspace_db import fetch_project_workspace_snapshot
-        from project_workspace_intelligence import ensure_automatic_briefing_links, ensure_automatic_cost_links
-        pre_snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
-        prelinks["cost"] = ensure_automatic_cost_links(client, project_id=project_id, snapshot=pre_snapshot)
-        prelinks["briefing"] = ensure_automatic_briefing_links(client, project_id=project_id, snapshot=pre_snapshot)
-    except Exception as exc:
-        warnings.append(f"Structured prelinks: {exc}")
-
-    domain_normalization = None
+    domain_normalization: dict[str, Any]
     try:
         from project_domain_normalization import sync_project_domain_normalization
         domain_normalization = sync_project_domain_normalization(client, project_id)
@@ -169,73 +181,62 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
         for value in (domain_normalization or {}).get("warnings") or []:
             if str(value).strip():
                 warnings.append(f"Domain Normalization: {str(value)[:700]}")
-        # Domain apply/gates are the prerequisite for any compatibility graph
-        # rebuild or semantic Project Intelligence promotion in this action.
         return {
             "status": "domain_blocked",
             "project_id": project_id,
             "report_analysis": report_result,
             "domain_normalization": domain_normalization,
+            "domain_audits": {"status": "skipped_domain_blocked"},
             "canonical_entity_graph": None,
-            "cross_source": {"status": "skipped_domain_blocked"},
+            "cross_source": frozen_graph,
             "semantic_project_analysis": None,
-            "structured_prelinks": prelinks,
+            "structured_prelinks": frozen_prelinks,
             "warnings": warnings[:40],
         }
 
-    canonical_graph = None
     try:
-        from project_entity_graph import materialize_project_canonical_entities
-        canonical_graph = materialize_project_canonical_entities(client, project_id)
-    except Exception as exc:
-        warnings.append(f"Canonical Entity Graph: {exc}")
+        from project_domain_truth_audit import run_project_domain_truth_audits
 
-    cross_source = None
-    try:
-        from cross_source_linker import run_project_cross_source_intelligence
-        cross_source = run_project_cross_source_intelligence(client, project_id)
-        if str((cross_source or {}).get("status") or "") == "error":
-            warnings.append(f"Cross-Source Linker: {(cross_source or {}).get('error') or 'erro não detalhado'}")
-    except Exception as exc:
-        warnings.append(f"Cross-Source Linker: {exc}")
-
-    semantic: dict[str, Any] | None = None
-    try:
-        from project_workspace_db import fetch_project_workspace_snapshot
-        from project_workspace_intelligence import (
-            build_project_intelligence,
-            persist_project_intelligence,
+        audits = run_project_domain_truth_audits(
+            client,
+            project_id,
+            parent_run_id=str(domain_normalization.get("run_id") or "") or None,
         )
-        from project_intelligence_unified import build_unified_project_snapshot
-        from project_analyst import analyze_project_snapshot, semantic_synthesis_findings
-
-        snapshot = fetch_project_workspace_snapshot(client, project_id=project_id)
-        snapshot["unified_intelligence"] = build_unified_project_snapshot(snapshot)
-        deterministic = build_project_intelligence(snapshot)
-
-        api_key, model = _ai_settings()
-        if api_key and snapshot.get("briefing_documents") and snapshot.get("memory_documents"):
-            synthesis = analyze_project_snapshot(snapshot=snapshot, api_key=api_key, model=model)
-            semantic = synthesis.model_dump()
-            deterministic["semantic_synthesis"] = semantic
-            deterministic.setdefault("metrics", {})["semantic_synthesis"] = semantic
-            deterministic.setdefault("findings", []).extend(semantic_synthesis_findings(synthesis))
-            deterministic.setdefault("recommendations", []).extend(synthesis.decision_recommendations)
-            deterministic["recommendations"] = list(dict.fromkeys(
-                str(value).strip() for value in deterministic.get("recommendations") or [] if str(value).strip()
-            ))
-        persist_project_intelligence(client, project_id=project_id, intelligence=deterministic)
     except Exception as exc:
-        warnings.append(f"Project Intelligence finalization: {exc}")
+        audits = {"status": "error", "error": str(exc)}
 
+    domain_normalization = _refresh_domain_result(client, project_id, domain_normalization)
+
+    if str(audits.get("status") or "") != "completed":
+        warnings.append("Domain Truth Audits: " + str(audits.get("error") or "coverage/identity audit incompleto"))
+        for key in ("coverage", "identity"):
+            part = audits.get(key) if isinstance(audits.get(key), Mapping) else {}
+            if part and part.get("error"):
+                warnings.append(f"{key}: {str(part.get('error'))[:700]}")
+        return {
+            "status": "domain_audit_blocked",
+            "project_id": project_id,
+            "report_analysis": report_result,
+            "domain_normalization": domain_normalization,
+            "domain_audits": audits,
+            "canonical_entity_graph": None,
+            "cross_source": frozen_graph,
+            "semantic_project_analysis": None,
+            "structured_prelinks": frozen_prelinks,
+            "warnings": warnings[:40],
+        }
+
+    # V28.7.1D: intentionally stop here. No V28.6 graph rebuild, no old
+    # cross-source linker, no semantic Project Analyst synthesis from that graph.
     return {
         "status": "completed",
         "project_id": project_id,
         "report_analysis": report_result,
         "domain_normalization": domain_normalization,
-        "canonical_entity_graph": canonical_graph,
-        "cross_source": cross_source,
-        "semantic_project_analysis": semantic,
-        "structured_prelinks": prelinks,
+        "domain_audits": audits,
+        "canonical_entity_graph": None,
+        "cross_source": frozen_graph,
+        "semantic_project_analysis": None,
+        "structured_prelinks": frozen_prelinks,
         "warnings": warnings[:40],
     }
