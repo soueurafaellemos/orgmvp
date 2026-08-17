@@ -165,6 +165,29 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
     else:
         report_result = {"status": "skipped_explicit_domain_refresh", "processed": 0, "errors": [], "skipped": 0}
 
+    # V28.7.2A2: historical projects may have canonical project_files but no
+    # Source Asset / Evidence because File Analyst dual-write did not exist or
+    # failed when they were originally imported. Recover only the missing
+    # primary sources from the masters already stored by NAVE before Domain
+    # Normalization tries to bind occurrences / requirements.
+    try:
+        from project_source_evidence_backfill import ensure_project_source_evidence
+
+        source_evidence_backfill = ensure_project_source_evidence(client, project_id)
+    except Exception as exc:
+        source_evidence_backfill = {
+            "status": "error",
+            "project_id": project_id,
+            "backfilled": 0,
+            "failed": 1,
+            "missing_after": 1,
+            "warnings": [str(exc)],
+        }
+
+    for value in source_evidence_backfill.get("warnings") or []:
+        if str(value).strip():
+            warnings.append(f"Source Evidence Backfill: {str(value)[:700]}")
+
     domain_normalization: dict[str, Any]
     try:
         from project_domain_normalization import sync_project_domain_normalization
@@ -185,6 +208,7 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
             "status": "domain_blocked",
             "project_id": project_id,
             "report_analysis": report_result,
+            "source_evidence_backfill": source_evidence_backfill,
             "domain_normalization": domain_normalization,
             "domain_audits": {"status": "skipped_domain_blocked"},
             "canonical_entity_graph": None,
@@ -212,6 +236,7 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
             "status": "domain_reconciliation_blocked",
             "project_id": project_id,
             "report_analysis": report_result,
+            "source_evidence_backfill": source_evidence_backfill,
             "domain_normalization": domain_normalization,
             "domain_reconciliation": domain_reconciliation,
             "domain_audits": {"status": "skipped_reconciliation_blocked"},
@@ -245,6 +270,7 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
             "status": "domain_audit_blocked",
             "project_id": project_id,
             "report_analysis": report_result,
+            "source_evidence_backfill": source_evidence_backfill,
             "domain_normalization": domain_normalization,
             "domain_reconciliation": domain_reconciliation,
             "domain_audits": audits,
@@ -272,6 +298,7 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
             "status": "core_semantics_blocked",
             "project_id": project_id,
             "report_analysis": report_result,
+            "source_evidence_backfill": source_evidence_backfill,
             "domain_normalization": domain_normalization,
             "domain_reconciliation": domain_reconciliation,
             "domain_audits": audits,
@@ -288,6 +315,7 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
         "status": "completed",
         "project_id": project_id,
         "report_analysis": report_result,
+        "source_evidence_backfill": source_evidence_backfill,
         "domain_normalization": domain_normalization,
         "domain_reconciliation": domain_reconciliation,
         "domain_audits": audits,

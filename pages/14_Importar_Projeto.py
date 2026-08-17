@@ -47,6 +47,44 @@ def _domain_result(container: dict) -> dict:
     return {}
 
 
+def _source_backfill_result(container: dict) -> dict:
+    direct = container.get("source_evidence_backfill") if isinstance(container, dict) else None
+    if isinstance(direct, dict):
+        return direct
+    finalization = container.get("project_intelligence_finalization") if isinstance(container, dict) else None
+    if isinstance(finalization, dict) and isinstance(finalization.get("source_evidence_backfill"), dict):
+        return finalization["source_evidence_backfill"]
+    return {}
+
+
+def _render_source_backfill(container: dict, *, expanded: bool = False) -> None:
+    result = _source_backfill_result(container)
+    if not result:
+        return
+    backfilled = int(result.get("backfilled") or 0)
+    failed = int(result.get("failed") or 0)
+    missing_after = int(result.get("missing_after") or 0)
+    candidates = int(result.get("candidates") or 0)
+    if not candidates and not failed:
+        return
+    with st.expander("Source Evidence Recovery · V28.7.2A2", expanded=expanded or bool(failed or missing_after)):
+        cols = st.columns(4)
+        cols[0].metric("Masters sem Source Asset", candidates)
+        cols[1].metric("Recuperados", backfilled)
+        cols[2].metric("Falhas", failed)
+        cols[3].metric("Ainda ausentes", missing_after)
+        st.caption(
+            "A NAVE reutiliza o master já preservado no storage, valida o SHA-256 e executa o mesmo File Analyst dual-write dos imports novos. "
+            "Nenhuma Evidence é fabricada a partir de JSON legado."
+        )
+        rows = result.get("results") or []
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        for warning in (result.get("warnings") or [])[:10]:
+            if str(warning).strip():
+                st.caption("• " + str(warning))
+
+
 def _reconciliation_result(container: dict) -> dict:
     direct = container.get("domain_reconciliation") if isinstance(container, dict) else None
     if isinstance(direct, dict):
@@ -437,12 +475,13 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             width="stretch",
             disabled=not confirm_reprocess,
             key="v2872b_reconcile_core_domains",
-            help="Executa Truth Gate + V28.7.2A reconciliation + audits e, depois, materializa Strategy / Creative Platform / Experience/Journey explicitamente evidence-backed. Não reconstrói o Graph V28.6.",
+            help="Recupera Source Assets/Evidence ausentes de masters históricos já armazenados, executa Truth Gate + V28.7.2A reconciliation + audits e, depois, materializa Strategy / Creative Platform / Experience/Journey explicitamente evidence-backed. Não reconstrói o Graph V28.6.",
         ):
             from project_intelligence_pipeline import finalize_project_intelligence
 
             with st.spinner("Aplicando Truth Gate, reconciliando o domínio e materializando Strategy / Creative / Experience sem reconstruir o Graph legado..."):
                 finalization = finalize_project_intelligence(client, repair_options[repair_label], analyze_pending_reports=False)
+            _render_source_backfill(finalization, expanded=False)
             _render_domain_normalization(finalization, expanded=False)
             _render_domain_reconciliation(finalization, expanded=False)
             _render_core_semantics(finalization, expanded=True)

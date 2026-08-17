@@ -3,11 +3,12 @@ from pathlib import Path
 
 def test_reconciliation_runs_between_truth_baseline_and_audits():
     code = (Path(__file__).parents[1] / "project_intelligence_pipeline.py").read_text(encoding="utf-8")
+    backfill_pos = code.index("ensure_project_source_evidence")
     truth_pos = code.index("sync_project_domain_normalization")
     reconciliation_pos = code.index("reconcile_project_domain")
     audit_pos = code.index("run_project_domain_truth_audits")
     core_pos = code.index("materialize_project_core_semantics")
-    assert truth_pos < reconciliation_pos < audit_pos < core_pos
+    assert backfill_pos < truth_pos < reconciliation_pos < audit_pos < core_pos
     assert "materialize_project_canonical_entities" not in code
     assert "run_project_cross_source_intelligence" not in code
     assert '"status": "frozen_v28_6"' in code
