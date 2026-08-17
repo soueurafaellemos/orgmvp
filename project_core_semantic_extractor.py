@@ -145,20 +145,32 @@ def extract_explicit_core_signals(text: str) -> list[CoreSemanticSignal]:
             statement = _sentence_after_heading(lines, idx) or raw
             signals.append(CoreSemanticSignal("strategy", "tension", line, statement, confidence=0.98))
 
-    # Territory is only emitted when the source itself uses territory language. A
-    # specifically creative territory belongs to Creative, not Strategy.
+    # Territory is emitted only when the source either names it explicitly or uses a
+    # demonstrative reference ("this territory" / "desse território") next to one clear,
+    # non-meta heading. Generic analytical headings such as HIGHLIGHTS/INSIGHT are not
+    # themselves territory names.
     if re.search(r"\b(territorio|territory)\b", norm):
         is_creative_territory = bool(re.search(r"\b(territorio criativo|creative territory)\b", norm))
         explicit = re.search(r"\b(?:territorio(?: criativo)?|creative territory|territory)\s*[:\-]\s*([^\n\.!?]{2,110})", raw, flags=re.I)
         name = explicit.group(1).strip() if explicit else None
         if not name:
-            for line in lines[:5]:
-                if _is_headingish(line) and _norm(line) not in {
-                    "pontos de partida", "starting points", "point of view", "our challenge",
-                    "creative territory", "territorio criativo",
-                }:
-                    name = line
-                    break
+            referential_territory = bool(re.search(
+                r"\b(?:this|that|the|esse|essa|este|esta|desse|dessa|deste|desta|nesse|nessa)\s+(?:territorio|territory)\b",
+                norm,
+            ))
+            meta_headings = {
+                "pontos de partida", "starting points", "point of view", "our challenge",
+                "challenge", "creative territory", "territorio criativo", "highlights",
+                "insight", "insights", "opportunity", "oportunidade", "brief recap",
+                "our goal", "goal", "event", "journey", "event journey",
+            }
+            if referential_territory:
+                candidates = [
+                    line for line in lines[:6]
+                    if _is_headingish(line) and _norm(line) not in meta_headings
+                ]
+                if len(candidates) == 1:
+                    name = candidates[0]
         if name:
             if is_creative_territory:
                 signals.append(CoreSemanticSignal("creative", "creative_territory", name, raw[:1800], confidence=0.97))
@@ -251,11 +263,21 @@ def extract_explicit_core_signals(text: str) -> list[CoreSemanticSignal]:
         if _short_label(name):
             signals.append(CoreSemanticSignal("creative", "big_idea", name, raw[:1800], confidence=0.97))
 
-    # Experience Architecture only with explicit journey language.
-    journey_heading = next(
-        (line for line in lines if _norm(line) in {"event journey", "journey", "jornada", "jornada do evento", "experience journey"}),
+    # Experience Architecture only with explicit journey language. A bare "JOURNEY"
+    # can be creative copy (e.g. "invitation to the journey"), so it only qualifies when
+    # the same Evidence Unit also contains multiple lifecycle stages.
+    specific_journey_heading = next(
+        (line for line in lines if _norm(line) in {"event journey", "jornada do evento", "experience journey"}),
         None,
     )
+    generic_journey_heading = next(
+        (line for line in lines if _norm(line) in {"journey", "jornada"}),
+        None,
+    )
+    explicit_stages = [stage for line in lines if (stage := _exact_stage(line))]
+    journey_heading = specific_journey_heading
+    if journey_heading is None and generic_journey_heading is not None and len({stage[0] for stage in explicit_stages}) >= 2:
+        journey_heading = generic_journey_heading
     if journey_heading:
         signals.append(CoreSemanticSignal(
             "experience", "experience_architecture", journey_heading, raw[:1800], confidence=0.99,
@@ -565,7 +587,9 @@ def _adjacent_strategic_signals(evidence: Sequence[Mapping[str, Any]]) -> dict[s
         grouped.setdefault(str(unit.get("source_asset_id") or ""), []).append(unit)
     out: dict[str, list[dict[str, Any]]] = {}
     strategic_heading = re.compile(r"\b(objetivos estrategicos|strategic objectives?|direcao estrategica|strategic direction|alinhamento estrategico)\b")
-    stop_heading = re.compile(r"\b(diretrizes|deliverables|entregaveis|ativacoes|experiencias|para as plataformas|budget|financeiro|obrigatoriedades)\b")
+    stop_heading = re.compile(
+        r"^(diretrizes|deliverables|entregaveis|ativacoes|experiencias|para as plataformas|budget|financeiro|obrigatoriedades)\b"
+    )
     for units in grouped.values():
         ordered = sorted(units, key=_ordinal)
         active_heading_id: str | None = None
@@ -580,7 +604,16 @@ def _adjacent_strategic_signals(evidence: Sequence[Mapping[str, Any]]) -> dict[s
                 remaining = 4
                 continue
             if active_heading_id and remaining > 0:
-                if stop_heading.search(n) and (_is_headingish(text) or len(n.split()) <= 3):
+                terminal_section_heading = bool(text.rstrip().endswith(":") and 1 <= len(n.split()) <= 28)
+                audience_boundary = bool(
+                    re.search(r"\b(publico alvo|target audience)\b", n)
+                    and (terminal_section_heading or len(n.split()) <= 22)
+                )
+                section_boundary = bool(
+                    stop_heading.search(n)
+                    and (terminal_section_heading or _is_headingish(text) or len(n.split()) <= 12)
+                )
+                if audience_boundary or section_boundary:
                     active_heading_id = None
                     remaining = 0
                     continue
@@ -620,12 +653,23 @@ def collect_project_core_semantic_observations(client: Any, project_id: str) -> 
         # briefing/proposal/reference evidence.
         if phase in {"execution", "post_event", "feedback"}:
             continue
-        signals = [s.to_dict() for s in extract_explicit_core_signals(text)]
-        signals.extend(adjacent_signals.get(evidence_id) or [])
-        signals.extend(adjacent_group_signals.get(evidence_id) or [])
-        signals.extend(mention_signals.get(evidence_id) or [])
+        signal_entries: list[tuple[dict[str, Any], str | None]] = [
+            (s.to_dict(), semantic_text_recovery_method)
+            for s in extract_explicit_core_signals(text)
+        ]
+        # Layout recovery restores headings/columns but can split a quoted named idea.
+        # The stored flattened text remains valid evidence from the exact same page, so
+        # parse it as a fallback as well and dedupe semantically.
+        if semantic_text_recovery_method and stored_text and _norm(stored_text) != _norm(text):
+            signal_entries.extend(
+                (s.to_dict(), "stored_flat_text_fallback")
+                for s in extract_explicit_core_signals(stored_text)
+            )
+        signal_entries.extend((row, None) for row in (adjacent_signals.get(evidence_id) or []))
+        signal_entries.extend((row, None) for row in (adjacent_group_signals.get(evidence_id) or []))
+        signal_entries.extend((row, None) for row in (mention_signals.get(evidence_id) or []))
         local_seen: set[tuple[str, str, str]] = set()
-        for signal in signals:
+        for signal, signal_text_method in signal_entries:
             domain_hint = str(signal.get("domain_hint") or "other")
             semantic_role = str(signal.get("semantic_role") or "other")
             name = str(signal.get("observed_name") or "").strip()
@@ -663,7 +707,7 @@ def collect_project_core_semantic_observations(client: Any, project_id: str) -> 
                     "source_role": source_role,
                     "is_primary_source": bool(primary),
                     "normalized_by": CORE_SEMANTIC_VERSION,
-                    **({"semantic_text_recovery_method": semantic_text_recovery_method} if semantic_text_recovery_method else {}),
+                    **({"semantic_text_recovery_method": signal_text_method} if signal_text_method else {}),
                     **({"file_analyst_entity_id": signal.get("file_analyst_entity_id")} if signal.get("file_analyst_entity_id") else {}),
                 },
                 "source_authority_score": min(0.98, (0.88 if phase == "briefing" else 0.86) + (0.02 if primary else 0.0)),

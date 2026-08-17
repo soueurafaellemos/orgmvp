@@ -1,4 +1,4 @@
-from project_semantic_observations import _file_analyst_mention_candidates, _phase_role, _report_candidates
+from project_semantic_observations import (_explicit_proposal_activation_candidate, _file_analyst_mention_candidates, _phase_role, _report_candidates)
 
 
 def test_report_candidates_preserve_execution_status_and_keep_untyped_items_out_of_solution_domain():
@@ -53,3 +53,31 @@ def test_non_file_analyst_mentions_are_not_consumed_by_reconciler():
     entities = {"e1": {"id": "e1", "entity_type": "activation", "canonical_name": "Amarelinha"}}
     mentions = [{"entity_id": "e1", "evidence_unit_id": "u1", "mention_text": "Amarelinha", "mention_role": "cross_source_projection"}]
     assert _file_analyst_mention_candidates(mentions, entities) == []
+
+
+
+def test_explicit_proposal_activation_page_creates_generic_candidate_without_platform_hardcode():
+    row = _explicit_proposal_activation_candidate(
+        "YOUTUBE — A CAMERA IN YOUR POCKET. ENDLESS STORIES "
+        "YouTube is the go-to platform for long-form video. "
+        "This activation will bring those possibilities to life. OPTION 1 A photo-ready installation."
+    )
+    assert row is not None
+    assert row["name"] == "YOUTUBE activation"
+    assert row["observed_type"] == "activation"
+
+
+def test_explicit_proposal_space_with_options_can_be_activation_candidate():
+    row = _explicit_proposal_activation_candidate(
+        "KWAI — AUTHENTIC CONTENT. BUILT TO GO VIRAL. "
+        "For this space, we will create a Brazil-inspired content corner. "
+        "OPTION 1 A setting with a small table. OPTION 2 A poster-customization station."
+    )
+    assert row is not None
+    assert row["name"] == "KWAI activation"
+
+
+def test_generic_event_or_journey_heading_is_not_promoted_as_activation():
+    assert _explicit_proposal_activation_candidate(
+        "EVENT — PRODUCT REVEAL. This activation will begin after the plenary. OPTION 1."
+    ) is None

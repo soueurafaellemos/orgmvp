@@ -335,6 +335,77 @@ def _report_candidates(reports: Sequence[Mapping[str, Any]]) -> list[dict[str, A
                 })
     return out
 
+
+_GENERIC_ACTIVATION_PREFIX_RE = re.compile(
+    r"^\s*([A-Za-z0-9À-ÿ][A-Za-z0-9À-ÿ &+._/]{1,42})\s*[—–-]\s+",
+    flags=re.I,
+)
+_GENERIC_ACTIVATION_LABEL_RE = re.compile(
+    r"\b(?:ativação|ativacao|activation)\s+([A-Za-z0-9À-ÿ][A-Za-z0-9À-ÿ &+._/]{1,42})\s*[:—–-]",
+    flags=re.I,
+)
+
+_GENERIC_ACTIVATION_REJECT = {
+    "event", "evento", "product", "produto", "journey", "jornada", "activation", "ativacao",
+    "option", "opcao", "content", "conteudo", "image", "imagem", "role", "speaker notes",
+    "brief recap", "our goal", "goal", "strategy", "estrategia",
+}
+
+
+def _explicit_proposal_activation_candidate(text: Any) -> dict[str, Any] | None:
+    """Return one evidence-led activation candidate from an explicit proposal page.
+
+    The rule is intentionally generic: a short leading label plus explicit experiential
+    activation language. It does not know platform names or Golden projects.
+    """
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not raw:
+        return None
+
+    label: str | None = None
+    source_heading: str | None = None
+
+    direct = _GENERIC_ACTIVATION_LABEL_RE.search(raw[:260])
+    if direct:
+        label = direct.group(1).strip(" .,:;–—-")
+        source_heading = direct.group(0).strip()
+    else:
+        prefix = _GENERIC_ACTIVATION_PREFIX_RE.match(raw[:220])
+        if prefix:
+            candidate = prefix.group(1).strip(" .,:;–—-")
+            candidate_norm = _norm(candidate)
+            body = raw[prefix.end():]
+            activation_language = bool(
+                re.search(
+                    r"\b(this activation|for this activation|activation will|for this space|this experience|"
+                    r"for this experience|option\s*1|opção\s*1|opcao\s*1)\b",
+                    body,
+                    flags=re.I,
+                )
+            )
+            if activation_language and candidate_norm not in _GENERIC_ACTIVATION_REJECT:
+                label = candidate
+                source_heading = raw[: min(len(raw), 160)].split(". ", 1)[0].strip()
+
+    if not label:
+        return None
+    label_norm = _norm(label)
+    if (
+        not label_norm
+        or label_norm in _GENERIC_ACTIVATION_REJECT
+        or len(label_norm.split()) > 5
+        or len(label) > 60
+    ):
+        return None
+
+    return {
+        "name": f"{label} activation",
+        "observed_type": "activation",
+        "source_heading": source_heading or label,
+        "candidate_basis": "explicit_proposal_activation_page",
+    }
+
+
 def collect_project_semantic_observations(client: Any, project_id: str) -> dict[str, Any]:
     source = _project_evidence(client, project_id)
     reports = _read_rows(client, "project_report_analyses", equals={"project_id": project_id})
@@ -374,6 +445,39 @@ def collect_project_semantic_observations(client: Any, project_id: str) -> dict[
             confidence=0.98 if kind == "solution_candidate" else 0.96,
             extraction_method="project_report_analysis+evidence_binding",
             attributes={"report_file_id": candidate.get("report_file_id"), "report_payload": candidate.get("raw") or {}},
+        ))
+
+
+    # Proposal Evidence can itself establish a Solution observation even when the
+    # historical File Analyst produced no entity mentions. This is a narrow fail-closed
+    # path for explicit activation pages and does not depend on memory_items.
+    for evidence in source["evidence"]:
+        aid = str(evidence.get("source_asset_id") or "")
+        source_role, primary = _source_role(aid, source)
+        phase, role = _phase_role(source_role)
+        if phase != "proposal" or role != "proposal":
+            continue
+        candidate = _explicit_proposal_activation_candidate(evidence.get("content_text"))
+        if not candidate:
+            continue
+        observations.append(_make_observation(
+            project_id=project_id,
+            evidence=evidence,
+            kind="solution_candidate",
+            name=str(candidate["name"]),
+            observed_type="activation",
+            observed_status=None,
+            phase="proposal",
+            role="proposal",
+            source_role=source_role,
+            primary_source=primary,
+            confidence=0.97,
+            extraction_method="explicit_proposal_activation_page",
+            attributes={
+                "proposal_explicit_activation": True,
+                "source_heading": candidate.get("source_heading"),
+                "candidate_basis": candidate.get("candidate_basis"),
+            },
         ))
 
     # File Analyst entities are only local extraction signals here. Their existing

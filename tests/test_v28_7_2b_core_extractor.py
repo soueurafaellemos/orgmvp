@@ -227,3 +227,77 @@ estimular a imaginação e a presença"""
     assert rows["MEMÓRIA AFETIVA"].statement == "Adultos relembram suas infâncias\nresgatando memórias afetivas da marca"
     assert rows["PRESENÇA E ATENÇÃO"].statement == "Espaço e ativações desenvolvidas para\nestimular a imaginação e a presença"
     assert "PONTOS DE PARTIDA" not in rows["PRESENÇA E ATENÇÃO"].statement
+
+
+
+def test_meta_headings_are_not_promoted_as_strategy_territory():
+    signals = extract_explicit_core_signals(
+        "HIGHLIGHTS\n"
+        "1. The market is competitive.\n"
+        "2. Each player owns a distinct territory of differentiation.\n"
+        "3. Audiences are loyal."
+    )
+    assert not any(s.semantic_role == "territory" for s in signals)
+
+    signals = extract_explicit_core_signals(
+        "INSIGHT\n"
+        "Within this landscape, we will build on a territory the brand already owns "
+        "and make it relevant to Brazil."
+    )
+    assert any(s.semantic_role == "insight" for s in signals)
+    assert not any(s.semantic_role == "territory" for s in signals)
+
+
+def test_named_heading_can_still_be_explicit_territory_by_referential_language():
+    signals = extract_explicit_core_signals(
+        "NOSTALGIA\n"
+        "Vamos nos apropriar desse território para resgatar memórias afetivas."
+    )
+    territories = [s for s in signals if s.domain_hint == "strategy" and s.semantic_role == "territory"]
+    assert len(territories) == 1
+    assert territories[0].observed_name == "NOSTALGIA"
+
+
+def test_bare_journey_copy_does_not_create_experience_architecture():
+    signals = extract_explicit_core_signals(
+        "EVENT\nPRODUCT REVEAL\nSTEP 1\n"
+        "AN INVITATION\nTO THE\nJOURNEY\n"
+        "Connects to the “On Tour” idea, a creative journey that begins here."
+    )
+    assert any(s.domain_hint == "creative" and s.semantic_role == "big_idea" and "On Tour" in s.observed_name for s in signals)
+    assert not any(s.domain_hint == "experience" and s.semantic_role == "experience_architecture" for s in signals)
+
+
+def test_specific_event_journey_still_creates_architecture_and_stages():
+    signals = extract_explicit_core_signals(
+        "EVENT JOURNEY\n"
+        "1. PRE-EVENT\nGuest communications\n"
+        "2. EVENT\nOfficial launch day\n"
+        "3. POST-EVENT\nThank-you message"
+    )
+    assert any(s.domain_hint == "experience" and s.observed_name == "EVENT JOURNEY" for s in signals)
+    stage_types = {
+        (s.attributes or {}).get("moment_type")
+        for s in signals
+        if s.domain_hint == "journey" and s.semantic_role == "stage"
+    }
+    assert {"pre_event", "event", "post_event"} <= stage_types
+
+
+def test_adjacent_strategic_heading_stops_before_audience_or_new_guideline_section():
+    from project_core_semantic_extractor import _adjacent_strategic_signals
+
+    evidence = [
+        {"id": "h1", "source_asset_id": "a", "ordinal": 1, "unit_type": "paragraph", "content_text": "Alinhamento Estratégico:"},
+        {"id": "aud", "source_asset_id": "a", "ordinal": 2, "unit_type": "paragraph", "content_text": "A proposta deve estar conectada ao público-alvo principal:"},
+        {"id": "aud2", "source_asset_id": "a", "ordinal": 3, "unit_type": "paragraph", "content_text": "Frequentadores de festivais de música;"},
+        {"id": "h2", "source_asset_id": "a", "ordinal": 10, "unit_type": "paragraph", "content_text": "Objetivos Estratégicos para a marca:"},
+        {"id": "good", "source_asset_id": "a", "ordinal": 11, "unit_type": "paragraph", "content_text": "Demonstrar superioridade das câmeras por meio de experiências práticas;"},
+        {"id": "stop", "source_asset_id": "a", "ordinal": 12, "unit_type": "paragraph", "content_text": "Diretrizes de Ativação por Plataforma – abaixo temos os direcionais:"},
+        {"id": "after", "source_asset_id": "a", "ordinal": 13, "unit_type": "paragraph", "content_text": "TikTok: usar movimento e tendências."},
+    ]
+    result = _adjacent_strategic_signals(evidence)
+    assert "aud2" not in result
+    assert "good" in result
+    assert "stop" not in result
+    assert "after" not in result
