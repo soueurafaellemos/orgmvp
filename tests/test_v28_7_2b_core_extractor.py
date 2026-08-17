@@ -87,3 +87,77 @@ def test_source_label_pilares_remains_pillar_while_pontos_de_partida_is_principl
     pontos = extract_explicit_core_signals("MEMÓRIA\nPRESENÇA\nPONTOS DE PARTIDA")
     assert ("strategy", "strategic_principle", "MEMÓRIA") in _keys(pontos)
     assert ("strategy", "strategic_principle", "PRESENÇA") in _keys(pontos)
+
+
+def test_flattened_pdf_page_is_recoverable_to_source_explicit_starting_points_and_territory():
+    # Historical Evidence Units flatten PDF page text. The semantic parser itself is
+    # intentionally line-sensitive; the B1 recovery restores visual PDF line boundaries
+    # before calling it.
+    recovered_points = (
+        "MEMÓRIA AFETIVA\nCONEXÃO\nPRESENÇA E ATENÇÃO\nPONTOS DE PARTIDA\n"
+        "Um espaço que estimula conexão entre pais e filhos\n"
+        "Adultos relembram suas infâncias resgatando memórias afetivas da marca\n"
+        "Espaço e ativações desenvolvidas para estimular a imaginação e a presença"
+    )
+    keys = _keys(extract_explicit_core_signals(recovered_points))
+    assert ("strategy", "strategic_principle", "MEMÓRIA AFETIVA") in keys
+    assert ("strategy", "strategic_principle", "CONEXÃO") in keys
+    assert ("strategy", "strategic_principle", "PRESENÇA E ATENÇÃO") in keys
+
+    territory = extract_explicit_core_signals(
+        "NOSTALGIA\nO caminho que seguimos com sutileza nas outras edições está mais em alta que nunca "
+        "e vamos nos apropriar desse território tão característico da marca."
+    )
+    assert any(
+        s.domain_hint == "strategy" and s.semantic_role == "territory" and s.observed_name == "NOSTALGIA"
+        for s in territory
+    )
+
+
+def test_adjacent_pilares_heading_recovers_explicit_docx_group_without_synthesis():
+    from project_core_semantic_extractor import _adjacent_explicit_group_signals
+
+    evidence = [
+        {"id": "h", "source_asset_id": "a", "ordinal": 33, "unit_type": "paragraph", "content_text": "Pilares:"},
+        {
+            "id": "p1", "source_asset_id": "a", "ordinal": 34, "unit_type": "paragraph",
+            "content_text": "Resgate da infância – brincadeiras e referências afetivas.",
+        },
+        {
+            "id": "p2", "source_asset_id": "a", "ordinal": 35, "unit_type": "paragraph",
+            "content_text": "Conexão familiar entre pais e filhos – casa e brincadeiras da infância.",
+        },
+        {
+            "id": "p3", "source_asset_id": "a", "ordinal": 36, "unit_type": "paragraph",
+            "content_text": "Imaginação e memórias – experiências que convidam a criar.",
+        },
+        {"id": "stop", "source_asset_id": "a", "ordinal": 37, "unit_type": "paragraph", "content_text": "Diretrizes"},
+    ]
+    result = _adjacent_explicit_group_signals(evidence)
+    assert result["p1"][0]["semantic_role"] == "pillar"
+    assert result["p1"][0]["observed_name"] == "Resgate da infância"
+    assert result["p2"][0]["observed_name"] == "Conexão familiar entre pais e filhos"
+    assert result["p3"][0]["observed_name"] == "Imaginação e memórias"
+    assert "stop" not in result
+
+
+def test_pdf_layout_reader_preserves_visual_line_boundaries():
+    from project_core_semantic_extractor import _pdf_layout_lines
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=900, height=600)
+    page.insert_text((50, 70), "MEMÓRIA AFETIVA")
+    page.insert_text((300, 70), "CONEXÃO")
+    page.insert_text((500, 70), "PRESENÇA E ATENÇÃO")
+    page.insert_text((50, 120), "PONTOS DE PARTIDA")
+    page.insert_text((50, 160), "Um espaço que estimula conexão entre pais e filhos")
+    payload = doc.tobytes()
+    doc.close()
+
+    recovered = _pdf_layout_lines(payload, [1])[1]
+    assert "MEMÓRIA AFETIVA" in recovered
+    assert "CONEXÃO" in recovered
+    assert "PRESENÇA E ATENÇÃO" in recovered
+    assert "PONTOS DE PARTIDA" in recovered
+    assert "\n" in recovered

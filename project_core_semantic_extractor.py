@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
 from project_semantic_observations import _project_evidence, _source_role, _phase_role
+from nave_storage import get_bytes as storage_get_bytes
 
 CORE_SEMANTIC_VERSION = "V28.7.2B"
 
@@ -281,6 +282,207 @@ def extract_explicit_core_signals(text: str) -> list[CoreSemanticSignal]:
     return _dedupe(signals)
 
 
+
+def _pdf_page_number(unit: Mapping[str, Any]) -> int | None:
+    locator = unit.get("locator") if isinstance(unit.get("locator"), Mapping) else {}
+    value = locator.get("page")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        page = int(value)
+        return page if page >= 1 else page + 1
+    try:
+        page = int(str(value).strip())
+        return page if page >= 1 else page + 1
+    except Exception:
+        return None
+
+
+def _pdf_layout_lines(payload: bytes, page_numbers: Sequence[int]) -> dict[int, str]:
+    """Recover visual text-line boundaries from a stored PDF master.
+
+    Evidence Units created by the historical PDF extractor intentionally store one
+    flattened string per page. Core semantics sometimes depends on headings that share a
+    page (e.g. several strategic starting points). Re-reading the *same source page* with
+    PyMuPDF line geometry restores those boundaries without creating new Evidence or
+    changing provenance.
+    """
+    if not payload or not page_numbers:
+        return {}
+    try:
+        import pymupdf
+    except Exception:
+        return {}
+    out: dict[int, str] = {}
+    try:
+        doc = pymupdf.open(stream=payload, filetype="pdf")
+    except Exception:
+        return {}
+    try:
+        for page_number in sorted(set(int(v) for v in page_numbers if int(v) >= 1)):
+            index = page_number - 1
+            if index < 0 or index >= len(doc):
+                continue
+            page = doc[index]
+            try:
+                data = page.get_text("dict", sort=True) or {}
+            except TypeError:
+                data = page.get_text("dict") or {}
+            rows: list[tuple[float, float, str]] = []
+            for block in data.get("blocks") or []:
+                if int(block.get("type") or 0) != 0:
+                    continue
+                for line in block.get("lines") or []:
+                    spans = line.get("spans") or []
+                    text = "".join(str(span.get("text") or "") for span in spans)
+                    text = re.sub(r"\s+", " ", text).strip()
+                    if not text:
+                        continue
+                    bbox = line.get("bbox") or block.get("bbox") or (0, 0, 0, 0)
+                    try:
+                        x0, y0 = float(bbox[0]), float(bbox[1])
+                    except Exception:
+                        x0, y0 = 0.0, 0.0
+                    rows.append((round(y0, 1), round(x0, 1), text))
+            rows.sort(key=lambda item: (item[0], item[1]))
+            text = "\n".join(item[2] for item in rows).strip()
+            if text:
+                out[page_number] = text
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+    return out
+
+
+def _recover_pdf_layout_texts(
+    client: Any,
+    evidence: Sequence[Mapping[str, Any]],
+    source: Mapping[str, Any],
+) -> dict[str, str]:
+    """Return Evidence id -> same-page text with visual line boundaries restored.
+
+    This is a semantic-read recovery, not a new source extraction: every generated
+    observation remains bound to the original page Evidence Unit.
+    """
+    asset_by_id = source.get("asset_by_id") if isinstance(source.get("asset_by_id"), Mapping) else {}
+    by_asset: dict[str, list[Mapping[str, Any]]] = {}
+    for unit in evidence:
+        asset_id = str(unit.get("source_asset_id") or "")
+        asset = asset_by_id.get(asset_id) or {}
+        mime = str(asset.get("mime_type") or "").casefold()
+        name = str(asset.get("canonical_file_name") or asset.get("storage_path") or "").casefold()
+        if not (mime == "application/pdf" or name.endswith(".pdf")):
+            continue
+        if str(unit.get("unit_type") or "") != "page" or _pdf_page_number(unit) is None:
+            continue
+        by_asset.setdefault(asset_id, []).append(unit)
+
+    recovered: dict[str, str] = {}
+    for asset_id, units in by_asset.items():
+        asset = asset_by_id.get(asset_id) or {}
+        try:
+            payload = storage_get_bytes(
+                client,
+                bucket_name=str(asset.get("storage_bucket") or ""),
+                path=str(asset.get("storage_path") or ""),
+            )
+        except Exception:
+            payload = None
+        if not payload:
+            continue
+        pages = [_pdf_page_number(unit) for unit in units]
+        layout_by_page = _pdf_layout_lines(payload, [p for p in pages if p is not None])
+        for unit in units:
+            page_number = _pdf_page_number(unit)
+            layout_text = layout_by_page.get(page_number or -1, "")
+            if not layout_text:
+                continue
+            # Do not use a suspiciously incomplete recovery. Token overlap is deliberately
+            # permissive because layout reads can legitimately omit decorative duplicates.
+            original_tokens = set(_norm(unit.get("content_text")).split())
+            layout_tokens = set(_norm(layout_text).split())
+            overlap = (len(original_tokens & layout_tokens) / max(1, len(original_tokens))) if original_tokens else 1.0
+            if overlap < 0.55:
+                continue
+            recovered[str(unit.get("id") or "")] = layout_text
+    return recovered
+
+
+def _structured_list_title(text: str) -> str | None:
+    value = re.sub(r"^[•\-\u2022\s]+", "", str(text or "")).strip()
+    if not value:
+        return None
+    # Explicit bullet-like prose often uses an en/em dash to separate the semantic label
+    # from its explanation. Preserve the source label instead of synthesizing one.
+    parts = re.split(r"\s+[–—-]\s+|\s*:\s+", value, maxsplit=1)
+    candidate = parts[0].strip(" .,:;–—-")
+    words = candidate.split()
+    if 1 <= len(words) <= 10 and len(candidate) <= 120:
+        return candidate
+    if len(value.split()) <= 9 and len(value) <= 120:
+        return value.strip(" .,:;")
+    return None
+
+
+def _adjacent_explicit_group_signals(evidence: Sequence[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Recover source-explicit pillars/starting-points split across DOCX paragraphs."""
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for unit in evidence:
+        grouped.setdefault(str(unit.get("source_asset_id") or ""), []).append(unit)
+    out: dict[str, list[dict[str, Any]]] = {}
+    marker_re = re.compile(r"^(pilares|pillars|pontos de partida|starting points)\s*$")
+    stop_re = re.compile(
+        r"\b(diretrizes|deliverables|entregaveis|ativacoes|experiencias|budget|financeiro|obrigatoriedades|"
+        r"objetivos estrategicos|strategic objectives?|point of view|conceito|concept)\b"
+    )
+    for units in grouped.values():
+        ordered = sorted(units, key=_ordinal)
+        active_role: str | None = None
+        marker_evidence_id: str | None = None
+        remaining = 0
+        for unit in ordered:
+            if str(unit.get("unit_type") or "") != "paragraph":
+                active_role = None
+                marker_evidence_id = None
+                remaining = 0
+                continue
+            text = str(unit.get("content_text") or "").strip()
+            n = _norm(text).rstrip(" :")
+            marker = marker_re.match(n)
+            if marker:
+                active_role = "pillar" if marker.group(1) in {"pilares", "pillars"} else "strategic_principle"
+                marker_evidence_id = str(unit.get("id") or "")
+                remaining = 8
+                continue
+            if not active_role or remaining <= 0:
+                continue
+            if stop_re.search(n) and (_is_headingish(text) or len(n.split()) <= 4):
+                active_role = None
+                marker_evidence_id = None
+                remaining = 0
+                continue
+            title = _structured_list_title(text)
+            if title and len(_norm(title).split()) >= 1:
+                signal = CoreSemanticSignal(
+                    "strategy",
+                    active_role,
+                    title,
+                    text[:1800],
+                    confidence=0.98,
+                    attributes={
+                        "heading_evidence_id": marker_evidence_id,
+                        "adjacent_explicit_group_heading": True,
+                    },
+                )
+                out.setdefault(str(unit.get("id") or ""), []).append(signal.to_dict())
+            remaining -= 1
+            if remaining <= 0:
+                active_role = None
+                marker_evidence_id = None
+    return out
+
 def _mention_core_signals(client: Any, evidence_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
     """Use File Analyst entities as weak extraction signals, never as domain identity."""
     if not evidence_ids:
@@ -379,12 +581,16 @@ def collect_project_core_semantic_observations(client: Any, project_id: str) -> 
     evidence_ids = [str(row.get("id")) for row in evidence if row.get("id")]
     mention_signals = _mention_core_signals(client, evidence_ids)
     adjacent_signals = _adjacent_strategic_signals(evidence)
+    adjacent_group_signals = _adjacent_explicit_group_signals(evidence)
+    recovered_pdf_text = _recover_pdf_layout_texts(client, evidence, source)
     observations: list[dict[str, Any]] = []
 
     for unit in evidence:
         evidence_id = str(unit.get("id") or "")
         asset_id = str(unit.get("source_asset_id") or "")
-        text = str(unit.get("content_text") or "").strip()
+        stored_text = str(unit.get("content_text") or "").strip()
+        text = str(recovered_pdf_text.get(evidence_id) or stored_text).strip()
+        semantic_text_recovery_method = "stored_pdf_layout_lines" if evidence_id in recovered_pdf_text else None
         source_role, primary = _source_role(asset_id, source)
         phase, role = _phase_role(source_role)
         # Decision/feedback/execution semantics belong to later domains. B only reads
@@ -393,6 +599,7 @@ def collect_project_core_semantic_observations(client: Any, project_id: str) -> 
             continue
         signals = [s.to_dict() for s in extract_explicit_core_signals(text)]
         signals.extend(adjacent_signals.get(evidence_id) or [])
+        signals.extend(adjacent_group_signals.get(evidence_id) or [])
         signals.extend(mention_signals.get(evidence_id) or [])
         local_seen: set[tuple[str, str, str]] = set()
         for signal in signals:
@@ -433,6 +640,7 @@ def collect_project_core_semantic_observations(client: Any, project_id: str) -> 
                     "source_role": source_role,
                     "is_primary_source": bool(primary),
                     "normalized_by": CORE_SEMANTIC_VERSION,
+                    **({"semantic_text_recovery_method": semantic_text_recovery_method} if semantic_text_recovery_method else {}),
                     **({"file_analyst_entity_id": signal.get("file_analyst_entity_id")} if signal.get("file_analyst_entity_id") else {}),
                 },
                 "source_authority_score": min(0.98, (0.88 if phase == "briefing" else 0.86) + (0.02 if primary else 0.0)),
