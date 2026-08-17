@@ -600,8 +600,21 @@ def _adjacent_strategic_signals(evidence: Sequence[Mapping[str, Any]]) -> dict[s
             if not n:
                 continue
             if strategic_heading.search(n):
-                active_heading_id = str(unit.get("id") or "")
-                remaining = 4
+                # V28.7.2B6: a strategic heading can explicitly frame an audience-alignment
+                # section (e.g. "Alinhamento Estratégico: ... público-alvo principal").
+                # In that case the heading itself may remain a Strategy element, but the
+                # following bullets are audience/context facts, not child strategic
+                # directions. Do not open adjacency across an audience-scoped heading.
+                audience_scoped_heading = bool(re.search(
+                    r"\b(publico alvo|target audience|audience profile|perfil de publico)\b",
+                    n,
+                ))
+                if audience_scoped_heading:
+                    active_heading_id = None
+                    remaining = 0
+                else:
+                    active_heading_id = str(unit.get("id") or "")
+                    remaining = 4
                 continue
             if active_heading_id and remaining > 0:
                 terminal_section_heading = bool(text.rstrip().endswith(":") and 1 <= len(n.split()) <= 28)

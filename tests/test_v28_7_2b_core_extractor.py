@@ -301,3 +301,28 @@ def test_adjacent_strategic_heading_stops_before_audience_or_new_guideline_secti
     assert "good" in result
     assert "stop" not in result
     assert "after" not in result
+
+
+def test_audience_scoped_strategic_heading_does_not_promote_audience_bullets():
+    evidence = [
+        {"id": "h", "source_asset_id": "a", "ordinal": 10,
+         "content_text": "Alinhamento Estratégico:\nA proposta deve estar fortemente conectada ao nosso público-alvo principal:"},
+        {"id": "a1", "source_asset_id": "a", "ordinal": 11, "content_text": "Criadores de conteúdo;"},
+        {"id": "a2", "source_asset_id": "a", "ordinal": 12, "content_text": "Filmmakers;"},
+        {"id": "a3", "source_asset_id": "a", "ordinal": 13, "content_text": "Fotógrafos;"},
+        {"id": "a4", "source_asset_id": "a", "ordinal": 14, "content_text": "Frequentadores de festivais de música;"},
+        {"id": "stop", "source_asset_id": "a", "ordinal": 15, "content_text": "Ativações e Experiências por Plataforma:"},
+    ]
+    result = _adjacent_strategic_signals(evidence)
+    assert result == {}
+
+
+def test_separate_audience_boundary_still_stops_adjacent_strategy():
+    evidence = [
+        {"id": "h", "source_asset_id": "a", "ordinal": 1, "content_text": "Alinhamento Estratégico:"},
+        {"id": "boundary", "source_asset_id": "a", "ordinal": 2,
+         "content_text": "A proposta deve estar conectada ao público-alvo principal:"},
+        {"id": "a", "source_asset_id": "a", "ordinal": 3, "content_text": "Frequentadores de festivais de música;"},
+    ]
+    result = _adjacent_strategic_signals(evidence)
+    assert result == {}
