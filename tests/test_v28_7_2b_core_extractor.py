@@ -208,3 +208,22 @@ def test_same_page_starting_points_keep_atomic_statements_between_visual_heading
     assert by_name["CONEXÃO"].statement == "Um espaço que estimula conexão entre pais e filhos"
     assert by_name["MEMÓRIA AFETIVA"].statement == "Adultos relembram suas infâncias e a marca"
     assert by_name["PRESENÇA E ATENÇÃO"].statement == "Espaço e ativações estimulam imaginação e presença"
+
+
+def test_starting_points_last_heading_keeps_local_body_until_page_end():
+    text = """PONTOS DE PARTIDA
+CONEXÃO
+Um espaço que estimula
+conexão entre pais e filhos
+MEMÓRIA AFETIVA
+Adultos relembram suas infâncias
+resgatando memórias afetivas da marca
+PRESENÇA E ATENÇÃO
+Espaço e ativações desenvolvidas para
+estimular a imaginação e a presença"""
+    signals = extract_explicit_core_signals(text)
+    rows = {s.observed_name: s for s in signals if s.semantic_role == "strategic_principle"}
+    assert rows["CONEXÃO"].statement == "Um espaço que estimula\nconexão entre pais e filhos"
+    assert rows["MEMÓRIA AFETIVA"].statement == "Adultos relembram suas infâncias\nresgatando memórias afetivas da marca"
+    assert rows["PRESENÇA E ATENÇÃO"].statement == "Espaço e ativações desenvolvidas para\nestimular a imaginação e a presença"
+    assert "PONTOS DE PARTIDA" not in rows["PRESENÇA E ATENÇÃO"].statement

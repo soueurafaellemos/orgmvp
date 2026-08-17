@@ -197,7 +197,7 @@ def extract_explicit_core_signals(text: str) -> list[CoreSemanticSignal]:
             # because their body association is not structurally unambiguous.
             if line_idx > marker_idx:
                 next_positions = [idx for idx in candidate_positions if idx > line_idx]
-                segment_end = min(next_positions) if next_positions else min(len(lines), marker_idx + 8)
+                segment_end = min(next_positions) if next_positions else len(lines)
                 body = [value for value in lines[line_idx + 1:segment_end] if _norm(value)]
                 if body:
                     statement = "\n".join(body)[:1800]
