@@ -26,7 +26,8 @@ def test_ui_green_success_requires_truth_reconciliation_and_audits():
     assert 'domain_ok = str(domain.get("status") or "") == "completed"' in code
     assert 'reconciliation_ok = str(reconciliation.get("status") or "") == "completed"' in code
     assert 'audits_ok = str(audits.get("status") or "") == "completed"' in code
-    assert "if domain_ok and reconciliation_ok and audits_ok and core_ok:" in code
+    assert 'requirement_ok = str(requirement_reconciliation.get("status") or "") == "completed"' in code
+    assert "if domain_ok and reconciliation_ok and audits_ok and requirement_ok and core_ok:" in code
     assert "elif not domain_ok:" in code
     assert "analyze_pending_reports=False" in code
 
