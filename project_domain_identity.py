@@ -52,6 +52,54 @@ def similarity(left: Any, right: Any) -> float:
     return max(contains, sequence, overlap)
 
 
+
+
+_GENERIC_IDENTITY_TOKENS = {
+    "ativacao", "activation",
+    "solucao", "solution",
+    "produto", "product",
+    "brinde", "gift",
+    "oficina", "workshop",
+    "jogo", "game",
+    "press", "item",
+    "distribuicao", "distribution",
+    "experiencia", "experience",
+    "comunicacao", "communication",
+    "conteudo", "content",
+    "evento", "event",
+    "jornada", "journey",
+}
+
+
+def _discriminative_tokens(value: Any) -> set[str]:
+    return name_tokens(value) - _GENERIC_IDENTITY_TOKENS
+
+
+def _identity_match_score(left: Any, right: Any) -> float:
+    """Similarity for identity resolution, discounting domain-generic shared nouns.
+
+    Character similarity can be misleading for templated labels such as
+    ``TikTok activation`` vs ``Kwai activation``. When both sides have explicit
+    non-generic anchors and those anchors are disjoint, shared generic words must
+    not create a plausible identity match.
+    """
+    score = similarity(left, right)
+    left_anchor = _discriminative_tokens(left)
+    right_anchor = _discriminative_tokens(right)
+    if left_anchor and right_anchor and left_anchor.isdisjoint(right_anchor):
+        anchor_similarity = max(
+            difflib.SequenceMatcher(None, left_token, right_token).ratio()
+            for left_token in left_anchor
+            for right_token in right_anchor
+        )
+        # Morphological variants (e.g. personalizada/personalização) may still be
+        # plausible and must remain reviewable. Distinct anchors with low lexical
+        # similarity (e.g. TikTok/Kwai) are not made plausible by the generic noun.
+        if anchor_similarity < 0.70:
+            return min(score, 0.55)
+    return score
+
+
 def _unique_anchor_match(name: str, solutions: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     candidate = name_tokens(name)
     if not candidate:
@@ -68,10 +116,7 @@ def _unique_anchor_match(name: str, solutions: Sequence[Mapping[str, Any]]) -> M
     if len(subset_matches) == 1:
         return subset_matches[0]
 
-    generic = {
-        "ativacao", "solucao", "produto", "brinde", "oficina", "jogo", "press",
-        "item", "distribuicao", "experiencia", "comunicacao",
-    }
+    generic = _GENERIC_IDENTITY_TOKENS
     frequency: dict[str, int] = {}
     for _row, tokens in solution_tokens:
         for token in tokens:
@@ -107,7 +152,7 @@ def resolve_observed_identity(name: str, solutions: Sequence[Mapping[str, Any]])
         return {"action": "review_required", "reason": "multiple_exact", "candidates": [dict(r) for r in exact]}
 
     scored = sorted(
-        [(similarity(clean_name, row.get("name")), row) for row in solutions],
+        [(_identity_match_score(clean_name, row.get("name")), row) for row in solutions],
         key=lambda item: item[0], reverse=True,
     )
     best_score = scored[0][0] if scored else 0.0

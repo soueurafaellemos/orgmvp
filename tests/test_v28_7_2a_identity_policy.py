@@ -35,3 +35,22 @@ def test_identity_policy_has_no_existing_existing_merge_action():
         result = resolve_observed_identity(name, EXISTING)
         assert result["action"] in {"attach_existing", "review_required", "create_new"}
         assert result["action"] != "merge"
+
+
+def test_generic_english_activation_token_does_not_collapse_platform_identities():
+    existing = [{"id": "kwai", "name": "KWAI activation"}]
+    for name in ("YOUTUBE activation", "INSTAGRAM activation", "TIKTOK activation"):
+        resolved = resolve_observed_identity(name, existing)
+        assert resolved["action"] == "create_new", (name, resolved)
+
+
+def test_distinct_platform_activations_converge_to_four_identities_sequentially():
+    solutions = []
+    created = []
+    for idx, name in enumerate(("KWAI activation", "YOUTUBE activation", "INSTAGRAM activation", "TIKTOK activation")):
+        resolved = resolve_observed_identity(name, solutions)
+        assert resolved["action"] == "create_new", (name, resolved)
+        row = {"id": str(idx), "name": name}
+        solutions.append(row)
+        created.append(name)
+    assert len(created) == 4
