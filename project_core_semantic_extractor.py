@@ -177,14 +177,31 @@ def extract_explicit_core_signals(text: str) -> list[CoreSemanticSignal]:
     if marker_idx is not None:
         marker_norm = _norm(lines[marker_idx])
         marker_role = "pillar" if re.search(r"\b(pilares|pillars)\b", marker_norm) else "strategic_principle"
-        candidates: list[str] = []
-        neighborhood = list(lines[max(0, marker_idx - 7):marker_idx]) + list(lines[marker_idx + 1: marker_idx + 8])
-        for line in neighborhood:
+        candidate_rows: list[tuple[int, str]] = []
+        start = max(0, marker_idx - 7)
+        end = min(len(lines), marker_idx + 8)
+        for line_idx in range(start, end):
+            if line_idx == marker_idx:
+                continue
+            line = lines[line_idx]
             n = _norm(line)
             if _short_label(line) and _is_headingish(line) and not re.search(r"pontos|partida|pilares|pillars|starting", n):
-                candidates.append(line)
-        for line in candidates[:8]:
-            signals.append(CoreSemanticSignal("strategy", marker_role, line, raw[:1800], confidence=0.97))
+                candidate_rows.append((line_idx, line))
+        candidate_rows = candidate_rows[:8]
+        candidate_positions = [idx for idx, _ in candidate_rows]
+        for line_idx, line in candidate_rows:
+            statement = raw[:1800]
+            # When the source page visually presents heading -> body -> next heading, keep
+            # the Strategy statement atomic instead of copying the entire page into every
+            # element. Candidates that precede the marker retain the full Evidence text
+            # because their body association is not structurally unambiguous.
+            if line_idx > marker_idx:
+                next_positions = [idx for idx in candidate_positions if idx > line_idx]
+                segment_end = min(next_positions) if next_positions else min(len(lines), marker_idx + 8)
+                body = [value for value in lines[line_idx + 1:segment_end] if _norm(value)]
+                if body:
+                    statement = "\n".join(body)[:1800]
+            signals.append(CoreSemanticSignal("strategy", marker_role, line, statement, confidence=0.97))
 
     # Explicit insight/opportunity labels are Strategy facts when the same Evidence Unit
     # contains substantive body text. Do not promote a bare section divider.
@@ -458,7 +475,13 @@ def _adjacent_explicit_group_signals(evidence: Sequence[Mapping[str, Any]]) -> d
                 continue
             if not active_role or remaining <= 0:
                 continue
-            if stop_re.search(n) and (_is_headingish(text) or len(n.split()) <= 4):
+            # A new explicit section heading terminates the group even when its label is
+            # unknown to the Strategy ontology. This prevents metadata/resource sections
+            # such as ``Canais oficiais:`` from leaking into a preceding ``Pilares:``
+            # block. The terminal colon matters: ``Inovação: simplificar a jornada`` is
+            # still a valid item because the paragraph does not *end* at the label.
+            terminal_section_heading = bool(text.rstrip().endswith(":") and 1 <= len(n.split()) <= 10)
+            if terminal_section_heading or (stop_re.search(n) and (_is_headingish(text) or len(n.split()) <= 4)):
                 active_role = None
                 marker_evidence_id = None
                 remaining = 0

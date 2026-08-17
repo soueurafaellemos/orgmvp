@@ -161,3 +161,50 @@ def test_pdf_layout_reader_preserves_visual_line_boundaries():
     assert "PRESENÇA E ATENÇÃO" in recovered
     assert "PONTOS DE PARTIDA" in recovered
     assert "\n" in recovered
+
+
+def test_adjacent_pillars_stop_at_new_explicit_section_heading_and_do_not_leak_resources():
+    from project_core_semantic_extractor import _adjacent_explicit_group_signals
+
+    evidence = [
+        {"id": "h", "source_asset_id": "a", "ordinal": 20, "unit_type": "paragraph", "content_text": "Pilares:"},
+        {"id": "p1", "source_asset_id": "a", "ordinal": 21, "unit_type": "paragraph", "content_text": "Resgate da infância - Sabor de marca"},
+        {"id": "p2", "source_asset_id": "a", "ordinal": 22, "unit_type": "paragraph", "content_text": "Conexão familiar entre pais e filhos – Casa e brincadeiras"},
+        {"id": "p3", "source_asset_id": "a", "ordinal": 23, "unit_type": "paragraph", "content_text": "Imaginação e memórias"},
+        {"id": "p4", "source_asset_id": "a", "ordinal": 24, "unit_type": "paragraph", "content_text": "Coração"},
+        {"id": "section", "source_asset_id": "a", "ordinal": 25, "unit_type": "paragraph", "content_text": "Canais oficiais:"},
+        {"id": "url1", "source_asset_id": "a", "ordinal": 26, "unit_type": "paragraph", "content_text": "Site da marca: https://example.com/"},
+        {"id": "url2", "source_asset_id": "a", "ordinal": 27, "unit_type": "paragraph", "content_text": "YouTube: https://youtube.com/example"},
+    ]
+    result = _adjacent_explicit_group_signals(evidence)
+    assert set(result) == {"p1", "p2", "p3", "p4"}
+    assert "section" not in result
+    assert "url1" not in result
+    assert "url2" not in result
+
+
+def test_adjacent_pillar_with_colon_and_body_remains_a_valid_group_item():
+    from project_core_semantic_extractor import _adjacent_explicit_group_signals
+
+    evidence = [
+        {"id": "h", "source_asset_id": "a", "ordinal": 1, "unit_type": "paragraph", "content_text": "Pilares:"},
+        {"id": "p", "source_asset_id": "a", "ordinal": 2, "unit_type": "paragraph", "content_text": "Inovação: simplificar a experiência sem perder relevância."},
+        {"id": "stop", "source_asset_id": "a", "ordinal": 3, "unit_type": "paragraph", "content_text": "Entregáveis:"},
+    ]
+    result = _adjacent_explicit_group_signals(evidence)
+    assert result["p"][0]["semantic_role"] == "pillar"
+    assert result["p"][0]["observed_name"] == "Inovação"
+    assert "stop" not in result
+
+
+def test_same_page_starting_points_keep_atomic_statements_between_visual_headings():
+    signals = extract_explicit_core_signals(
+        "PONTOS DE PARTIDA\n"
+        "CONEXÃO\nUm espaço que estimula conexão entre pais e filhos\n"
+        "MEMÓRIA AFETIVA\nAdultos relembram suas infâncias e a marca\n"
+        "PRESENÇA E ATENÇÃO\nEspaço e ativações estimulam imaginação e presença"
+    )
+    by_name = {s.observed_name: s for s in signals if s.domain_hint == "strategy" and s.semantic_role == "strategic_principle"}
+    assert by_name["CONEXÃO"].statement == "Um espaço que estimula conexão entre pais e filhos"
+    assert by_name["MEMÓRIA AFETIVA"].statement == "Adultos relembram suas infâncias e a marca"
+    assert by_name["PRESENÇA E ATENÇÃO"].statement == "Espaço e ativações estimulam imaginação e presença"
