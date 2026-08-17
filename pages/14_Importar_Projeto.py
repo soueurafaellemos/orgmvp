@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.7.2A",
+    eyebrow="NAVE by VOE · V28.7.2B",
 )
 
 client = get_nave_client()
@@ -55,6 +55,87 @@ def _reconciliation_result(container: dict) -> dict:
     if isinstance(finalization, dict) and isinstance(finalization.get("domain_reconciliation"), dict):
         return finalization["domain_reconciliation"]
     return {}
+
+
+def _core_semantic_result(container: dict) -> dict:
+    direct = container.get("core_semantics") if isinstance(container, dict) else None
+    if isinstance(direct, dict):
+        return direct
+    finalization = container.get("project_intelligence_finalization") if isinstance(container, dict) else None
+    if isinstance(finalization, dict) and isinstance(finalization.get("core_semantics"), dict):
+        return finalization["core_semantics"]
+    return {}
+
+
+def _render_core_semantics(container: dict, *, expanded: bool = False) -> None:
+    result = _core_semantic_result(container)
+    if not result:
+        return
+    status = str(result.get("status") or "")
+    if status == "schema_missing":
+        st.warning(
+            "Core Semantic Domains V28.7.2B ainda não estão visíveis no Data API. "
+            "Execute NAVE_V28_7_2B_CORE_SEMANTIC_DOMAINS.sql no Supabase e rode novamente."
+        )
+        return
+    if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"}:
+        st.error("A V28.7.2B não promoveu uma nova geração de Strategy / Creative / Experience. A V28.7.2A anterior permanece válida.")
+        for warning in (result.get("warnings") or [])[:10]:
+            if str(warning).strip():
+                st.caption("• " + str(warning))
+        return
+    if status != "completed":
+        st.warning(f"Core Semantic Domains V28.7.2B: {status or 'status desconhecido'}.")
+        return
+
+    core = result.get("core_semantics") or {}
+    actions = result.get("actions") or {}
+    with st.expander("Core Semantic Domains · Strategy / Creative / Experience · V28.7.2B", expanded=expanded):
+        cols = st.columns(6)
+        cols[0].metric("Strategy", int(core.get("strategy_elements") or actions.get("strategy_elements") or 0))
+        cols[1].metric("Creative platforms", int(core.get("creative_platforms") or actions.get("creative_platforms") or 0))
+        cols[2].metric("Creative elements", int(core.get("creative_elements") or actions.get("creative_elements") or 0))
+        cols[3].metric("Experience architectures", int(core.get("experience_architectures") or actions.get("experience_architectures") or 0))
+        cols[4].metric("Journey moments", int(core.get("journey_moments") or actions.get("journey_moments") or 0))
+        cols[5].metric("Semantic observations", int(core.get("semantic_observations") or actions.get("observations") or 0))
+
+        truth_cols = st.columns(5)
+        truth_cols[0].metric("Verified explicit", int(core.get("verified_explicit") or 0))
+        truth_cols[1].metric("Verified synthesis", int(core.get("verified_synthesis") or 0))
+        truth_cols[2].metric("Human confirmed", int(core.get("human_confirmed") or 0))
+        truth_cols[3].metric("Review required", int(core.get("review_required") or 0))
+        truth_cols[4].metric("Unsupported", int(core.get("unsupported") or 0))
+
+        rel_cols = st.columns(3)
+        rel_cols[0].metric("Fact relations", int(core.get("fact_relations") or 0))
+        rel_cols[1].metric("Inference relations", int(core.get("inference_relations") or 0))
+        rel_cols[2].metric("Observações open", int(core.get("semantic_observations_open") or 0))
+
+        st.caption(
+            f"Migration mode: {core.get('migration_mode') or 'legacy_shadow'} · "
+            f"Domain schema: {core.get('domain_schema_version') or '28.7.2b'} · "
+            f"Run: {result.get('run_id') or core.get('last_completed_run_id') or '—'}"
+        )
+        st.caption(
+            "Fonte explícita, síntese evidence-backed e leitura do Analyst são estados diferentes. "
+            "Nesta shadow release, o extrator automático promove apenas semântica explicitamente sustentada pela fonte. "
+            "Journey não é Solution e nenhuma relação crítica vira fact apenas por proximidade no projeto."
+        )
+
+        strategy_titles = [str(v) for v in (actions.get("strategy_titles") or []) if str(v).strip()]
+        creative_names = [str(v) for v in (actions.get("creative_names") or []) if str(v).strip()]
+        journey_titles = [str(v) for v in (actions.get("journey_titles") or []) if str(v).strip()]
+        if strategy_titles or creative_names or journey_titles:
+            with st.expander("Core Semantics · objetos desta run", expanded=False):
+                if strategy_titles:
+                    st.markdown("**Strategy Elements**")
+                    st.caption(" · ".join(strategy_titles))
+                if creative_names:
+                    st.markdown("**Creative Platforms**")
+                    st.caption(" · ".join(creative_names))
+                if journey_titles:
+                    st.markdown("**Journey Moments**")
+                    st.caption(" · ".join(journey_titles))
 
 
 def _render_domain_reconciliation(container: dict, *, expanded: bool = False) -> None:
@@ -352,30 +433,33 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
         if st.button(
-            "Reconciliar domínio semântico · V28.7.2A",
+            "Reconciliar Core Semantic Domains · V28.7.2B",
             width="stretch",
             disabled=not confirm_reprocess,
-            key="v2872a_reconcile_domain",
-            help="Executa Truth Gate baseline, Semantic Observations, reconciliation evidence-led e Coverage/Identity Audits. Não reconstrói o Graph V28.6.",
+            key="v2872b_reconcile_core_domains",
+            help="Executa Truth Gate + V28.7.2A reconciliation + audits e, depois, materializa Strategy / Creative Platform / Experience/Journey explicitamente evidence-backed. Não reconstrói o Graph V28.6.",
         ):
             from project_intelligence_pipeline import finalize_project_intelligence
 
-            with st.spinner("Aplicando Truth Gate, coletando Semantic Observations e reconciliando o domínio sem reconstruir o Graph legado..."):
+            with st.spinner("Aplicando Truth Gate, reconciliando o domínio e materializando Strategy / Creative / Experience sem reconstruir o Graph legado..."):
                 finalization = finalize_project_intelligence(client, repair_options[repair_label], analyze_pending_reports=False)
             _render_domain_normalization(finalization, expanded=False)
-            _render_domain_reconciliation(finalization, expanded=True)
+            _render_domain_reconciliation(finalization, expanded=False)
+            _render_core_semantics(finalization, expanded=True)
             domain = _domain_result(finalization)
             reconciliation = _reconciliation_result(finalization)
+            core_semantics = _core_semantic_result(finalization)
             audits = finalization.get("domain_audits") or {}
             domain_ok = str(domain.get("status") or "") == "completed"
             reconciliation_ok = str(reconciliation.get("status") or "") == "completed"
             audits_ok = str(audits.get("status") or "") == "completed"
-            if domain_ok and reconciliation_ok and audits_ok:
+            core_ok = str(core_semantics.get("status") or "") == "completed"
+            if domain_ok and reconciliation_ok and audits_ok and core_ok:
                 coverage = audits.get("coverage") or {}
                 identity = audits.get("identity") or {}
                 st.success(
-                    "V28.7.2A reconciliada em legacy_shadow. Evidence → Observation → Domain foi aplicado; "
-                    "o Truth Gate permaneceu ativo e o Graph V28.6 continuou congelado."
+                    "V28.7.2B materializada em legacy_shadow. Evidence → Observation → Domain agora cobre "
+                    "Solutions + Strategy + Creative Platform + Experience/Journey; o Truth Gate permaneceu ativo e o Graph V28.6 continuou congelado."
                 )
                 st.caption(
                     f"Domain Coverage Audit: {int(coverage.get('findings') or 0)} gap(s) · "
@@ -404,10 +488,15 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     "O Truth Gate foi aplicado, mas a Semantic Domain Reconciliation não terminou. "
                     "Nenhum cutover foi promovido e o Graph V28.6 permaneceu congelado."
                 )
-            else:
+            elif not audits_ok:
                 st.error(
                     "Truth Gate e reconciliation foram aplicados, mas um dos audits de Coverage/Identity não terminou corretamente. "
                     "O Graph V28.6 permaneceu congelado; consulte os avisos técnicos."
+                )
+            else:
+                st.error(
+                    "A V28.7.2A permaneceu válida, mas Strategy / Creative / Experience V28.7.2B não terminou. "
+                    "Nenhum cutover foi promovido e o Graph V28.6 permaneceu congelado."
                 )
             final_warnings = [str(v) for v in (finalization.get("warnings") or []) if str(v).strip()]
             if final_warnings:

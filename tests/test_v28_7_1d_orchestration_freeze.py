@@ -19,10 +19,10 @@ def test_ui_success_depends_on_truth_reconciliation_and_audits_not_cross_source(
     assert 'domain_ok = str(domain.get("status") or "") == "completed"' in code
     assert 'reconciliation_ok = str(reconciliation.get("status") or "") == "completed"' in code
     assert 'audits_ok = str(audits.get("status") or "") == "completed"' in code
-    assert "if domain_ok and reconciliation_ok and audits_ok:" in code
+    assert "if domain_ok and reconciliation_ok and audits_ok and core_ok:" in code
     assert "Graph V28.6 continuou congelado" in code
     assert "cross_ok" not in code
-    assert "Reconciliar domínio semântico · V28.7.2A" in code
+    assert "Reconciliar Core Semantic Domains · V28.7.2B" in code
     assert "Conflitos de identidade para revisão" in code
 
 

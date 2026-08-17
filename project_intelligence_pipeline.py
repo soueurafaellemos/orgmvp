@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2A — evidence-led domain reconciliation finalization.
+"""NAVE V28.7.2B — evidence-led Core Semantic Domains finalization.
 
-V28.6 graph/cross-source synthesis remains intentionally frozen. The current action
-first preserves the V28.7.1D compatibility normalization/Truth Gate, then runs the
-V28.7.2A Semantic Observation -> Reconciliation kernel, and finally publishes
-Coverage/Identity findings. No semantic synthesis depends on the legacy Graph.
+The action preserves V28.7.1D Truth Gate, runs the approved V28.7.2A reconciliation,
+publishes Coverage/Identity audits, then materializes source-explicit Strategy, Creative
+Platform and Experience/Journey in legacy_shadow. Graph V28.6 and the old Project Analyst
+synthesis remain frozen.
 """
 
 import os
@@ -255,8 +255,35 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
             "warnings": warnings[:40],
         }
 
-    # V28.7.2A: intentionally stop here after reconciliation + audits. No V28.6
-    # graph rebuild, no old cross-source linker, no Project Analyst synthesis.
+    # V28.7.2B: Core Semantic Domains run only after the approved A kernel + audits.
+    # A successful A generation remains valid if B is unavailable or fails.
+    try:
+        from project_core_semantic_domains import materialize_project_core_semantics
+        core_semantics = materialize_project_core_semantics(client, project_id)
+    except Exception as exc:
+        core_semantics = {"status": "orchestration_error", "warnings": [str(exc)]}
+
+    core_status = str(core_semantics.get("status") or "")
+    if core_status != "completed":
+        for value in core_semantics.get("warnings") or []:
+            if str(value).strip():
+                warnings.append(f"Core Semantic Domains: {str(value)[:700]}")
+        return {
+            "status": "core_semantics_blocked",
+            "project_id": project_id,
+            "report_analysis": report_result,
+            "domain_normalization": domain_normalization,
+            "domain_reconciliation": domain_reconciliation,
+            "domain_audits": audits,
+            "core_semantics": core_semantics,
+            "canonical_entity_graph": None,
+            "cross_source": frozen_graph,
+            "semantic_project_analysis": None,
+            "structured_prelinks": frozen_prelinks,
+            "warnings": warnings[:40],
+        }
+
+    # No V28.6 graph rebuild, no old cross-source linker, no Project Analyst synthesis.
     return {
         "status": "completed",
         "project_id": project_id,
@@ -264,6 +291,7 @@ def finalize_project_intelligence(client: Any, project_id: str, *, analyze_pendi
         "domain_normalization": domain_normalization,
         "domain_reconciliation": domain_reconciliation,
         "domain_audits": audits,
+        "core_semantics": core_semantics,
         "canonical_entity_graph": None,
         "cross_source": frozen_graph,
         "semantic_project_analysis": None,
