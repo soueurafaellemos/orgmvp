@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from project_requirement_semantic_extractor import _classify, _discover_requirement_atoms, _observation_identity, _looks_like_unanswered_form_prompt
+from project_requirement_semantic_extractor import _classify, _discover_requirement_atoms, _observation_identity, _looks_like_unanswered_form_prompt, _legacy_recall_requirements
 from project_requirement_reconciliation import build_requirement_reconciliation_plan
 
 
@@ -178,3 +178,24 @@ def test_c022_sql_form_prompt_truth_and_lifecycle_contract():
     assert "status='active'" in sql
     assert "delete from public.project_requirements" not in sql
     assert "delete from public.semantic_observations" not in sql
+
+
+def test_c023_legacy_recall_route_excludes_prior_evidence_led_identities():
+    rows = [
+        {"id": "legacy-domain", "legacy_source_id": "legacy-row", "title": "Legacy"},
+        {"id": "evidence-led", "legacy_source_id": None, "title": "Evidence led", "attributes": {"origin": "evidence_led_v2872c0_2"}},
+        {"id": "manual", "legacy_source_id": None, "title": "Manual"},
+    ]
+    out = _legacy_recall_requirements(rows)
+    assert [row["id"] for row in out] == ["legacy-domain"]
+
+
+def test_c023_sql_legacy_truth_lookup_is_identity_isolated():
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_2C0_2_3_RERUN_ISOLATION_TRUTH_FIX.sql").read_text(encoding="utf-8").casefold()
+    truth = sql.split("create or replace view public.project_requirement_truth_status", 1)[1].split("create or replace view public.project_requirement_reconciliation_status", 1)[0]
+    assert "b.legacy_source_id is not null" in truth
+    assert "=b.legacy_source_id::text" in truth
+    assert "coalesce(b.legacy_source_id::text,''), b.id::text" not in truth
+    assert "e.legacy_source_id is not null" in truth
+    assert "=e.legacy_source_id::text" in truth
+    assert "truth_state in ('verified','human_confirmed','review_required')" in sql

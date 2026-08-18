@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.2 — Evidence-first Requirement Semantic Reconciliation.
+"""NAVE V28.7.2C0.2.3 — Evidence-first Requirement Semantic Reconciliation.
 
 Runs in legacy_shadow after Solution reconciliation/audits and before Core Semantic B.
 It verifies or classifies Requirement knowledge without auto-merging two existing
@@ -16,8 +16,8 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from project_requirement_identity import normalize_requirement_text, resolve_requirement_identity
 from project_requirement_semantic_extractor import collect_project_requirement_observations
 
-C0_VERSION = "V28.7.2C0.2.2"
-C0_SCHEMA_VERSION = "28.7.2c0.2.2"
+C0_VERSION = "V28.7.2C0.2.3"
+C0_SCHEMA_VERSION = "28.7.2c0.2.3"
 C0_RPC = "apply_project_requirement_reconciliation_v2872c0"
 
 
@@ -268,7 +268,7 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
         return {
             "project_id": project_id,
             "status": "blocked_empty_requirement_observation_bundle",
-            "warnings": ["C0.2.2 não encontrou Evidence-backed Requirement observations; estado anterior preservado."],
+            "warnings": ["C0.2.3 não encontrou Evidence-backed Requirement observations; estado anterior preservado."],
             "diagnostics": extraction.get("diagnostics") or [],
         }
     plan = build_requirement_reconciliation_plan(project_id, observations, existing)

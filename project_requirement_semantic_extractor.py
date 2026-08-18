@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.2 — Evidence-first Requirement Semantic Observation collector.
+"""NAVE V28.7.2C0.2.3 — Evidence-first Requirement Semantic Observation collector.
 
 C0.2 removes the semantic privilege previously granted to legacy Requirements that
 already had Evidence. Every legacy row is reclassified against the current source, and
@@ -23,7 +23,7 @@ from uuid import NAMESPACE_URL, uuid5
 from project_requirement_identity import normalize_requirement_text
 from project_semantic_observations import _project_evidence, _source_role, _phase_role, _authority
 
-C0_VERSION = "V28.7.2C0.2.2"
+C0_VERSION = "V28.7.2C0.2.3"
 
 CHANNEL_TERMS = {
     "youtube", "instagram", "tiktok", "tik tok", "kwai", "facebook", "linkedin",
@@ -696,9 +696,23 @@ def _surrounding_by_evidence(source: Mapping[str, Any], asset_ids: set[str]) -> 
     return out
 
 
+def _legacy_recall_requirements(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Only rows with a real legacy source belong to the legacy-recall route.
+
+    Evidence-led identities from earlier C0 runs are current domain projections and
+    must be rediscovered exclusively by Evidence-first on reruns.
+    """
+    return [dict(row) for row in rows if row.get("legacy_source_id")]
+
+
 def collect_project_requirement_observations(client: Any, project_id: str) -> dict[str, Any]:
     source = _project_evidence(client, project_id)
     requirements = _read_rows(client, "project_requirements", equals={"project_id": project_id})
+    # Route 1 is strictly legacy recall. Evidence-led identities created by a prior
+    # C0 run must NOT re-enter through legacy_recall on rerun; they are rediscovered
+    # (or disappear) through Route 2 Evidence-first. This is required for idempotence
+    # and prevents one evidence-led identity from being treated as another legacy row.
+    legacy_requirements = _legacy_recall_requirements(requirements)
     direct_by_requirement, _linked_evidence_ids = _requirement_evidence_links(client, project_id)
     briefing_assets = _briefing_asset_ids(client, project_id, source)
     surrounding = _surrounding_by_evidence(source, briefing_assets)
@@ -718,7 +732,7 @@ def collect_project_requirement_observations(client: Any, project_id: str) -> di
     # ------------------------------------------------------------------
     # Route 1: legacy recall, but EVERY row passes the semantic gate.
     # ------------------------------------------------------------------
-    for req in requirements:
+    for req in legacy_requirements:
         req_id = str(req.get("id") or "")
         evidences = [dict(row) for row in (direct_by_requirement.get(req_id) or [])]
         evidence: dict[str, Any] | None = None
@@ -823,7 +837,7 @@ def collect_project_requirement_observations(client: Any, project_id: str) -> di
         "observations": [row.to_dict() for row in deduped.values()],
         "diagnostics": diagnostics,
         "summary": {
-            "legacy_requirements": len(requirements),
+            "legacy_requirements": len(legacy_requirements),
             "legacy_observations": legacy_count,
             "evidence_first_observations": evidence_count,
             "briefing_assets": len(briefing_assets),
