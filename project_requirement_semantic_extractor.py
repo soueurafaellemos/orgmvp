@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2 — Evidence-first Requirement Semantic Observation collector.
+"""NAVE V28.7.2C0.2.2 — Evidence-first Requirement Semantic Observation collector.
 
 C0.2 removes the semantic privilege previously granted to legacy Requirements that
 already had Evidence. Every legacy row is reclassified against the current source, and
@@ -23,7 +23,7 @@ from uuid import NAMESPACE_URL, uuid5
 from project_requirement_identity import normalize_requirement_text
 from project_semantic_observations import _project_evidence, _source_role, _phase_role, _authority
 
-C0_VERSION = "V28.7.2C0.2"
+C0_VERSION = "V28.7.2C0.2.2"
 
 CHANNEL_TERMS = {
     "youtube", "instagram", "tiktok", "tik tok", "kwai", "facebook", "linkedin",
@@ -261,6 +261,42 @@ def _direct_obligation(value: str) -> bool:
     return bool(OBLIGATION_RE.search(raw) or NEGATIVE_OBLIGATION_RE.search(raw))
 
 
+def _looks_like_unanswered_form_prompt(value: str) -> bool:
+    """Detect briefing-template questions/instructions with no project-specific answer.
+
+    A form scaffold such as:
+      "Qual mensagem principal precisa ser transmitida: (O que as pessoas devem...)"
+    contains obligation verbs inside the parenthetical guidance, but is not itself a
+    Requirement. If substantive text exists after the colon, the line is NOT blocked.
+    """
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not raw or ":" not in raw:
+        return False
+
+    label, answer = raw.split(":", 1)
+    label_norm = _norm(label)
+    answer = answer.strip()
+
+    question_label = bool(re.match(
+        r"^(?:qual|quais|quem|onde|quando|como|what|which|who|where|when|how)\b",
+        label_norm,
+    ))
+    form_label = bool(re.match(
+        r"^(?:numeros?|números?|resultado esperado|mensagem principal|objetivos? secundarios?|"
+        r"secondary objectives?|expected results?)\b",
+        label_norm,
+    ))
+    if not (question_label or form_label):
+        return False
+
+    # Blank or parenthetical-only content is template guidance, not an answer.
+    if not answer:
+        return True
+    residual = re.sub(r"\([^)]*\)", " ", answer)
+    residual = re.sub(r"[\s\-–—•·*;,.!?]+", " ", residual).strip()
+    return residual == ""
+
+
 def _classify(req: Mapping[str, Any], evidence_text: str, surrounding_text: str = "") -> tuple[str, str, str]:
     """Classify one legacy Requirement recall item against source semantics.
 
@@ -275,6 +311,11 @@ def _classify(req: Mapping[str, Any], evidence_text: str, surrounding_text: str 
     source_reference = _norm(attrs.get("source_reference"))
     local_context = _find_title_context(title, evidence_text, surrounding_text)
     context = " ".join(filter(None, [local_context, source_reference]))
+
+    # Briefing-template scaffolding is not a Requirement identity, even when the
+    # parenthetical helper text contains words such as "devem" or "precisa".
+    if _looks_like_unanswered_form_prompt(title):
+        return "context_signal", "form_prompt", "context"
 
     # A source-explicit obligation/exclusion wins over the descriptive context around it.
     # This keeps "não é necessário orçar MC" as a real Requirement exclusion.
@@ -505,6 +546,9 @@ def _discover_requirement_atoms(text: str, *, previous_text: str = "") -> list[d
             continue
 
         if _looks_like_reference(stripped):
+            continue
+        if _looks_like_unanswered_form_prompt(stripped):
+            inherited_prefix = None
             continue
         if SUGGESTION_RE.search(stripped) and not NEGATIVE_OBLIGATION_RE.search(stripped):
             continue

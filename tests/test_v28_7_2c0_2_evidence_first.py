@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from project_requirement_semantic_extractor import _classify, _discover_requirement_atoms, _observation_identity
+from project_requirement_semantic_extractor import _classify, _discover_requirement_atoms, _observation_identity, _looks_like_unanswered_form_prompt
 from project_requirement_reconciliation import build_requirement_reconciliation_plan
 
 
@@ -43,6 +43,31 @@ def test_evidence_first_recovers_explicit_obligation_missing_from_legacy_invento
     )
     names = [row["name"] for row in atoms]
     assert any("4 ativações imersivas" in name for name in names)
+
+
+def test_unanswered_briefing_question_is_not_requirement():
+    text = "Qual mensagem principal precisa ser transmitida: (O que as pessoas devem sentir, entender e lembrar após a ação)"
+    assert _looks_like_unanswered_form_prompt(text) is True
+    assert _discover_requirement_atoms(text) == []
+
+
+def test_substantive_answer_after_form_label_is_not_blocked_as_template():
+    text = "Qual mensagem principal precisa ser transmitida: Conhecer ambas as marcas e atributos"
+    assert _looks_like_unanswered_form_prompt(text) is False
+
+
+def test_numeric_form_prompt_parenthetical_only_is_not_requirement():
+    text = "Números: (Quais são os números ou expectativa que o cliente quer alcançar com esse projeto?)"
+    assert _looks_like_unanswered_form_prompt(text) is True
+    assert _discover_requirement_atoms(text) == []
+
+
+def test_legacy_template_prompt_is_no_domain_context():
+    kind, role, occurrence_role = _classify(
+        {"title": "Qual mensagem principal precisa ser transmitida: (O que as pessoas devem sentir após a ação)", "requirement_type": "other", "mandatory": True, "attributes": {}},
+        "Qual mensagem principal precisa ser transmitida: (O que as pessoas devem sentir após a ação)",
+    )
+    assert (kind, role, occurrence_role) == ("context_signal", "form_prompt", "context")
 
 
 def test_suggestion_is_not_auto_promoted_but_negative_exclusion_is_requirement():
@@ -143,3 +168,13 @@ def test_c02_sql_truth_gate_and_supersession_contract():
     assert "empty observation bundle blocked" in sql
     assert "pg_catalog.sha256" in sql
     assert "delete from public.project_requirements" not in sql
+
+
+def test_c022_sql_form_prompt_truth_and_lifecycle_contract():
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_2C0_2_2_TEMPLATE_PROMPT_GUARD.sql").read_text(encoding="utf-8").casefold()
+    assert "'form_prompt'" in sql
+    assert "status='superseded'" in sql
+    assert "set status='inactive'" in sql
+    assert "status='active'" in sql
+    assert "delete from public.project_requirements" not in sql
+    assert "delete from public.semantic_observations" not in sql
