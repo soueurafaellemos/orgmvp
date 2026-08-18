@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0 — Evidence-led Requirement Semantic Observation collector.
+"""NAVE V28.7.2C0.2 — Evidence-first Requirement Semantic Observation collector.
 
-Legacy requirements are recall hints, never provenance. Every observation produced by
-this module is anchored to a current Evidence Unit. Short fragments can be classified
-as scope/attribute/context instead of being promoted as Requirement truth.
+C0.2 removes the semantic privilege previously granted to legacy Requirements that
+already had Evidence. Every legacy row is reclassified against the current source, and
+the briefing Evidence is scanned independently to recover explicit obligations that the
+legacy extractor never materialized.
+
+Legacy Requirement rows remain recall hints only. Evidence is provenance only. The
+semantic gate decides whether a signal is a Requirement, scope, attribute, context,
+constraint or reference.
 """
 
 from dataclasses import asdict, dataclass
@@ -18,26 +23,62 @@ from uuid import NAMESPACE_URL, uuid5
 from project_requirement_identity import normalize_requirement_text
 from project_semantic_observations import _project_evidence, _source_role, _phase_role, _authority
 
-C0_VERSION = "V28.7.2C0"
+C0_VERSION = "V28.7.2C0.2"
 
 CHANNEL_TERMS = {
     "youtube", "instagram", "tiktok", "tik tok", "kwai", "facebook", "linkedin",
     "stories", "story", "reels", "reel", "feed", "shorts", "twitter", "x",
 }
-AUDIENCE_TERMS = {
-    "publico alvo", "publico", "audiencia", "audience", "target audience", "criadores de conteudo",
-    "content creators", "filmmakers", "fotografos", "photographers", "moda e lifestyle", "lifestyle",
-}
-PRODUCT_TERMS = {
-    "foco do produto", "product focus", "captura em alta velocidade", "high speed capture",
-    "camera", "cameras", "produto", "product", "feature", "recurso", "velocidade", "capture",
-}
-OBLIGATION_PATTERNS = (
-    r"\bdeve(?:ra|m)?\b", r"\bprecisa(?:m)?\b", r"\bnecessari[oa]s?\b", r"\bobrigatori[oa]s?\b",
-    r"\bmust\b", r"\bshould\b", r"\brequired\b", r"\bgarantir\b", r"\bensure\b",
-    r"\bdesenvolver\b", r"\bdevelop\b", r"\bcriar\b", r"\bcreate\b", r"\bentregar\b", r"\bdeliver\b",
-    r"\bobjetivo\s+(?:e|eh|é|de)\b", r"\bobjective\s+(?:is|to)\b",
+
+AUDIENCE_MARKERS = (
+    "publico alvo", "publico-alvo", "target audience", "audience", "perfil de publico",
 )
+PRODUCT_MARKERS = (
+    "foco do produto", "product focus", "destaques", "highlights", "evidenciando",
+    "product highlights", "features do produto", "product features",
+)
+PLATFORM_MARKERS = (
+    "adequacao a plataforma", "adequacao à plataforma", "platform fit", "platform adequacy",
+    "para a plataforma", "for the platform",
+)
+STRATEGY_MARKERS = (
+    "alinhamento estrategico", "alinhamento estratégico", "objetivos estrategicos",
+    "objetivos estratégicos", "strategic objectives", "strategic alignment",
+    "para as plataformas", "for the platforms", "objetivo principal", "main objective",
+)
+REFERENCE_MARKERS = (
+    "sites de referencia", "sites de referência", "referencias", "referências", "references",
+    "como referencia", "como referência", "exemplo", "example",
+)
+DELIVERABLE_MARKERS = (
+    "entregaveis", "entregáveis", "deliverables", "obrigatoriedades", "mandatory items",
+)
+
+# Strong source-language obligation. Naked words such as "necessário" are deliberately
+# insufficient because they also occur in form labels (e.g. "NÃO NECESSÁRIO").
+OBLIGATION_RE = re.compile(
+    r"(?:\b(?:deve|devem|devera|deverá|deverao|deverão|devemos|precisa|precisam|precisamos|"
+    r"temos\s+que|e\s+necessario|é\s+necessario|é\s+necessário|nao\s+e\s+necessario|não\s+é\s+necessário|"
+    r"must|shall|required|needs?\s+to|have\s+to)\b|"
+    r"(?:^|[\s:;\-])(?:considerar|apresentar|incluir|reservar|criar|desenvolver|desenhar|garantir|"
+    r"entregar|utilizar|propor|prever|assegurar)\b)",
+    re.I,
+)
+
+SUGGESTION_RE = re.compile(
+    r"\b(?:vale\s+(?:sugerir|pensar|considerar)|podemos\s+(?:sugerir|considerar|inserir)|"
+    r"se\s+acharmos\s+que\s+faz\s+sentido|recomenda-se|recomenda se|suggestion|could\s+consider|may\s+consider)\b",
+    re.I,
+)
+
+NEGATIVE_OBLIGATION_RE = re.compile(
+    r"\b(?:nao\s+e\s+necessario|não\s+é\s+necessário|nao\s+precisa|não\s+precisa|"
+    r"nao\s+precisam|não\s+precisam|not\s+required|does\s+not\s+need|do\s+not\s+need)\b",
+    re.I,
+)
+
+FILENAME_RE = re.compile(r"(?:^|\s)[^\s]+\.(?:pptx?|xlsx?|docx?|pdf|jpg|jpeg|png|webp)(?:$|\s)", re.I)
+URL_RE = re.compile(r"https?://|www\.", re.I)
 
 
 @dataclass(frozen=True)
@@ -126,9 +167,7 @@ def _requirement_evidence_links(client: Any, project_id: str) -> tuple[dict[str,
 
 def _best_requirement_evidence(req: Mapping[str, Any], evidence_rows: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any] | None, float, str]:
     attrs = req.get("attributes") if isinstance(req.get("attributes"), Mapping) else {}
-    hints = [
-        attrs.get("source_quote"), attrs.get("source_reference"), req.get("description"), req.get("title")
-    ]
+    hints = [attrs.get("source_quote"), attrs.get("source_reference"), req.get("description"), req.get("title")]
     hints = [str(v).strip() for v in hints if str(v or "").strip()]
     title = str(req.get("title") or "").strip()
     title_norm = _norm(title)
@@ -155,7 +194,7 @@ def _best_requirement_evidence(req: Mapping[str, Any], evidence_rows: Sequence[M
             if cand > score:
                 score, reason = cand, why
         if title_norm and len(title_norm) >= 4 and title_norm in norm:
-            score = max(score, 0.88 if len(title_norm.split()) > 1 else 0.78)
+            score = max(score, 0.90 if len(title_norm.split()) > 1 else 0.80)
             reason = reason or "title_in_evidence"
         if score < 0.78:
             continue
@@ -168,76 +207,177 @@ def _best_requirement_evidence(req: Mapping[str, Any], evidence_rows: Sequence[M
 
 
 def _is_channel_title(title: str) -> bool:
-    norm = _norm(title)
-    return norm in CHANNEL_TERMS or any(norm == _norm(v) for v in CHANNEL_TERMS)
+    return _norm(title) in {_norm(v) for v in CHANNEL_TERMS}
 
 
-def _classify(req: Mapping[str, Any], evidence_text: str) -> tuple[str, str, str]:
+def _lines(text: str) -> list[str]:
+    out: list[str] = []
+    for raw in re.split(r"[\r\n]+", str(text or "")):
+        line = re.sub(r"\s+", " ", raw).strip(" \t•·")
+        if line:
+            out.append(line)
+    return out
+
+
+def _find_title_context(title: str, evidence_text: str, surrounding_text: str = "") -> str:
+    """Return the closest structural label around a legacy fragment."""
+    tnorm = _norm(title)
+    lines = _lines(evidence_text)
+    hit = None
+    for idx, line in enumerate(lines):
+        lnorm = _norm(line)
+        if tnorm and (tnorm == lnorm or (len(tnorm) >= 4 and tnorm in lnorm)):
+            hit = idx
+            break
+    if hit is not None:
+        # Include the matched line itself because structured DOCX extraction often keeps
+        # a label and its value on one line (e.g. "Público-Alvo: ..." or
+        # "Foco do Produto: ...").
+        before = lines[: hit + 1]
+    else:
+        before = lines
+    context = " ".join(before[-8:] + _lines(surrounding_text)[-4:])
+    return _norm(context)
+
+
+def _has_any(norm_text: str, markers: Sequence[str]) -> bool:
+    return any(_norm(marker) in norm_text for marker in markers)
+
+
+def _looks_like_reference(value: str) -> bool:
+    raw = str(value or "").strip()
+    norm = _norm(raw)
+    if not raw:
+        return False
+    if FILENAME_RE.search(raw) or URL_RE.search(raw):
+        return True
+    return norm in {"link", "links", "arquivo", "file", "modelo de ppt", "template"}
+
+
+def _direct_obligation(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw or SUGGESTION_RE.search(raw):
+        return False
+    return bool(OBLIGATION_RE.search(raw) or NEGATIVE_OBLIGATION_RE.search(raw))
+
+
+def _classify(req: Mapping[str, Any], evidence_text: str, surrounding_text: str = "") -> tuple[str, str, str]:
+    """Classify one legacy Requirement recall item against source semantics.
+
+    Crucially, this function is called even when the legacy row already has Evidence.
+    Existing provenance never grants semantic immunity.
+    """
     title = str(req.get("title") or "").strip()
     title_norm = _norm(title)
     text_norm = _norm(evidence_text)
     req_type = _norm(req.get("requirement_type")).replace(" ", "_")
+    attrs = req.get("attributes") if isinstance(req.get("attributes"), Mapping) else {}
+    source_reference = _norm(attrs.get("source_reference"))
+    local_context = _find_title_context(title, evidence_text, surrounding_text)
+    context = " ".join(filter(None, [local_context, source_reference]))
+
+    # A source-explicit obligation/exclusion wins over the descriptive context around it.
+    # This keeps "não é necessário orçar MC" as a real Requirement exclusion.
+    if _direct_obligation(title):
+        return "requirement_candidate", "requirement_candidate", "requirement"
+
+    if _looks_like_reference(title):
+        return "reference_signal", "reference_signal", "reference"
 
     if _is_channel_title(title):
-        if re.search(r"\b(plataform|platform|canal|channel|ativacao|activation|conteudo|content|social)\w*\b", text_norm):
-            return "scope_signal", "channel_scope", "scope"
         return "scope_signal", "channel_scope", "scope"
 
-    if title_norm in {_norm(v) for v in AUDIENCE_TERMS} or req_type in {"audience", "publico", "publico_alvo", "context", "contexto"}:
+    if title_norm.startswith("publico alvo") or title_norm.startswith("target audience"):
+        return "context_signal", "audience_context", "context"
+    if _has_any(context, AUDIENCE_MARKERS):
         return "context_signal", "audience_context", "context"
 
-    if title_norm in {_norm(v) for v in PRODUCT_TERMS} or (
-        len(title_norm.split()) <= 5 and re.search(r"\b(produto|product|camera|feature|recurso|capture|captura|velocidade)\b", text_norm)
-    ):
+    if title_norm in {_norm(v) for v in PRODUCT_MARKERS} or _has_any(context, PRODUCT_MARKERS):
         return "attribute_signal", "product_attribute", "attribute"
 
-    if re.search(r"\b(budget|orcamento|verba|investimento|prazo|deadline|quantidade|participantes|attendees)\b", text_norm):
-        if re.search(r"\b\d+[\d\s\.,]*\b", evidence_text):
-            return "constraint_candidate", "constraint_candidate", "constraint"
+    if title_norm in {_norm(v) for v in PLATFORM_MARKERS} or _has_any(context, PLATFORM_MARKERS):
+        return "scope_signal", "platform_scope", "scope"
 
-    obligation = any(re.search(pattern, text_norm) for pattern in OBLIGATION_PATTERNS)
-    substantive = len(title_norm.split()) >= 3 or len(_norm(req.get("description")).split()) >= 5
-    if obligation or bool(req.get("mandatory")) or substantive:
+    if title_norm in {_norm(v) for v in STRATEGY_MARKERS} or _has_any(context, STRATEGY_MARKERS):
+        return "context_signal", "strategy_context", "context"
+
+    if _has_any(context, REFERENCE_MARKERS):
+        return "reference_signal", "reference_signal", "reference"
+
+    # Explicit obligation in the evidence can support a legacy title when the title is
+    # the atom inside that same clause/list and no stronger descriptive context applies.
+    if _direct_obligation(evidence_text):
+        if re.search(r"\b(budget|orcamento|orçamento|verba|investimento|prazo|deadline|quantidade|participantes|attendees)\b", text_norm):
+            if re.search(r"\d", evidence_text):
+                return "constraint_candidate", "constraint_candidate", "constraint"
         return "requirement_candidate", "requirement_candidate", "requirement"
-    return "requirement_mention", "requirement_mention", "reference"
+
+    # Legacy mandatory/deliverable signals remain eligible only after the semantic
+    # context exclusions above. This protects concise valid requirements in older
+    # projects without allowing audience/product/platform fragments to pass through.
+    if source_reference and _has_any(source_reference, DELIVERABLE_MARKERS):
+        return "requirement_candidate", "requirement_candidate", "requirement"
+    if bool(req.get("mandatory")) and req_type not in {"audience", "publico", "publico_alvo", "context", "contexto"}:
+        return "requirement_candidate", "requirement_candidate", "requirement"
+
+    if re.search(r"\b(budget|orcamento|orçamento|verba|investimento|prazo|deadline|quantidade|participantes|attendees)\b", text_norm) and re.search(r"\d", evidence_text):
+        return "constraint_candidate", "constraint_candidate", "constraint"
+
+    # No explicit obligation and no structural evidence that this is a Requirement.
+    # Preserve the signal, but do not let legacy presence become current truth.
+    return "reference_signal", "reference_signal", "reference"
 
 
-def _make_observation(
-    *, project_id: str, requirement: Mapping[str, Any], evidence: Mapping[str, Any],
-    semantic_role: str, occurrence_role: str, confidence: float, match_reason: str,
-    source_role: str, primary: bool,
-) -> RequirementSemanticObservation:
-    title = str(requirement.get("title") or "Requisito").strip()
-    source_asset_id = str(evidence.get("source_asset_id") or "")
-    evidence_id = str(evidence.get("id") or "")
+def _observation_identity(
+    *, project_id: str, evidence_id: str, observed_name: str,
+    origin_route: str, legacy_requirement_id: str | None,
+) -> tuple[str, str]:
+    # semantic_role is deliberately NOT part of the identity. Reclassification across
+    # C0 runs updates the same observation instead of creating semantic duplicates.
     identity = {
         "project_id": project_id,
         "evidence_unit_id": evidence_id,
         "domain_hint": "requirement",
-        "semantic_role": semantic_role,
-        "legacy_requirement_id": str(requirement.get("legacy_source_id") or requirement.get("id") or ""),
-        "observed_name": _norm(title),
+        "origin_route": origin_route,
+        "legacy_requirement_id": legacy_requirement_id or None,
+        "observed_name": _norm(observed_name),
     }
     ohash = _hash(identity)
-    oid = str(uuid5(NAMESPACE_URL, "nave:requirement-observation:" + ohash))
+    return ohash, str(uuid5(NAMESPACE_URL, "nave:requirement-observation:" + ohash))
+
+
+def _make_observation(
+    *, project_id: str, observed_name: str, evidence: Mapping[str, Any],
+    semantic_role: str, occurrence_role: str, confidence: float,
+    source_role: str, primary: bool, origin_route: str,
+    requirement: Mapping[str, Any] | None = None, match_reason: str | None = None,
+    observed_type: str | None = None, attributes: Mapping[str, Any] | None = None,
+) -> RequirementSemanticObservation:
+    req = dict(requirement or {})
+    legacy_id = str(req.get("legacy_source_id") or "") or None
+    domain_id = str(req.get("id") or "") or None
+    source_asset_id = str(evidence.get("source_asset_id") or "")
+    evidence_id = str(evidence.get("id") or "")
+    ohash, oid = _observation_identity(
+        project_id=project_id, evidence_id=evidence_id, observed_name=observed_name,
+        origin_route=origin_route, legacy_requirement_id=legacy_id or domain_id if origin_route == "legacy_recall" else None,
+    )
     phase, _source_occurrence_role = _phase_role(source_role)
     attrs = {
         "normalized_by": C0_VERSION,
-        "legacy_requirement_id": str(requirement.get("legacy_source_id") or "") or None,
-        "requirement_id": str(requirement.get("id") or "") or None,
-        "requirement_entity_id": str(requirement.get("entity_id") or "") or None,
-        "legacy_requirement_type": requirement.get("requirement_type"),
-        "source_reference": (requirement.get("attributes") or {}).get("source_reference") if isinstance(requirement.get("attributes"), Mapping) else None,
+        "origin_route": origin_route,
+        "legacy_requirement_id": legacy_id,
+        "requirement_id": domain_id,
+        "requirement_entity_id": str(req.get("entity_id") or "") or None,
+        "legacy_requirement_type": req.get("requirement_type"),
+        "source_reference": (req.get("attributes") or {}).get("source_reference") if isinstance(req.get("attributes"), Mapping) else None,
         "match_reason": match_reason,
-        "evidence_text": str(evidence.get("content_text") or "")[:1600],
+        "evidence_text": str(evidence.get("content_text") or "")[:2400],
     }
+    attrs.update(dict(attributes or {}))
     role_map = {
-        "requirement": "mention",
-        "scope": "reference",
-        "attribute": "reference",
-        "constraint": "reference",
-        "context": "reference",
-        "reference": "reference",
+        "requirement": "mention", "scope": "reference", "attribute": "reference",
+        "constraint": "reference", "context": "reference", "reference": "reference",
     }
     return RequirementSemanticObservation(
         id=oid,
@@ -245,8 +385,8 @@ def _make_observation(
         source_asset_id=source_asset_id,
         evidence_unit_id=evidence_id,
         observation_kind="requirement_signal",
-        observed_name=title,
-        observed_type=str(requirement.get("requirement_type") or "requirement"),
+        observed_name=str(observed_name).strip(),
+        observed_type=observed_type or str(req.get("requirement_type") or "other"),
         observed_status=None,
         occurrence_phase=phase,
         occurrence_role=role_map.get(occurrence_role, "reference"),
@@ -256,20 +396,270 @@ def _make_observation(
         attributes=attrs,
         source_authority_score=_authority(source_role, primary=primary),
         model_confidence=max(0.0, min(1.0, confidence)),
-        extraction_method="requirement_legacy_recall+current_evidence",
+        extraction_method=(
+            "requirement_legacy_recall+semantic_gate+current_evidence"
+            if origin_route == "legacy_recall"
+            else "requirement_evidence_first_discovery"
+        ),
         observation_hash=ohash,
     )
+
+
+def _split_sentences(text: str) -> list[str]:
+    chunks: list[str] = []
+    for line in _lines(text):
+        # Keep colon containers as lines; split prose sentences/semicolons otherwise.
+        parts = re.split(r"(?<=[.!?;])\s+", line)
+        for part in parts:
+            clean = re.sub(r"\s+", " ", part).strip(" \t•·-")
+            if clean:
+                chunks.append(clean)
+    return chunks
+
+
+def _is_heading_only(text: str) -> bool:
+    norm = _norm(text)
+    words = norm.split()
+    if not words or len(words) > 10:
+        return False
+    if text.strip().endswith(":") and not _direct_obligation(text):
+        return True
+    return norm in {
+        "briefing", "entregaveis", "entregaveis da agencia cenario a", "obrigatoriedades",
+        "considerar", "publico alvo", "objetivo", "informacoes logisticas", "foco do produto",
+        "adequacao a plataforma", "destaques", "evidenciando", "inputs area de negocios",
+    }
+
+
+def _candidate_type(text: str) -> str:
+    norm = _norm(text)
+    if re.search(r"\b(budget|orcamento|verba|investimento|custo|custos|tributos|impostos)\b", norm):
+        return "budget"
+    if re.search(r"\b(prazo|deadline|data|horario|timing|timming|dia seguinte|12h)\b", norm):
+        return "deadline"
+    if re.search(r"\b(streaming|credenciamento|valet|logistica|hospedagem|transporte|operador|diretor tecnico)\b", norm):
+        return "operation"
+    if re.search(r"\b(kpi|relatorio|video|kv|jornada|proposta|cotacao|materiais graficos|gift|brinde)\b", norm):
+        return "deliverable"
+    return "other"
+
+
+def _is_non_requirement_context(text: str, preceding_context: str) -> bool:
+    """Block descriptive context even when a generic verb appears inside it."""
+    norm = _norm(text)
+    context = _norm(preceding_context)
+    if _has_any(context, AUDIENCE_MARKERS) and not _direct_obligation(text):
+        return True
+    if _has_any(context, PRODUCT_MARKERS) and not _direct_obligation(text):
+        return True
+    if _has_any(context, PLATFORM_MARKERS) and not _direct_obligation(text):
+        return True
+    if _has_any(context, REFERENCE_MARKERS) and not _direct_obligation(text):
+        return True
+    if _looks_like_reference(text):
+        return True
+    if norm in {_norm(v) for v in CHANNEL_TERMS}:
+        return True
+    return False
+
+
+def _previous_list_prefix(previous_text: str) -> str | None:
+    lines = _lines(previous_text)
+    if not lines:
+        return None
+    last = lines[-1].strip()
+    norm = _norm(last.rstrip(":"))
+    if not last.endswith(":") or not _direct_obligation(last):
+        return None
+    if (
+        norm == "considerar"
+        or norm.endswith(" considerar")
+        or re.search(r"\bdeve(?:ra)?\s+contemplar(?:\s+.*\s+para)?$", norm)
+        or re.search(r"\bdeve(?:ra)?\s+explorar$", norm)
+    ):
+        return last.rstrip(":")
+    return None
+
+
+def _discover_requirement_atoms(text: str, *, previous_text: str = "") -> list[dict[str, Any]]:
+    """Return source-explicit atomic obligations from one briefing Evidence Unit.
+
+    This is intentionally structural and client-agnostic. It never uses legacy Requirement
+    rows as an inventory. Suggestions/references are preserved elsewhere and are not
+    auto-promoted to Requirement truth.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    lines = _lines(raw)
+    atoms: list[dict[str, Any]] = []
+
+    # Track a local list container such as "O local deve contemplar:" or "Considerar:".
+    inherited_prefix: str | None = _previous_list_prefix(previous_text)
+    inherited_strength = 0.95
+
+    for line_idx, line in enumerate(lines):
+        stripped = line.strip()
+        norm = _norm(stripped)
+        if not norm:
+            continue
+
+        if _looks_like_reference(stripped):
+            continue
+        if SUGGESTION_RE.search(stripped) and not NEGATIVE_OBLIGATION_RE.search(stripped):
+            continue
+
+        # Structural context labels reset inherited list semantics unless they themselves
+        # are obligation containers.
+        direct = _direct_obligation(stripped)
+        if _is_heading_only(stripped) and not direct:
+            inherited_prefix = None
+            continue
+
+        # A colon line with an obligation can be either a complete obligation or a
+        # list container. Only structurally generic containers inherit child bullets;
+        # named deliverables such as "Jornada: apresentar fluxos..." remain one atom
+        # and keep their child bullets as scope/details in Evidence.
+        if direct and stripped.endswith(":"):
+            parent = stripped.rstrip(":")
+            parent_norm = _norm(parent)
+            is_atomic_list_container = bool(
+                parent_norm == "considerar"
+                or parent_norm.endswith(" considerar")
+                or re.search(r"\bdeve(?:ra)?\s+contemplar(?:\s+.*\s+para)?$", parent_norm)
+                or re.search(r"\bdeve(?:ra)?\s+explorar$", parent_norm)
+            )
+            inherited_prefix = parent if is_atomic_list_container else None
+            if not is_atomic_list_container and len(parent_norm.split()) >= 4:
+                atoms.append({
+                    "name": parent,
+                    "confidence": 0.97 if not re.match(r"^considerar\b", parent_norm) else 0.94,
+                    "observed_type": _candidate_type(parent),
+                    "polarity": "negative" if NEGATIVE_OBLIGATION_RE.search(parent) else "positive",
+                    "source_atom": stripped,
+                    "atom_index": line_idx,
+                })
+            continue
+
+        # Bullet/list child under an explicit parent. Do not inherit into reference/example
+        # prose or a new labeled section.
+        if inherited_prefix and not direct:
+            if re.match(r"^(obs|observacao|observação|ex|exemplo|example|link|mensagem chave|mensagem-chave)\b", norm):
+                inherited_prefix = None
+            elif len(norm.split()) >= 2 and not _looks_like_reference(stripped):
+                if SUGGESTION_RE.search(stripped) and not NEGATIVE_OBLIGATION_RE.search(stripped):
+                    inherited_prefix = None
+                    continue
+                child = re.sub(r"^[\-–—•·*]+\s*", "", stripped).strip()
+                child_norm = _norm(child)
+                # Numeric/location enumerations qualify a parent logistics requirement;
+                # they are scope/quantity details, not new Requirement identities.
+                if re.match(r"^\d+\s+(?:de|do|da|dos|das|from|of)\b", child_norm):
+                    continue
+                parent_norm = _norm(inherited_prefix)
+                if parent_norm == "considerar":
+                    name = f"Considerar {child}"
+                else:
+                    name = f"{inherited_prefix}: {child}"
+                atoms.append({
+                    "name": name,
+                    "confidence": inherited_strength,
+                    "observed_type": _candidate_type(name),
+                    "polarity": "positive",
+                    "source_atom": child,
+                    "atom_index": line_idx,
+                })
+                continue
+
+        # Split prose lines containing more than one obligation sentence.
+        if re.match(r"^(ex|exemplo|example)\s*[:\-]", stripped, re.I):
+            continue
+        for sentence_idx, sentence in enumerate(re.split(r"(?<=[.!?;])\s+", stripped)):
+            sentence = re.sub(r"\s+", " ", sentence).strip(" \t•·-")
+            if not sentence or _looks_like_reference(sentence):
+                continue
+            if SUGGESTION_RE.search(sentence) and not NEGATIVE_OBLIGATION_RE.search(sentence):
+                continue
+            sentence_norm = _norm(sentence)
+            if (
+                re.search(r"\b(links?|materiais de referencia|planilhas de referencia|projetos anteriores|fotos de referencia)\b", sentence_norm)
+                and not re.match(r"^(considerar|apresentar|incluir|reservar|criar|desenvolver|desenhar|garantir|entregar|utilizar|propor|prever)\b", sentence_norm)
+            ):
+                continue
+            if not _direct_obligation(sentence):
+                continue
+            if _is_non_requirement_context(sentence, previous_text):
+                continue
+
+            confidence = 0.98
+            if re.search(r"(?:^|\s)considerar\b", sentence, re.I):
+                confidence = 0.95
+            if NEGATIVE_OBLIGATION_RE.search(sentence):
+                confidence = 0.99
+            atoms.append({
+                "name": sentence,
+                "confidence": confidence,
+                "observed_type": _candidate_type(sentence),
+                "polarity": "negative" if NEGATIVE_OBLIGATION_RE.search(sentence) else "positive",
+                "source_atom": sentence,
+                "atom_index": line_idx * 100 + sentence_idx,
+            })
+
+    # Deduplicate inside the Evidence Unit by normalized source-derived name.
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for atom in atoms:
+        key = _norm(atom.get("name"))
+        if not key or key in seen:
+            continue
+        # A bare checkbox/form label is not an obligation.
+        if key in {"orcamento estimado completo nao necessario", "producao voe cliente"}:
+            continue
+        seen.add(key)
+        out.append(atom)
+    return out
+
+
+def _briefing_asset_ids(client: Any, project_id: str, source: Mapping[str, Any]) -> set[str]:
+    """Resolve current briefing assets without scanning proposal/report Evidence as C0 input."""
+    ids: set[str] = set()
+    briefing_docs = _read_rows(client, "memory_briefing_documents", equals={"project_id": project_id})
+    asset_by_sha = {str(row.get("content_sha256") or ""): dict(row) for row in (source.get("assets") or []) if row.get("content_sha256")}
+    for row in briefing_docs:
+        asset = asset_by_sha.get(str(row.get("content_sha256") or "")) or {}
+        if asset.get("id"):
+            ids.add(str(asset["id"]))
+    if ids:
+        return ids
+    for asset in source.get("assets") or []:
+        aid = str(asset.get("id") or "")
+        role, _primary = _source_role(aid, source)
+        if _norm(role).replace(" ", "_") in {"briefing", "briefing_original"}:
+            ids.add(aid)
+    return ids
+
+
+def _surrounding_by_evidence(source: Mapping[str, Any], asset_ids: set[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for aid in asset_ids:
+        rows = [dict(r) for r in (source.get("evidence_by_asset") or {}).get(aid, []) if r.get("id")]
+        rows.sort(key=lambda r: (int(r.get("ordinal") or 0), str(r.get("id") or "")))
+        for idx, row in enumerate(rows):
+            parts = []
+            for j in range(max(0, idx - 3), idx):
+                parts.append(str(rows[j].get("content_text") or ""))
+            out[str(row["id"])] = "\n".join(parts)[-3600:]
+    return out
 
 
 def collect_project_requirement_observations(client: Any, project_id: str) -> dict[str, Any]:
     source = _project_evidence(client, project_id)
     requirements = _read_rows(client, "project_requirements", equals={"project_id": project_id})
     direct_by_requirement, _linked_evidence_ids = _requirement_evidence_links(client, project_id)
+    briefing_assets = _briefing_asset_ids(client, project_id, source)
+    surrounding = _surrounding_by_evidence(source, briefing_assets)
 
-    # Provenance recovery stays source-local whenever the legacy requirement still
-    # carries its briefing document lineage. This prevents a short fragment such as
-    # a platform name from binding to an unrelated proposal/report occurrence merely
-    # because the same token appears elsewhere in the project.
+    # Map legacy briefing document lineage to the matching Source Asset.
     briefing_docs = _read_rows(client, "memory_briefing_documents", equals={"project_id": project_id})
     asset_by_sha = {str(row.get("content_sha256") or ""): dict(row) for row in (source.get("assets") or []) if row.get("content_sha256")}
     briefing_asset_by_id: dict[str, str] = {}
@@ -277,48 +667,54 @@ def collect_project_requirement_observations(client: Any, project_id: str) -> di
         asset = asset_by_sha.get(str(row.get("content_sha256") or "")) or {}
         if row.get("id") and asset.get("id"):
             briefing_asset_by_id[str(row["id"])] = str(asset["id"])
+
     observations: list[RequirementSemanticObservation] = []
     diagnostics: list[dict[str, Any]] = []
 
+    # ------------------------------------------------------------------
+    # Route 1: legacy recall, but EVERY row passes the semantic gate.
+    # ------------------------------------------------------------------
     for req in requirements:
         req_id = str(req.get("id") or "")
-        evidences = direct_by_requirement.get(req_id) or []
+        evidences = [dict(row) for row in (direct_by_requirement.get(req_id) or [])]
         evidence: dict[str, Any] | None = None
         score = 0.0
         match_reason = ""
-        already_bound = False
+
         if evidences:
-            evidence = min((dict(row) for row in evidences), key=lambda row: len(str(row.get("content_text") or "")))
-            score = 0.99
-            match_reason = "existing_current_domain_evidence"
-            already_bound = True
+            evidence, score, match_reason = _best_requirement_evidence(req, evidences)
+            if evidence is None:
+                evidence = min(evidences, key=lambda row: len(str(row.get("content_text") or "")))
+                score, match_reason = 0.92, "existing_current_domain_evidence_fallback"
+            else:
+                match_reason = "existing_current_domain_evidence+" + match_reason
         else:
             attrs = req.get("attributes") if isinstance(req.get("attributes"), Mapping) else {}
             briefing_doc_id = str(attrs.get("legacy_briefing_document_id") or "")
             source_asset_id = briefing_asset_by_id.get(briefing_doc_id)
-            candidates = (source.get("evidence_by_asset") or {}).get(source_asset_id, []) if source_asset_id else (source.get("evidence") or [])
+            candidates = (source.get("evidence_by_asset") or {}).get(source_asset_id, []) if source_asset_id else [
+                row for row in (source.get("evidence") or []) if str(row.get("source_asset_id") or "") in briefing_assets
+            ]
             evidence, score, match_reason = _best_requirement_evidence(req, candidates)
             if source_asset_id:
                 match_reason = (match_reason + "+same_source") if evidence else "no_unambiguous_same_source_evidence"
 
         if not evidence:
             diagnostics.append({
-                "requirement_id": req_id,
-                "title": req.get("title"),
-                "classification": "unresolved",
-                "evidence_found": False,
-                "match_reason": match_reason,
+                "origin_route": "legacy_recall", "requirement_id": req_id,
+                "title": req.get("title"), "classification": "unresolved",
+                "evidence_found": False, "match_reason": match_reason,
             })
             continue
 
-        if already_bound:
-            semantic_role, occurrence_role = "requirement_mention", "requirement"
-        else:
-            _candidate_kind, semantic_role, occurrence_role = _classify(req, str(evidence.get("content_text") or ""))
-
+        evidence_id = str(evidence.get("id") or "")
+        _candidate_kind, semantic_role, occurrence_role = _classify(
+            req, str(evidence.get("content_text") or ""), surrounding.get(evidence_id, "")
+        )
         source_role, primary = _source_role(str(evidence.get("source_asset_id") or ""), source)
         observation = _make_observation(
             project_id=project_id,
+            observed_name=str(req.get("title") or "Requisito"),
             requirement=req,
             evidence=evidence,
             semantic_role=semantic_role,
@@ -327,31 +723,67 @@ def collect_project_requirement_observations(client: Any, project_id: str) -> di
             match_reason=match_reason,
             source_role=source_role,
             primary=primary,
+            origin_route="legacy_recall",
         )
         observations.append(observation)
         diagnostics.append({
-            "requirement_id": req_id,
-            "legacy_requirement_id": req.get("legacy_source_id"),
-            "title": req.get("title"),
-            "classification": semantic_role,
-            "evidence_found": True,
-            "evidence_unit_id": evidence.get("id"),
-            "source_role": source_role,
-            "match_score": score,
-            "match_reason": match_reason,
+            "origin_route": "legacy_recall", "requirement_id": req_id,
+            "legacy_requirement_id": req.get("legacy_source_id"), "title": req.get("title"),
+            "classification": semantic_role, "evidence_found": True,
+            "evidence_unit_id": evidence.get("id"), "source_role": source_role,
+            "match_score": score, "match_reason": match_reason,
         })
 
+    # ------------------------------------------------------------------
+    # Route 2: Evidence-first discovery, independent of legacy inventory.
+    # ------------------------------------------------------------------
+    evidence_first_count = 0
+    for aid in sorted(briefing_assets):
+        rows = [dict(r) for r in (source.get("evidence_by_asset") or {}).get(aid, []) if r.get("is_current") is True]
+        rows.sort(key=lambda r: (int(r.get("ordinal") or 0), str(r.get("id") or "")))
+        source_role, primary = _source_role(aid, source)
+        previous_text = ""
+        for evidence in rows:
+            text = str(evidence.get("content_text") or "")
+            atoms = _discover_requirement_atoms(text, previous_text=previous_text)
+            for atom in atoms:
+                observation = _make_observation(
+                    project_id=project_id,
+                    observed_name=str(atom.get("name") or "Requisito"),
+                    requirement=None,
+                    evidence=evidence,
+                    semantic_role="requirement_candidate",
+                    occurrence_role="requirement",
+                    confidence=float(atom.get("confidence") or 0.95),
+                    match_reason="evidence_first_explicit_obligation",
+                    source_role=source_role,
+                    primary=primary,
+                    origin_route="evidence_first",
+                    observed_type=str(atom.get("observed_type") or "other"),
+                    attributes={
+                        "source_atom": atom.get("source_atom"),
+                        "atom_index": atom.get("atom_index"),
+                        "polarity": atom.get("polarity") or "positive",
+                        "mandatory": True,
+                    },
+                )
+                observations.append(observation)
+                evidence_first_count += 1
+            previous_text = (previous_text + "\n" + text)[-3600:]
+
     deduped = {row.observation_hash: row for row in observations}
+    legacy_count = sum(1 for row in deduped.values() if row.attributes.get("origin_route") == "legacy_recall")
+    evidence_count = sum(1 for row in deduped.values() if row.attributes.get("origin_route") == "evidence_first")
     return {
         "project_id": project_id,
         "observations": [row.to_dict() for row in deduped.values()],
         "diagnostics": diagnostics,
-        "source_snapshot": source,
-        "counts": {
-            "requirements": len(requirements),
-            "observations": len(deduped),
-            "evidence_bound_before_c0": sum(1 for row in diagnostics if row.get("match_reason") == "existing_current_domain_evidence"),
-            "recovered_evidence_candidates": sum(1 for row in diagnostics if row.get("evidence_found") and row.get("match_reason") != "existing_current_domain_evidence"),
-            "unresolved": sum(1 for row in diagnostics if not row.get("evidence_found")),
+        "summary": {
+            "legacy_requirements": len(requirements),
+            "legacy_observations": legacy_count,
+            "evidence_first_observations": evidence_count,
+            "briefing_assets": len(briefing_assets),
+            "total_observations": len(deduped),
+            "raw_evidence_first_atoms": evidence_first_count,
         },
     }

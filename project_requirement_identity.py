@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0 — conservative Project Requirement identity policy.
+"""NAVE V28.7.2C0.2 — conservative Project Requirement identity policy.
 
 Requirement identity is not a string-dedup problem. The resolver prefers explicit
 legacy/domain lineage and only attaches by text when there is one unambiguous,
@@ -45,6 +45,8 @@ def _type_family(value: Any) -> str:
         return "delivery"
     if raw in {"objective", "objetivo"}:
         return "objective"
+    if raw in {"requirement", "requisito", "mandatory", "obrigatorio", "obrigatoria"}:
+        return "other"
     return raw or "other"
 
 

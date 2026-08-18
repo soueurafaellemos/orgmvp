@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0 — Requirement Semantic Reconciliation.
+"""NAVE V28.7.2C0.2 — Evidence-first Requirement Semantic Reconciliation.
 
 Runs in legacy_shadow after Solution reconciliation/audits and before Core Semantic B.
 It verifies or classifies Requirement knowledge without auto-merging two existing
@@ -16,8 +16,8 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from project_requirement_identity import normalize_requirement_text, resolve_requirement_identity
 from project_requirement_semantic_extractor import collect_project_requirement_observations
 
-C0_VERSION = "V28.7.2C0"
-C0_SCHEMA_VERSION = "28.7.2c0"
+C0_VERSION = "V28.7.2C0.2"
+C0_SCHEMA_VERSION = "28.7.2c0.2"
 C0_RPC = "apply_project_requirement_reconciliation_v2872c0"
 
 
@@ -63,8 +63,8 @@ def probe_requirement_reconciliation_schema(client: Any) -> dict[str, Any]:
 def _new_requirement_from_observation(project_id: str, obs: Mapping[str, Any]) -> dict[str, Any]:
     normalized = normalize_requirement_text(obs.get("observed_name"))
     key = "evidence:" + normalized.replace(" ", "-")[:180]
-    domain_id = _stable_uuid(f"nave:v2872c0:requirement:{project_id}:{key}")
-    entity_id = _stable_uuid(f"nave:v2872c0:requirement-entity:{project_id}:{key}")
+    domain_id = _stable_uuid(f"nave:v2872c0_2:requirement:{project_id}:{key}")
+    entity_id = _stable_uuid(f"nave:v2872c0_2:requirement-entity:{project_id}:{key}")
     return {
         "id": domain_id,
         "entity_id": entity_id,
@@ -73,13 +73,13 @@ def _new_requirement_from_observation(project_id: str, obs: Mapping[str, Any]) -
         "normalized_name": normalized,
         "description": str((obs.get("attributes") or {}).get("evidence_text") or "")[:1200] or None,
         "priority": "not_informed",
-        "mandatory": False,
+        "mandatory": bool((obs.get("attributes") or {}).get("mandatory", True)),
         "status": "active",
         "confidence": float(obs.get("model_confidence") or 0.0),
         "source_authority_score": float(obs.get("source_authority_score") or 0.0),
         "attributes": {
             "normalized_by": C0_VERSION,
-            "origin": "evidence_led_v2872c0",
+            "origin": "evidence_led_v2872c0_2",
             "source_observation_id": obs.get("id"),
         },
     }
@@ -101,25 +101,25 @@ def build_requirement_reconciliation_plan(
         semantic_role = str(obs.get("semantic_role") or "")
         attrs = obs.get("attributes") if isinstance(obs.get("attributes"), Mapping) else {}
 
-        if semantic_role in {"channel_scope", "deliverable_scope"}:
+        if semantic_role in {"channel_scope", "platform_scope", "deliverable_scope"}:
             resolutions.append({
                 "id": obs["id"], "status": "no_domain_object", "resolution_action": "attach_scope",
                 "resolved_entity_id": None, "resolved_domain_table": None, "resolved_domain_id": None,
                 "resolution_detail": {"classification": "scope", "legacy_requirement_id": attrs.get("legacy_requirement_id")},
             })
             continue
-        if semantic_role in {"product_attribute"}:
+        if semantic_role in {"product_attribute", "experience_attribute"}:
             resolutions.append({
                 "id": obs["id"], "status": "no_domain_object", "resolution_action": "attach_attribute",
                 "resolved_entity_id": None, "resolved_domain_table": None, "resolved_domain_id": None,
                 "resolution_detail": {"classification": "attribute", "legacy_requirement_id": attrs.get("legacy_requirement_id")},
             })
             continue
-        if semantic_role in {"audience_context"}:
+        if semantic_role in {"audience_context", "strategy_context", "reference_signal", "solution_reference"}:
             resolutions.append({
                 "id": obs["id"], "status": "no_domain_object", "resolution_action": "no_domain_object",
                 "resolved_entity_id": None, "resolved_domain_table": None, "resolved_domain_id": None,
-                "resolution_detail": {"classification": "context", "legacy_requirement_id": attrs.get("legacy_requirement_id")},
+                "resolution_detail": {"classification": semantic_role, "legacy_requirement_id": attrs.get("legacy_requirement_id")},
             })
             continue
 
@@ -159,14 +159,16 @@ def build_requirement_reconciliation_plan(
             resolution_action = "create_requirement"
 
         occurrence_role = "constraint" if semantic_role == "constraint_candidate" else "requirement"
+        # Occurrence identity is Requirement + Evidence + semantic role. The observed
+        # wording is intentionally excluded so legacy-recall and evidence-first routes
+        # converge on one occurrence when they resolve to the same Requirement atom.
         occurrence_hash = _sha({
             "project": project_id,
             "requirement": target.get("id"),
             "evidence": obs.get("evidence_unit_id"),
             "role": occurrence_role,
-            "observed": normalize_requirement_text(obs.get("observed_name")),
         })
-        occurrence_id = _stable_uuid("nave:v2872c0:requirement-occurrence:" + occurrence_hash)
+        occurrence_id = _stable_uuid("nave:v2872c0_2:requirement-occurrence:" + occurrence_hash)
         occurrences.append({
             "id": occurrence_id,
             "requirement_id": target.get("id"),
@@ -185,8 +187,8 @@ def build_requirement_reconciliation_plan(
         })
         link_context = {
             "requirement_occurrence_id": occurrence_id,
-            "semantic_observation_id": obs.get("id"),
-            "semantic_role": semantic_role,
+            "semantic_role": "requirement" if occurrence_role == "requirement" else occurrence_role,
+            "normalized_by": C0_VERSION,
         }
         evidence_links.append({
             "project_id": project_id,
@@ -260,6 +262,15 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
     extraction = collect_project_requirement_observations(client, project_id)
     observations = extraction.get("observations") or []
     existing = _read_rows(client, "project_requirements", equals={"project_id": project_id})
+    # Fail closed: a project that already carries legacy Requirements may never be
+    # "reconciled" by an empty observation bundle caused by a missing briefing/source.
+    if existing and not observations:
+        return {
+            "project_id": project_id,
+            "status": "blocked_empty_requirement_observation_bundle",
+            "warnings": ["C0.2 não encontrou Evidence-backed Requirement observations; estado anterior preservado."],
+            "diagnostics": extraction.get("diagnostics") or [],
+        }
     plan = build_requirement_reconciliation_plan(project_id, observations, existing)
     bundle = {
         "version": C0_VERSION,
@@ -276,12 +287,11 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
         rpc_rows = _rows(response)
         status = fetch_project_requirement_reconciliation_status(client, project_id)
         classified = {
-            key: [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) == role]
-            for key, role in {
-                "scopes": "channel_scope",
-                "attributes": "product_attribute",
-                "contexts": "audience_context",
-            }.items()
+            "scopes": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in {"channel_scope", "platform_scope", "deliverable_scope"}],
+            "attributes": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in {"product_attribute", "experience_attribute"}],
+            "contexts": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in {"audience_context", "strategy_context"}],
+            "references": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in {"reference_signal", "solution_reference"}],
+            "evidence_first": [str(row.get("observed_name")) for row in observations if str((row.get("attributes") or {}).get("origin_route")) == "evidence_first"],
         }
         return {
             "project_id": project_id,
@@ -299,6 +309,7 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
                 **classified,
             },
             "diagnostics": extraction.get("diagnostics") or [],
+            "extraction_summary": extraction.get("summary") or {},
             "warnings": [],
         }
     except Exception as exc:

@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.7.2C0",
+    eyebrow="NAVE by VOE · V28.7.2C0.2",
 )
 
 client = get_nave_client()
@@ -74,13 +74,13 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
     status = str(result.get("status") or "")
     if status == "schema_missing":
         st.warning(
-            "Requirement Semantic Reconciliation V28.7.2C0 ainda não está visível no Data API. "
-            "Execute NAVE_V28_7_2C0_REQUIREMENT_SEMANTIC_RECONCILIATION.sql no Supabase e rode novamente."
+            "Requirement Semantic Reconciliation V28.7.2C0.2 ainda não está visível no Data API. "
+            "Execute NAVE_V28_7_2C0_2_EVIDENCE_FIRST_REQUIREMENT_RECONCILIATION.sql no Supabase e rode novamente."
         )
         return
-    if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"}:
+    if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"} or status.startswith("blocked_"):
         st.error(
-            "A V28.7.2C0 não promoveu uma nova geração de Requirement Reconciliation. "
+            "A V28.7.2C0.2 não promoveu uma nova geração de Requirement Reconciliation. "
             "A materialização anterior permanece válida; a V28.7.2B não foi executada nesta run."
         )
         for warning in (result.get("warnings") or [])[:10]:
@@ -88,50 +88,57 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
                 st.caption("• " + str(warning))
         return
     if status != "completed":
-        st.warning(f"Requirement Semantic Reconciliation V28.7.2C0: {status or 'status desconhecido'}.")
+        st.warning(f"Requirement Semantic Reconciliation V28.7.2C0.2: {status or 'status desconhecido'}.")
         return
 
     rec = result.get("requirement_reconciliation") or {}
     actions = result.get("actions") or {}
-    with st.expander("Requirement Semantic Reconciliation · V28.7.2C0", expanded=expanded):
-        cols = st.columns(6)
-        cols[0].metric("Requirement identities", int(rec.get("requirement_identities") or 0))
-        cols[1].metric("Verified", int(rec.get("verified") or 0))
-        cols[2].metric("Legacy unverified", int(rec.get("legacy_unverified") or 0))
-        cols[3].metric("Occurrences com evidence", int(rec.get("occurrences_with_evidence") or 0))
-        cols[4].metric("Review required", int(rec.get("review_required") or 0))
-        cols[5].metric("Conflicted", int(rec.get("conflicted") or 0))
+    with st.expander("Requirement Semantic Reconciliation · V28.7.2C0.2", expanded=expanded):
+        cols = st.columns(7)
+        cols[0].metric("Legacy rows", int(rec.get("legacy_requirement_rows") or rec.get("requirement_identities") or 0))
+        cols[1].metric("Current identities", int(rec.get("current_requirement_identities") or 0))
+        cols[2].metric("Verified", int(rec.get("verified") or 0))
+        cols[3].metric("Legacy unverified", int(rec.get("legacy_unverified") or 0))
+        cols[4].metric("Occurrences com evidence", int(rec.get("occurrences_with_evidence") or 0))
+        cols[5].metric("Review required", int(rec.get("review_required") or 0))
+        cols[6].metric("Conflicted", int(rec.get("conflicted") or 0))
 
-        semantic_cols = st.columns(6)
+        semantic_cols = st.columns(7)
         semantic_cols[0].metric("Observações", int(rec.get("semantic_observations") or actions.get("observations") or 0))
-        semantic_cols[1].metric("Reconciliadas", int(rec.get("observations_reconciled") or 0))
-        semantic_cols[2].metric("No-domain", int(rec.get("observations_no_domain") or 0))
-        semantic_cols[3].metric("Open", int(rec.get("observations_open") or 0))
-        semantic_cols[4].metric("Scope", int(rec.get("classified_scope") or 0))
-        semantic_cols[5].metric("Attribute", int(rec.get("classified_attribute") or 0))
+        semantic_cols[1].metric("Legacy recall", int(rec.get("legacy_recall_observations") or 0))
+        semantic_cols[2].metric("Evidence-first", int(rec.get("evidence_first_observations") or 0))
+        semantic_cols[3].metric("Reconciliadas", int(rec.get("observations_reconciled") or 0))
+        semantic_cols[4].metric("No-domain", int(rec.get("observations_no_domain") or 0))
+        semantic_cols[5].metric("Open", int(rec.get("observations_open") or 0))
+        semantic_cols[6].metric("Reference", int(rec.get("classified_reference") or 0))
 
-        detail_cols = st.columns(5)
-        detail_cols[0].metric("Context", int(rec.get("classified_context") or 0))
-        detail_cols[1].metric("Novos evidence-led", int(actions.get("new_requirements") or 0))
-        detail_cols[2].metric("Constraints", int(rec.get("constraints_with_evidence") or 0))
-        detail_cols[3].metric("Shadow explicado", int(rec.get("explained_legacy_shadow") or 0))
-        detail_cols[4].metric("Shadow sem explicação", int(rec.get("unexplained_legacy_shadow") or 0))
+        detail_cols = st.columns(7)
+        detail_cols[0].metric("Scope", int(rec.get("classified_scope") or 0))
+        detail_cols[1].metric("Attribute", int(rec.get("classified_attribute") or 0))
+        detail_cols[2].metric("Context", int(rec.get("classified_context") or 0))
+        detail_cols[3].metric("Novos evidence-led", int(actions.get("new_requirements") or 0))
+        detail_cols[4].metric("Constraints", int(rec.get("constraints_with_evidence") or 0))
+        detail_cols[5].metric("Shadow explicado", int(rec.get("explained_legacy_shadow") or 0))
+        detail_cols[6].metric("Shadow sem explicação", int(rec.get("unexplained_legacy_shadow") or 0))
 
         st.caption(
             f"Migration mode: {rec.get('migration_mode') or 'legacy_shadow'} · "
-            f"Domain schema: {rec.get('domain_schema_version') or '28.7.2c0'} · Run: {result.get('run_id') or rec.get('last_completed_run_id') or '—'}"
+            f"Domain schema: {rec.get('domain_schema_version') or '28.7.2c0.2'} · Run: {result.get('run_id') or rec.get('last_completed_run_id') or '—'}"
         )
         st.caption(
-            "Requirement Identity ≠ Requirement Occurrence ≠ Constraint. Legacy requirement é apenas sinal de recall: "
-            "sem Evidence atual ou Human Review ele permanece legacy_unverified. Duas Requirement identities existentes nunca são auto-merged."
+            "Requirement Identity ≠ Requirement Occurrence ≠ Constraint. Legacy requirement é apenas sinal de recall; "
+            "Evidence histórica é provenance, não passe semântico. C0.2 também descobre Requirements diretamente do briefing atual. "
+            "Duas Requirement identities existentes nunca são auto-merged."
         )
 
         scopes = [str(v) for v in (actions.get("scopes") or []) if str(v).strip()]
         attributes = [str(v) for v in (actions.get("attributes") or []) if str(v).strip()]
         contexts = [str(v) for v in (actions.get("contexts") or []) if str(v).strip()]
+        references = [str(v) for v in (actions.get("references") or []) if str(v).strip()]
+        evidence_first = [str(v) for v in (actions.get("evidence_first") or []) if str(v).strip()]
         new_titles = [str(v) for v in (actions.get("new_requirement_titles") or []) if str(v).strip()]
         diagnostics = [row for row in (result.get("diagnostics") or []) if isinstance(row, dict)]
-        if scopes or attributes or contexts or new_titles or diagnostics:
+        if scopes or attributes or contexts or references or evidence_first or new_titles or diagnostics:
             with st.expander("Requirement Reconciliation · decisões desta run", expanded=False):
                 if new_titles:
                     st.markdown("**Novos Requirements evidence-led**")
@@ -145,6 +152,12 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
                 if contexts:
                     st.markdown("**Signals preservados como contexto**")
                     st.caption(" · ".join(contexts))
+                if references:
+                    st.markdown("**Signals preservados como referência**")
+                    st.caption(" · ".join(references))
+                if evidence_first:
+                    st.markdown("**Obrigações descobertas diretamente da Evidence**")
+                    st.caption(" · ".join(evidence_first[:24]) + (" · …" if len(evidence_first) > 24 else ""))
                 unresolved = [row for row in diagnostics if not row.get("evidence_found")]
                 if unresolved:
                     st.markdown("**Ainda sem Evidence inequívoca**")
@@ -173,7 +186,7 @@ def _render_core_semantics(container: dict, *, expanded: bool = False) -> None:
             "Execute NAVE_V28_7_2B_CORE_SEMANTIC_DOMAINS.sql no Supabase e rode novamente."
         )
         return
-    if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"}:
+    if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"} or status.startswith("blocked_"):
         st.error("A V28.7.2B não promoveu uma nova geração de Strategy / Creative / Experience. A V28.7.2A anterior permanece válida.")
         for warning in (result.get("warnings") or [])[:10]:
             if str(warning).strip():
@@ -244,7 +257,7 @@ def _render_domain_reconciliation(container: dict, *, expanded: bool = False) ->
             "Execute NAVE_V28_7_2A_RECONCILIATION_KERNEL.sql no Supabase e rode novamente."
         )
         return
-    if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"}:
+    if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"} or status.startswith("blocked_"):
         st.error("A V28.7.2A não aplicou uma nova reconciliação. O domínio anterior permanece válido.")
         for warning in (result.get("warnings") or [])[:10]:
             if str(warning).strip():
@@ -528,11 +541,11 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
         if st.button(
-            "Reconciliar Requirements + Core Semantics · V28.7.2C0",
+            "Reconciliar Requirements + Core Semantics · V28.7.2C0.2",
             width="stretch",
             disabled=not confirm_reprocess,
             key="v2872c0_reconcile_requirements_core",
-            help="Executa Truth Gate + V28.7.2A + audits, reconcilia Requirement Identity/Occurrence em V28.7.2C0 e só então materializa V28.7.2B. Não reconstrói o Graph V28.6.",
+            help="Executa Truth Gate + V28.7.2A + audits, reconcilia Requirement Identity/Occurrence em V28.7.2C0.2 por legacy recall + Evidence-first e só então materializa V28.7.2B. Não reconstrói o Graph V28.6.",
         ):
             from project_intelligence_pipeline import finalize_project_intelligence
 
@@ -556,7 +569,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                 coverage = audits.get("coverage") or {}
                 identity = audits.get("identity") or {}
                 st.success(
-                    "V28.7.2C0 materializada em legacy_shadow. Evidence → Observation → Domain agora inclui "
+                    "V28.7.2C0.2 materializada em legacy_shadow. Evidence → Observation → Domain agora inclui "
                     "Requirement Identity/Occurrence antes de Strategy + Creative Platform + Experience/Journey; o Truth Gate permaneceu ativo e o Graph V28.6 continuou congelado."
                 )
                 st.caption(
@@ -593,7 +606,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                 )
             elif not requirement_ok:
                 st.error(
-                    "Truth Gate, Solution reconciliation e audits permaneceram válidos, mas a Requirement Semantic Reconciliation V28.7.2C0 não terminou. "
+                    "Truth Gate, Solution reconciliation e audits permaneceram válidos, mas a Requirement Semantic Reconciliation V28.7.2C0.2 não terminou. "
                     "A V28.7.2B não foi executada nesta run; nenhum cutover foi promovido e o Graph V28.6 permaneceu congelado."
                 )
             else:
