@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.4 — Requirement Role & Binding Precision Gate.
+"""NAVE V28.7.2C0.2.4H1 — Resolution Action Contract Hotfix.
 
 Runs in legacy_shadow after Solution reconciliation/audits and before Core Semantic B.
 It verifies or classifies Requirement knowledge without auto-merging two existing
@@ -16,7 +16,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from project_requirement_identity import normalize_requirement_text, resolve_requirement_identity
 from project_requirement_semantic_extractor import collect_project_requirement_observations
 
-C0_VERSION = "V28.7.2C0.2.4"
+C0_VERSION = "V28.7.2C0.2.4H1"
 C0_SCHEMA_VERSION = "28.7.2c0.2.4"
 C0_RPC = "apply_project_requirement_reconciliation_v2872c0"
 
@@ -265,6 +265,7 @@ def build_requirement_reconciliation_plan(
         "occurrences": list({row["id"]: row for row in occurrences}.values()),
         "observation_resolutions": resolutions,
         "evidence_links": list({(row["object_entity_id"], row["evidence_unit_id"], row["context_sha256"]): row for row in evidence_links}.values()),
+        "blocked_existing_ids": sorted(blocked_existing_ids),
     }
 
 
@@ -349,7 +350,7 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
             "parameters": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) == "parameter_signal"],
             "constraint_qualifiers": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) == "constraint_qualifier"],
             "evidence_first": [str(row.get("observed_name")) for row in observations if str((row.get("attributes") or {}).get("origin_route")) == "evidence_first"],
-            "blocked_legacy_identity_ids": sorted(blocked_existing_ids),
+            "blocked_legacy_identity_ids": list(plan.get("blocked_existing_ids") or []),
         }
         gate = _semantic_gate(status)
         return {

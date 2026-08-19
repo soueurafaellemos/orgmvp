@@ -360,3 +360,32 @@ def test_c024_evidence_first_preserves_example_children_without_promoting_them()
     assert roles["Mini show ao vivo"] == "example_signal"
     assert roles["Performance com muito movimento"] == "example_signal"
     assert any(role == "requirement_candidate" for role in roles.values())
+
+
+# V28.7.2C0.2.4H1 — resolution-action contract / runtime hotfix
+
+def test_c024h1_plan_exposes_blocked_existing_ids_for_diagnostics():
+    existing = [{
+        "id": REQ_ID, "entity_id": ENTITY_ID, "legacy_source_id": "legacy-product",
+        "title": "JOVI X300 Ultra", "description": "Foco do Produto", "requirement_type": "other",
+    }]
+    legacy_obs = {
+        "id": "00000000-0000-0000-5000-000000000099", "source_asset_id": ASSET_ID, "evidence_unit_id": EVIDENCE_ID,
+        "observed_name": "JOVI X300 Ultra", "observed_type": "other", "occurrence_phase": "briefing",
+        "semantic_role": "product_attribute", "model_confidence": 0.99, "source_authority_score": 0.9,
+        "attributes": {"origin_route": "legacy_recall", "legacy_requirement_id": "legacy-product", "requirement_id": REQ_ID, "evidence_text": "Foco do Produto: JOVI X300 Ultra"},
+    }
+    plan = build_requirement_reconciliation_plan(PROJECT_ID, [legacy_obs], existing)
+    assert plan["blocked_existing_ids"] == [REQ_ID]
+
+
+def test_c024h1_sql_allows_all_no_domain_resolution_actions():
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_2C0_2_4H1_RESOLUTION_ACTION_CONTRACT_HOTFIX.sql").read_text(encoding="utf-8").casefold()
+    for action in (
+        "preserve_context", "preserve_reference", "preserve_suggestion", "preserve_example",
+        "attach_parameter", "attach_constraint_qualifier", "attach_scope", "attach_attribute",
+        "attach_constraint", "create_requirement", "attach_requirement_occurrence",
+    ):
+        assert action in sql
+    assert "delete from" not in sql
+    assert "domain_primary" not in sql
