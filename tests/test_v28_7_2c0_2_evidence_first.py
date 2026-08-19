@@ -389,3 +389,57 @@ def test_c024h1_sql_allows_all_no_domain_resolution_actions():
         assert action in sql
     assert "delete from" not in sql
     assert "domain_primary" not in sql
+
+# V28.7.2C0.2.4H2 — Structural Role Boundary Hotfix
+
+
+def test_h2_mandatory_clause_with_suggestion_verb_remains_requirement():
+    atoms = _discover_requirement_atoms(
+        "É necessário desenharmos/sugerirmos o timming dessa apresentação no gancho final da plenária."
+    )
+    assert len(atoms) == 1
+    assert atoms[0]["semantic_role"] == "requirement_candidate"
+    assert atoms[0]["mandatory"] is True
+
+
+def test_h2_pure_suggestion_still_remains_no_domain_signal():
+    atoms = _discover_requirement_atoms(
+        "Vale sugerirmos também o presskit para influenciadores e jornalistas pré-evento."
+    )
+    assert len(atoms) == 1
+    assert atoms[0]["semantic_role"] == "suggestion_signal"
+    assert atoms[0]["mandatory"] is False
+
+
+def test_h2_example_parent_carries_across_evidence_unit_boundary():
+    atoms = _discover_requirement_atoms(
+        "Mini show ao vivo;",
+        previous_text=(
+            "Direcionamento criativo para a Agência: Criar um ambiente que simule um estúdio fotográfico profissional. "
+            "A experiência deve permitir que os convidados testem o kit em um ambiente dinâmico, como:"
+        ),
+    )
+    assert len(atoms) == 1
+    assert atoms[0]["semantic_role"] == "example_signal"
+    assert atoms[0]["mandatory"] is False
+
+
+def test_h2_product_model_listed_as_target_of_mandatory_experience_is_attribute():
+    kind, role, occurrence_role = _classify(
+        {"title": "JOVI X300 Ultra", "requirement_type": "deliverable", "mandatory": True, "attributes": {}},
+        (
+            "Experience & Hands-On Lab: Após a revelação dos produtos, deverá existir uma área de exposição "
+            "para testes práticos de: JOVI X300 Ultra; JOVI X300 FE; JOVI Buds Pro."
+        ),
+    )
+    assert (kind, role, occurrence_role) == ("attribute_signal", "product_attribute", "attribute")
+
+
+def test_h2_product_target_parent_carries_across_evidence_unit_boundary():
+    atoms = _discover_requirement_atoms(
+        "Smartphone Ultra;",
+        previous_text="A área de experiência deverá existir para testes práticos de:",
+    )
+    assert len(atoms) == 1
+    assert atoms[0]["semantic_role"] == "product_attribute"
+    assert atoms[0]["mandatory"] is False

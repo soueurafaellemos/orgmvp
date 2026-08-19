@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.4 — Requirement role precision + evidence-first observation collector.
+"""NAVE V28.7.2C0.2.4H2 — Structural role boundary + evidence-first observation collector.
 
 C0.2 removes the semantic privilege previously granted to legacy Requirements that
 already had Evidence. Every legacy row is reclassified against the current source, and
@@ -23,7 +23,7 @@ from uuid import NAMESPACE_URL, uuid5
 from project_requirement_identity import normalize_requirement_text
 from project_semantic_observations import _project_evidence, _source_role, _phase_role, _authority
 
-C0_VERSION = "V28.7.2C0.2.4"
+C0_VERSION = "V28.7.2C0.2.4H2"
 
 CHANNEL_TERMS = {
     "youtube", "instagram", "tiktok", "tik tok", "kwai", "facebook", "linkedin",
@@ -54,6 +54,16 @@ DELIVERABLE_MARKERS = (
     "entregaveis", "entregáveis", "deliverables", "obrigatoriedades", "mandatory items",
 )
 
+# A listed product/model can be the target/object of a mandatory experience without
+# becoming a standalone Requirement identity. Keep this generic: the cue is the
+# structural container (product focus / products to test), never a client/product name.
+PRODUCT_TARGET_PARENT_RE = re.compile(
+    r"\b(?:foco\s+do\s+produto|product\s+focus|testes?\s+pr[aá]ticos?\s+de|"
+    r"produtos?\s+(?:a\s+testar|para\s+testes?|em\s+exposi[cç][aã]o)|"
+    r"products?\s+(?:to\s+test|for\s+testing|on\s+display))\b",
+    re.I,
+)
+
 # Strong source-language obligation. Action verbs are accepted only at a clause
 # boundary; matching them after arbitrary whitespace caused descriptive prose such as
 # "vamos desenhar" to be promoted as Requirement truth.
@@ -64,6 +74,16 @@ OBLIGATION_RE = re.compile(
     r"\b(?:e|é)\s+importante\s+(?:considerar|incluir|prever|garantir|apresentar)\b|"
     r"(?:^|[:;\-–—]\s*)(?:considerar|apresentar|incluir|reservar|criar|desenvolver|desenhar|garantir|"
     r"entregar|utilizar|propor|prever|assegurar)\b)",
+    re.I,
+)
+
+# Strong modality wins over a suggestion verb when both occur in the SAME clause,
+# e.g. "É necessário desenharmos/sugerirmos o timing". A lexical occurrence of
+# "sugerir" inside a mandatory instruction must not demote the whole obligation.
+STRONG_OBLIGATION_RE = re.compile(
+    r"\b(?:deve|devem|devera|deverá|deverao|deverão|devemos|precisa|precisam|precisamos|"
+    r"temos\s+que|e\s+necessario|é\s+necessario|é\s+necessário|nao\s+e\s+necessario|não\s+é\s+necessário|"
+    r"must|shall|required|needs?\s+to|have\s+to)\b",
     re.I,
 )
 
@@ -268,7 +288,44 @@ def _looks_like_reference(value: str) -> bool:
 
 def _is_suggestion_or_unconfirmed(value: str) -> bool:
     raw = str(value or "").strip()
-    return bool(raw and (SUGGESTION_RE.search(raw) or UNCONFIRMED_RE.search(raw)))
+    if not raw:
+        return False
+    # Unconfirmed client intent is never promoted, even if another clause contains a
+    # mandatory-looking verb. This preserves the conservative truth contract.
+    if UNCONFIRMED_RE.search(raw):
+        return True
+    suggestion = SUGGESTION_RE.search(raw)
+    if not suggestion:
+        return False
+    # Mandatory modality that starts before the suggestion token governs the clause.
+    # Example: "É necessário desenharmos/sugerirmos o timing...".
+    strong = STRONG_OBLIGATION_RE.search(raw)
+    if strong and strong.start() <= suggestion.start():
+        return False
+    return True
+
+
+def _title_is_product_target(title: str, evidence_text: str, surrounding_text: str = "") -> bool:
+    """True when a concise nominal title is an object in a product-target container.
+
+    This prevents models/SKUs listed under "Foco do Produto" or "testes práticos de"
+    from becoming Requirement identities merely because the parent sentence is mandatory.
+    """
+    tnorm = _norm(title)
+    if not tnorm or len(tnorm.split()) > 10 or _direct_obligation(title):
+        return False
+    for raw in (evidence_text, surrounding_text):
+        norm = _norm(raw)
+        if not norm or tnorm not in norm:
+            continue
+        title_pos = norm.find(tnorm)
+        for marker in PRODUCT_TARGET_PARENT_RE.finditer(norm):
+            if marker.start() <= title_pos:
+                # Keep the relation local enough to avoid inheriting from a distant
+                # product section inside a large Evidence Unit.
+                if title_pos - marker.start() <= 420:
+                    return True
+    return False
 
 
 def _looks_like_solution_heading(value: str) -> bool:
@@ -314,7 +371,7 @@ def _nearest_section_role(title: str, evidence_text: str, surrounding_text: str 
             continue
         if "publico alvo" in norm or "target audience" in norm:
             return "audience_context"
-        if any(marker in norm for marker in ("foco do produto", "product focus", "destaques", "evidenciando", "product highlights")):
+        if PRODUCT_TARGET_PARENT_RE.search(raw) or any(marker in norm for marker in ("foco do produto", "product focus", "destaques", "evidenciando", "product highlights")):
             return "product_attribute"
         if "adequacao a plataforma" in norm or "platform fit" in norm or "platform adequacy" in norm:
             return "platform_scope"
@@ -347,6 +404,8 @@ def _inherited_child_role(child: str, parent: str) -> str:
     parent_norm = _norm(parent)
     if _is_suggestion_or_unconfirmed(child):
         return "suggestion_signal"
+    if PRODUCT_TARGET_PARENT_RE.search(parent):
+        return "product_attribute"
     if parent_norm.endswith(" como") or parent_norm.endswith(" por exemplo") or parent_norm.endswith(" exemplo"):
         return "example_signal"
     if parent_norm == "considerar" or parent_norm.endswith(" considerar"):
@@ -421,6 +480,8 @@ def _classify(req: Mapping[str, Any], evidence_text: str, surrounding_text: str 
         return "reference_signal", "solution_reference", "reference"
     if _is_channel_title(title):
         return "scope_signal", "channel_scope", "scope"
+    if _title_is_product_target(title, evidence_text, surrounding_text):
+        return "attribute_signal", "product_attribute", "attribute"
 
     # A source-explicit obligation/exclusion in the title is a real Requirement even if
     # the surrounding section is descriptive. Structural inheritance below is only for
@@ -637,6 +698,10 @@ def _previous_list_prefix(previous_text: str) -> str | None:
     if (
         norm == "considerar"
         or norm.endswith(" considerar")
+        or norm.endswith(" como")
+        or norm.endswith(" por exemplo")
+        or norm.endswith(" exemplo")
+        or PRODUCT_TARGET_PARENT_RE.search(last)
         or re.search(r"\bdeve(?:ra)?\s+contemplar(?:\s+.*\s+para)?$", norm)
         or re.search(r"\bdeve(?:ra)?\s+explorar$", norm)
     ):
