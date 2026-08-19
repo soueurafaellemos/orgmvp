@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.3 — Evidence-first Requirement Semantic Observation collector.
+"""NAVE V28.7.2C0.2.4 — Requirement role precision + evidence-first observation collector.
 
 C0.2 removes the semantic privilege previously granted to legacy Requirements that
 already had Evidence. Every legacy row is reclassified against the current source, and
@@ -23,7 +23,7 @@ from uuid import NAMESPACE_URL, uuid5
 from project_requirement_identity import normalize_requirement_text
 from project_semantic_observations import _project_evidence, _source_role, _phase_role, _authority
 
-C0_VERSION = "V28.7.2C0.2.3"
+C0_VERSION = "V28.7.2C0.2.4"
 
 CHANNEL_TERMS = {
     "youtube", "instagram", "tiktok", "tik tok", "kwai", "facebook", "linkedin",
@@ -54,20 +54,32 @@ DELIVERABLE_MARKERS = (
     "entregaveis", "entregáveis", "deliverables", "obrigatoriedades", "mandatory items",
 )
 
-# Strong source-language obligation. Naked words such as "necessário" are deliberately
-# insufficient because they also occur in form labels (e.g. "NÃO NECESSÁRIO").
+# Strong source-language obligation. Action verbs are accepted only at a clause
+# boundary; matching them after arbitrary whitespace caused descriptive prose such as
+# "vamos desenhar" to be promoted as Requirement truth.
 OBLIGATION_RE = re.compile(
     r"(?:\b(?:deve|devem|devera|deverá|deverao|deverão|devemos|precisa|precisam|precisamos|"
     r"temos\s+que|e\s+necessario|é\s+necessario|é\s+necessário|nao\s+e\s+necessario|não\s+é\s+necessário|"
     r"must|shall|required|needs?\s+to|have\s+to)\b|"
-    r"(?:^|[\s:;\-])(?:considerar|apresentar|incluir|reservar|criar|desenvolver|desenhar|garantir|"
+    r"\b(?:e|é)\s+importante\s+(?:considerar|incluir|prever|garantir|apresentar)\b|"
+    r"(?:^|[:;\-–—]\s*)(?:considerar|apresentar|incluir|reservar|criar|desenvolver|desenhar|garantir|"
     r"entregar|utilizar|propor|prever|assegurar)\b)",
     re.I,
 )
 
+# Suggestions/opportunities are source signals, but they must not become Requirement truth.
+# Include first-person conjugations observed in real briefings, not only infinitives.
 SUGGESTION_RE = re.compile(
-    r"\b(?:vale\s+(?:sugerir|pensar|considerar)|podemos\s+(?:sugerir|considerar|inserir)|"
-    r"se\s+acharmos\s+que\s+faz\s+sentido|recomenda-se|recomenda se|suggestion|could\s+consider|may\s+consider)\b",
+    r"\b(?:vale\s+(?:sugerir|sugerirmos|pensar|pensarmos|considerar|considerarmos)|"
+    r"podemos\s+(?:sugerir|sugerirmos|considerar|considerarmos|inserir|inclui?r)|"
+    r"se\s+acharmos\s+que\s+faz\s+sentido|caso\s+tenhamos\s+(?:alguma\s+)?(?:ideia|sugestao|sugestão)|"
+    r"recomenda-se|recomenda se|suggestion|could\s+consider|may\s+consider)\b",
+    re.I,
+)
+
+UNCONFIRMED_RE = re.compile(
+    r"\b(?:nao|não)\s+(?:foi|esta|está|foi\s+)?(?:confirmad[oa]s?|definid[oa]s?|aprovad[oa]s?)\b|"
+    r"\bcliente\s+(?:nao|não)\s+nos\s+confirmou\b|\bsem\s+confirmacao\b|\bsem\s+confirmação\b",
     re.I,
 )
 
@@ -254,9 +266,100 @@ def _looks_like_reference(value: str) -> bool:
     return norm in {"link", "links", "arquivo", "file", "modelo de ppt", "template"}
 
 
+def _is_suggestion_or_unconfirmed(value: str) -> bool:
+    raw = str(value or "").strip()
+    return bool(raw and (SUGGESTION_RE.search(raw) or UNCONFIRMED_RE.search(raw)))
+
+
+def _looks_like_solution_heading(value: str) -> bool:
+    norm = _norm(value)
+    return bool(re.match(
+        r"^(?:\d+\s+)?ativacao\s+(?:youtube|instagram|tiktok|tik tok|kwai|facebook|linkedin)\b",
+        norm,
+    ))
+
+
+def _nearest_section_role(title: str, evidence_text: str, surrounding_text: str = "") -> str | None:
+    """Infer the semantic container of a concise legacy fragment.
+
+    Legacy extraction frequently materialized bullets without their parent heading. The
+    current Evidence must decide whether the bullet is audience, product, platform,
+    example or a child of an explicit obligation container.
+    """
+    tnorm = _norm(title)
+    lines = _lines(evidence_text)
+    hit = None
+    for idx, line in enumerate(lines):
+        lnorm = _norm(line)
+        if tnorm and (tnorm == lnorm or (len(tnorm) >= 4 and tnorm in lnorm)):
+            hit = idx
+            break
+    if hit is None:
+        lines = _lines(surrounding_text) + lines
+        for idx, line in enumerate(lines):
+            lnorm = _norm(line)
+            if tnorm and (tnorm == lnorm or (len(tnorm) >= 4 and tnorm in lnorm)):
+                hit = idx
+                break
+    if hit is None:
+        return None
+
+    # Nearest structural cue wins. The window is intentionally larger than the old
+    # 8-line context because DOCX list extraction can insert many bullets between a
+    # heading and the item being classified.
+    for j in range(hit - 1, max(-1, hit - 24), -1):
+        raw = lines[j].strip()
+        norm = _norm(raw)
+        if not norm:
+            continue
+        if "publico alvo" in norm or "target audience" in norm:
+            return "audience_context"
+        if any(marker in norm for marker in ("foco do produto", "product focus", "destaques", "evidenciando", "product highlights")):
+            return "product_attribute"
+        if "adequacao a plataforma" in norm or "platform fit" in norm or "platform adequacy" in norm:
+            return "platform_scope"
+        if re.search(r"\b(?:como|por exemplo|exemplo|example)\s*:$", norm) or norm.endswith("ambiente dinamico como"):
+            return "example_signal"
+        # A mandatory parent may require alignment TO an audience while its children are
+        # still audience descriptors. The parent obligation is discovered separately by
+        # Evidence-first; the nominal bullets must not become Requirement identities.
+        if raw.endswith(":") and _direct_obligation(raw) and ("publico alvo" in norm or "target audience" in norm):
+            return "audience_context"
+        if any(marker in norm for marker in ("alinhamento estrategico", "objetivos estrategicos", "strategic objectives", "strategic alignment")):
+            # A strategic heading containing an explicit target-audience clause is still
+            # audience context for its nominal child bullets.
+            recent = " ".join(_norm(x) for x in lines[max(0, j):hit])
+            if "publico alvo" in recent or "target audience" in recent:
+                return "audience_context"
+            return "strategy_context"
+        if raw.endswith(":") and _direct_obligation(raw):
+            if re.search(r"\b(?:como|por exemplo|exemplo|example)\s*:$", norm):
+                return "example_signal"
+            return "requirement_parent"
+        # A strong new section heading stops inheritance from older sections.
+        if raw.endswith(":") and len(norm.split()) <= 9 and j < hit - 1:
+            break
+    return None
+
+
+def _inherited_child_role(child: str, parent: str) -> str:
+    child_norm = _norm(child)
+    parent_norm = _norm(parent)
+    if _is_suggestion_or_unconfirmed(child):
+        return "suggestion_signal"
+    if parent_norm.endswith(" como") or parent_norm.endswith(" por exemplo") or parent_norm.endswith(" exemplo"):
+        return "example_signal"
+    if parent_norm == "considerar" or parent_norm.endswith(" considerar"):
+        if re.search(r"\b(?:total|quantidade|numero|número)\s+(?:de\s+)?(?:participantes|convidados|pessoas)\b", child_norm):
+            return "parameter_signal"
+        if "buffer" in child_norm and (re.search(r"\d", child) or "%" in child):
+            return "constraint_qualifier"
+    return "requirement_candidate"
+
+
 def _direct_obligation(value: str) -> bool:
     raw = str(value or "").strip()
-    if not raw or SUGGESTION_RE.search(raw):
+    if not raw or _is_suggestion_or_unconfirmed(raw):
         return False
     return bool(OBLIGATION_RE.search(raw) or NEGATIVE_OBLIGATION_RE.search(raw))
 
@@ -298,11 +401,7 @@ def _looks_like_unanswered_form_prompt(value: str) -> bool:
 
 
 def _classify(req: Mapping[str, Any], evidence_text: str, surrounding_text: str = "") -> tuple[str, str, str]:
-    """Classify one legacy Requirement recall item against source semantics.
-
-    Crucially, this function is called even when the legacy row already has Evidence.
-    Existing provenance never grants semantic immunity.
-    """
+    """Classify one legacy recall item against current source semantics."""
     title = str(req.get("title") or "").strip()
     title_norm = _norm(title)
     text_norm = _norm(evidence_text)
@@ -312,50 +411,76 @@ def _classify(req: Mapping[str, Any], evidence_text: str, surrounding_text: str 
     local_context = _find_title_context(title, evidence_text, surrounding_text)
     context = " ".join(filter(None, [local_context, source_reference]))
 
-    # Briefing-template scaffolding is not a Requirement identity, even when the
-    # parenthetical helper text contains words such as "devem" or "precisa".
     if _looks_like_unanswered_form_prompt(title):
         return "context_signal", "form_prompt", "context"
-
-    # A source-explicit obligation/exclusion wins over the descriptive context around it.
-    # This keeps "não é necessário orçar MC" as a real Requirement exclusion.
-    if _direct_obligation(title):
-        return "requirement_candidate", "requirement_candidate", "requirement"
-
+    if _is_suggestion_or_unconfirmed(title):
+        return "context_signal", "suggestion_signal", "context"
     if _looks_like_reference(title):
         return "reference_signal", "reference_signal", "reference"
-
+    if _looks_like_solution_heading(title):
+        return "reference_signal", "solution_reference", "reference"
     if _is_channel_title(title):
         return "scope_signal", "channel_scope", "scope"
 
+    # A source-explicit obligation/exclusion in the title is a real Requirement even if
+    # the surrounding section is descriptive. Structural inheritance below is only for
+    # concise/nominal fragments; it must not demote an explicit client obligation.
+    if _direct_obligation(title):
+        if re.search(r"\b(budget|orcamento|orçamento|verba|investimento|prazo|deadline)\b", title_norm) and re.search(r"\d", title):
+            return "constraint_candidate", "constraint_candidate", "constraint"
+        return "requirement_candidate", "requirement_candidate", "requirement"
+
+    # Structural parent semantics beat a generic obligation verb elsewhere in the same
+    # Evidence Unit. This is the key nominal-fragment guard for product/audience/example
+    # bullets that legacy extraction had promoted as standalone Requirements.
+    section_role = _nearest_section_role(title, evidence_text, surrounding_text)
+    if section_role == "audience_context":
+        return "context_signal", "audience_context", "context"
+    if section_role == "product_attribute":
+        return "attribute_signal", "product_attribute", "attribute"
+    if section_role == "platform_scope":
+        return "scope_signal", "platform_scope", "scope"
+    if section_role == "strategy_context":
+        return "context_signal", "strategy_context", "context"
+    if section_role == "example_signal":
+        return "reference_signal", "example_signal", "reference"
+
     if title_norm.startswith("publico alvo") or title_norm.startswith("target audience"):
         return "context_signal", "audience_context", "context"
-    if _has_any(context, AUDIENCE_MARKERS):
-        return "context_signal", "audience_context", "context"
-
-    if title_norm in {_norm(v) for v in PRODUCT_MARKERS} or _has_any(context, PRODUCT_MARKERS):
+    if title_norm in {_norm(v) for v in PRODUCT_MARKERS}:
         return "attribute_signal", "product_attribute", "attribute"
-
-    if title_norm in {_norm(v) for v in PLATFORM_MARKERS} or _has_any(context, PLATFORM_MARKERS):
+    if title_norm in {_norm(v) for v in PLATFORM_MARKERS}:
         return "scope_signal", "platform_scope", "scope"
-
-    if title_norm in {_norm(v) for v in STRATEGY_MARKERS} or _has_any(context, STRATEGY_MARKERS):
+    if title_norm in {_norm(v) for v in STRATEGY_MARKERS}:
         return "context_signal", "strategy_context", "context"
 
+    if _has_any(context, AUDIENCE_MARKERS):
+        return "context_signal", "audience_context", "context"
+    if _has_any(context, PRODUCT_MARKERS):
+        return "attribute_signal", "product_attribute", "attribute"
+    if _has_any(context, PLATFORM_MARKERS):
+        return "scope_signal", "platform_scope", "scope"
+    if _has_any(context, STRATEGY_MARKERS):
+        return "context_signal", "strategy_context", "context"
     if _has_any(context, REFERENCE_MARKERS):
         return "reference_signal", "reference_signal", "reference"
 
-    # Explicit obligation in the evidence can support a legacy title when the title is
-    # the atom inside that same clause/list and no stronger descriptive context applies.
-    if _direct_obligation(evidence_text):
-        if re.search(r"\b(budget|orcamento|orçamento|verba|investimento|prazo|deadline|quantidade|participantes|attendees)\b", text_norm):
-            if re.search(r"\d", evidence_text):
-                return "constraint_candidate", "constraint_candidate", "constraint"
+    # Nominal children under an explicit obligation container are valid requirement
+    # atoms (e.g. "A ativação deve explorar: Linhas arquitetônicas...").
+    if section_role == "requirement_parent":
         return "requirement_candidate", "requirement_candidate", "requirement"
 
-    # Legacy mandatory/deliverable signals remain eligible only after the semantic
-    # context exclusions above. This protects concise valid requirements in older
-    # projects without allowing audience/product/platform fragments to pass through.
+    # Evidence-level obligation is only allowed to promote a concise legacy fragment
+    # after all structural context guards above have been exhausted.
+    if _direct_obligation(evidence_text):
+        if re.search(r"\b(budget|orcamento|orçamento|verba|investimento|prazo|deadline|quantidade|participantes|attendees)\b", text_norm) and re.search(r"\d", evidence_text):
+            if req_type in {"budget", "orcamento", "constraint", "restricao", "restriction"}:
+                return "constraint_candidate", "constraint_candidate", "constraint"
+        # Do not let a short noun phrase inherit an unrelated obligation from a long
+        # evidence block without a requirement parent.
+        if len(title_norm.split()) <= 7 and not source_reference and not bool(req.get("mandatory")):
+            return "reference_signal", "reference_signal", "reference"
+
     if source_reference and _has_any(source_reference, DELIVERABLE_MARKERS):
         return "requirement_candidate", "requirement_candidate", "requirement"
     if bool(req.get("mandatory")) and req_type not in {"audience", "publico", "publico_alvo", "context", "contexto"}:
@@ -364,10 +489,7 @@ def _classify(req: Mapping[str, Any], evidence_text: str, surrounding_text: str 
     if re.search(r"\b(budget|orcamento|orçamento|verba|investimento|prazo|deadline|quantidade|participantes|attendees)\b", text_norm) and re.search(r"\d", evidence_text):
         return "constraint_candidate", "constraint_candidate", "constraint"
 
-    # No explicit obligation and no structural evidence that this is a Requirement.
-    # Preserve the signal, but do not let legacy presence become current truth.
     return "reference_signal", "reference_signal", "reference"
-
 
 def _observation_identity(
     *, project_id: str, evidence_id: str, observed_name: str,
@@ -474,7 +596,7 @@ def _is_heading_only(text: str) -> bool:
 
 def _candidate_type(text: str) -> str:
     norm = _norm(text)
-    if re.search(r"\b(budget|orcamento|verba|investimento|custo|custos|tributos|impostos)\b", norm):
+    if re.search(r"\b(budget|orcamento|verba|investimento|dinheiro|custo|custos|tributos|impostos)\b", norm):
         return "budget"
     if re.search(r"\b(prazo|deadline|data|horario|timing|timming|dia seguinte|12h)\b", norm):
         return "deadline"
@@ -550,7 +672,18 @@ def _discover_requirement_atoms(text: str, *, previous_text: str = "") -> list[d
         if _looks_like_unanswered_form_prompt(stripped):
             inherited_prefix = None
             continue
-        if SUGGESTION_RE.search(stripped) and not NEGATIVE_OBLIGATION_RE.search(stripped):
+        if _is_suggestion_or_unconfirmed(stripped) and not NEGATIVE_OBLIGATION_RE.search(stripped):
+            atoms.append({
+                "name": stripped,
+                "confidence": 0.99,
+                "observed_type": "context",
+                "polarity": "suggested",
+                "semantic_role": "suggestion_signal",
+                "source_atom": stripped,
+                "atom_index": line_idx,
+                "mandatory": False,
+            })
+            inherited_prefix = None
             continue
 
         # Structural context labels reset inherited list semantics unless they themselves
@@ -567,21 +700,26 @@ def _discover_requirement_atoms(text: str, *, previous_text: str = "") -> list[d
         if direct and stripped.endswith(":"):
             parent = stripped.rstrip(":")
             parent_norm = _norm(parent)
+            is_example_container = bool(parent_norm.endswith(" como") or parent_norm.endswith(" por exemplo"))
             is_atomic_list_container = bool(
                 parent_norm == "considerar"
                 or parent_norm.endswith(" considerar")
                 or re.search(r"\bdeve(?:ra)?\s+contemplar(?:\s+.*\s+para)?$", parent_norm)
                 or re.search(r"\bdeve(?:ra)?\s+explorar$", parent_norm)
             )
-            inherited_prefix = parent if is_atomic_list_container else None
-            if not is_atomic_list_container and len(parent_norm.split()) >= 4:
+            inherited_prefix = parent if (is_atomic_list_container or is_example_container) else None
+            # Example containers carry a real parent obligation plus illustrative children.
+            # Atomic requirement containers instead split into their mandatory child atoms.
+            if (is_example_container or not is_atomic_list_container) and len(parent_norm.split()) >= 4:
                 atoms.append({
                     "name": parent,
                     "confidence": 0.97 if not re.match(r"^considerar\b", parent_norm) else 0.94,
                     "observed_type": _candidate_type(parent),
                     "polarity": "negative" if NEGATIVE_OBLIGATION_RE.search(parent) else "positive",
+                    "semantic_role": "requirement_candidate",
                     "source_atom": stripped,
                     "atom_index": line_idx,
+                    "mandatory": True,
                 })
             continue
 
@@ -591,7 +729,17 @@ def _discover_requirement_atoms(text: str, *, previous_text: str = "") -> list[d
             if re.match(r"^(obs|observacao|observação|ex|exemplo|example|link|mensagem chave|mensagem-chave)\b", norm):
                 inherited_prefix = None
             elif len(norm.split()) >= 2 and not _looks_like_reference(stripped):
-                if SUGGESTION_RE.search(stripped) and not NEGATIVE_OBLIGATION_RE.search(stripped):
+                if _is_suggestion_or_unconfirmed(stripped) and not NEGATIVE_OBLIGATION_RE.search(stripped):
+                    atoms.append({
+                        "name": stripped,
+                        "confidence": 0.99,
+                        "observed_type": "context",
+                        "polarity": "suggested",
+                        "semantic_role": "suggestion_signal",
+                        "source_atom": stripped,
+                        "atom_index": line_idx,
+                        "mandatory": False,
+                    })
                     inherited_prefix = None
                     continue
                 child = re.sub(r"^[\-–—•·*]+\s*", "", stripped).strip()
@@ -601,17 +749,22 @@ def _discover_requirement_atoms(text: str, *, previous_text: str = "") -> list[d
                 if re.match(r"^\d+\s+(?:de|do|da|dos|das|from|of)\b", child_norm):
                     continue
                 parent_norm = _norm(inherited_prefix)
-                if parent_norm == "considerar":
+                child_role = _inherited_child_role(child, inherited_prefix)
+                if child_role == "example_signal":
+                    name = child
+                elif parent_norm == "considerar":
                     name = f"Considerar {child}"
                 else:
                     name = f"{inherited_prefix}: {child}"
                 atoms.append({
                     "name": name,
                     "confidence": inherited_strength,
-                    "observed_type": _candidate_type(name),
+                    "observed_type": _candidate_type(name) if child_role == "requirement_candidate" else "context",
                     "polarity": "positive",
+                    "semantic_role": child_role,
                     "source_atom": child,
                     "atom_index": line_idx,
+                    "mandatory": child_role == "requirement_candidate",
                 })
                 continue
 
@@ -622,7 +775,17 @@ def _discover_requirement_atoms(text: str, *, previous_text: str = "") -> list[d
             sentence = re.sub(r"\s+", " ", sentence).strip(" \t•·-")
             if not sentence or _looks_like_reference(sentence):
                 continue
-            if SUGGESTION_RE.search(sentence) and not NEGATIVE_OBLIGATION_RE.search(sentence):
+            if _is_suggestion_or_unconfirmed(sentence) and not NEGATIVE_OBLIGATION_RE.search(sentence):
+                atoms.append({
+                    "name": sentence,
+                    "confidence": 0.99,
+                    "observed_type": "context",
+                    "polarity": "suggested",
+                    "semantic_role": "suggestion_signal",
+                    "source_atom": sentence,
+                    "atom_index": line_idx * 100 + sentence_idx,
+                    "mandatory": False,
+                })
                 continue
             sentence_norm = _norm(sentence)
             if (
@@ -645,8 +808,10 @@ def _discover_requirement_atoms(text: str, *, previous_text: str = "") -> list[d
                 "confidence": confidence,
                 "observed_type": _candidate_type(sentence),
                 "polarity": "negative" if NEGATIVE_OBLIGATION_RE.search(sentence) else "positive",
+                "semantic_role": "requirement_candidate",
                 "source_atom": sentence,
                 "atom_index": line_idx * 100 + sentence_idx,
+                "mandatory": True,
             })
 
     # Deduplicate inside the Evidence Unit by normalized source-derived name.
@@ -810,8 +975,8 @@ def collect_project_requirement_observations(client: Any, project_id: str) -> di
                     observed_name=str(atom.get("name") or "Requisito"),
                     requirement=None,
                     evidence=evidence,
-                    semantic_role="requirement_candidate",
-                    occurrence_role="requirement",
+                    semantic_role=str(atom.get("semantic_role") or "requirement_candidate"),
+                    occurrence_role=("requirement" if str(atom.get("semantic_role") or "requirement_candidate") == "requirement_candidate" else "reference"),
                     confidence=float(atom.get("confidence") or 0.95),
                     match_reason="evidence_first_explicit_obligation",
                     source_role=source_role,
@@ -822,7 +987,7 @@ def collect_project_requirement_observations(client: Any, project_id: str) -> di
                         "source_atom": atom.get("source_atom"),
                         "atom_index": atom.get("atom_index"),
                         "polarity": atom.get("polarity") or "positive",
-                        "mandatory": True,
+                        "mandatory": bool(atom.get("mandatory", True)),
                     },
                 )
                 observations.append(observation)

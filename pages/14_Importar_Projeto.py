@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.7.2C0.2.3",
+    eyebrow="NAVE by VOE · V28.7.2C0.2.4",
 )
 
 client = get_nave_client()
@@ -74,33 +74,40 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
     status = str(result.get("status") or "")
     if status == "schema_missing":
         st.warning(
-            "Requirement Semantic Reconciliation V28.7.2C0.2.3 ainda não está visível no Data API. "
-            "Execute NAVE_V28_7_2C0_2_2_TEMPLATE_PROMPT_GUARD.sql no Supabase e rode novamente."
+            "Requirement Semantic Reconciliation V28.7.2C0.2.4 ainda não está visível no Data API. "
+            "Execute NAVE_V28_7_2C0_2_4_REQUIREMENT_ROLE_BINDING_PRECISION_GATE.sql no Supabase e rode novamente."
         )
         return
     if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"} or status.startswith("blocked_"):
         st.error(
-            "A V28.7.2C0.2.3 não promoveu uma nova geração de Requirement Reconciliation. "
+            "A V28.7.2C0.2.4 não promoveu uma nova geração de Requirement Reconciliation. "
             "A materialização anterior permanece válida; a V28.7.2B não foi executada nesta run."
         )
         for warning in (result.get("warnings") or [])[:10]:
             if str(warning).strip():
                 st.caption("• " + str(warning))
         return
-    if status != "completed":
-        st.warning(f"Requirement Semantic Reconciliation V28.7.2C0.2.3: {status or 'status desconhecido'}.")
+    if status not in {"completed", "semantic_gate_blocked"}:
+        st.warning(f"Requirement Semantic Reconciliation V28.7.2C0.2.4: {status or 'status desconhecido'}.")
         return
 
     rec = result.get("requirement_reconciliation") or {}
+    semantic_gate = result.get("semantic_gate") or {}
+    gate_blocked = status == "semantic_gate_blocked" or semantic_gate.get("pass") is False
+    if gate_blocked:
+        st.error(
+            "Requirement Semantic Gate BLOCK: existem observações/identidades ainda não resolvidas. "
+            "A V28.7.2B foi bloqueada nesta run; o estado anterior permanece válido em legacy_shadow."
+        )
     actions = result.get("actions") or {}
-    with st.expander("Requirement Semantic Reconciliation · V28.7.2C0.2.3", expanded=expanded):
+    with st.expander("Requirement Semantic Reconciliation · V28.7.2C0.2.4", expanded=expanded):
         cols = st.columns(7)
         cols[0].metric("Legacy rows", int(rec.get("legacy_requirement_rows") or rec.get("requirement_identities") or 0))
         cols[1].metric("Current identities", int(rec.get("current_requirement_identities") or 0))
         cols[2].metric("Verified", int(rec.get("verified") or 0))
         cols[3].metric("Legacy unverified", int(rec.get("legacy_unverified") or 0))
         cols[4].metric("Occurrences com evidence", int(rec.get("occurrences_with_evidence") or 0))
-        cols[5].metric("Review required", int(rec.get("review_required") or 0))
+        cols[5].metric("Observation review", int(rec.get("observations_review_required") or 0))
         cols[6].metric("Conflicted", int(rec.get("conflicted") or 0))
 
         semantic_cols = st.columns(7)
@@ -121,13 +128,20 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
         detail_cols[5].metric("Shadow explicado", int(rec.get("explained_legacy_shadow") or 0))
         detail_cols[6].metric("Shadow sem explicação", int(rec.get("unexplained_legacy_shadow") or 0))
 
+        role_cols = st.columns(5)
+        role_cols[0].metric("Suggestion", int(rec.get("classified_suggestion") or 0))
+        role_cols[1].metric("Example", int(rec.get("classified_example") or 0))
+        role_cols[2].metric("Parameter", int(rec.get("classified_parameter") or 0))
+        role_cols[3].metric("Constraint qualifier", int(rec.get("classified_constraint_qualifier") or 0))
+        role_cols[4].metric("Semantic Gate", "PASS" if not gate_blocked else "BLOCK")
+
         st.caption(
             f"Migration mode: {rec.get('migration_mode') or 'legacy_shadow'} · "
-            f"Domain schema: {rec.get('domain_schema_version') or '28.7.2c0.2.3'} · Run: {result.get('run_id') or rec.get('last_completed_run_id') or '—'}"
+            f"Domain schema: {rec.get('domain_schema_version') or '28.7.2c0.2.4'} · Run: {result.get('run_id') or rec.get('last_completed_run_id') or '—'}"
         )
         st.caption(
             "Requirement Identity ≠ Requirement Occurrence ≠ Constraint. Legacy requirement é apenas sinal de recall; "
-            "Evidence histórica é provenance, não passe semântico. C0.2.3 também descobre Requirements diretamente do briefing atual e ignora prompts vazios de template. "
+            "Evidence histórica é provenance, não passe semântico. C0.2.4 classifica role antes de binding, bloqueia sugestões/exemplos/parâmetros como Requirement truth e faz fail-closed quando restam observações semânticas em review/open. "
             "Duas Requirement identities existentes nunca são auto-merged."
         )
 
@@ -135,10 +149,14 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
         attributes = [str(v) for v in (actions.get("attributes") or []) if str(v).strip()]
         contexts = [str(v) for v in (actions.get("contexts") or []) if str(v).strip()]
         references = [str(v) for v in (actions.get("references") or []) if str(v).strip()]
+        suggestions = [str(v) for v in (actions.get("suggestions") or []) if str(v).strip()]
+        examples = [str(v) for v in (actions.get("examples") or []) if str(v).strip()]
+        parameters = [str(v) for v in (actions.get("parameters") or []) if str(v).strip()]
+        constraint_qualifiers = [str(v) for v in (actions.get("constraint_qualifiers") or []) if str(v).strip()]
         evidence_first = [str(v) for v in (actions.get("evidence_first") or []) if str(v).strip()]
         new_titles = [str(v) for v in (actions.get("new_requirement_titles") or []) if str(v).strip()]
         diagnostics = [row for row in (result.get("diagnostics") or []) if isinstance(row, dict)]
-        if scopes or attributes or contexts or references or evidence_first or new_titles or diagnostics:
+        if scopes or attributes or contexts or references or suggestions or examples or parameters or constraint_qualifiers or evidence_first or new_titles or diagnostics:
             with st.expander("Requirement Reconciliation · decisões desta run", expanded=False):
                 if new_titles:
                     st.markdown("**Novos Requirements evidence-led**")
@@ -155,6 +173,18 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
                 if references:
                     st.markdown("**Signals preservados como referência**")
                     st.caption(" · ".join(references))
+                if suggestions:
+                    st.markdown("**Sugestões / opcionais preservados sem virar Requirement**")
+                    st.caption(" · ".join(suggestions))
+                if examples:
+                    st.markdown("**Exemplos preservados sem virar Requirement**")
+                    st.caption(" · ".join(examples))
+                if parameters:
+                    st.markdown("**Parâmetros vinculáveis preservados**")
+                    st.caption(" · ".join(parameters))
+                if constraint_qualifiers:
+                    st.markdown("**Qualificadores de constraint preservados**")
+                    st.caption(" · ".join(constraint_qualifiers))
                 if evidence_first:
                     st.markdown("**Obrigações descobertas diretamente da Evidence**")
                     st.caption(" · ".join(evidence_first[:24]) + (" · …" if len(evidence_first) > 24 else ""))
@@ -541,11 +571,11 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
         if st.button(
-            "Reconciliar Requirements + Core Semantics · V28.7.2C0.2.3",
+            "Reconciliar Requirements + Core Semantics · V28.7.2C0.2.4",
             width="stretch",
             disabled=not confirm_reprocess,
             key="v2872c0_reconcile_requirements_core",
-            help="Executa Truth Gate + V28.7.2A + audits, reconcilia Requirement Identity/Occurrence em V28.7.2C0.2.3 por legacy recall + Evidence-first e só então materializa V28.7.2B. Não reconstrói o Graph V28.6.",
+            help="Executa Truth Gate + V28.7.2A + audits, reconcilia Requirement Identity/Occurrence em V28.7.2C0.2.4 por legacy recall + Evidence-first e só então materializa V28.7.2B. Não reconstrói o Graph V28.6.",
         ):
             from project_intelligence_pipeline import finalize_project_intelligence
 
@@ -569,7 +599,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                 coverage = audits.get("coverage") or {}
                 identity = audits.get("identity") or {}
                 st.success(
-                    "V28.7.2C0.2.3 materializada em legacy_shadow. Evidence → Observation → Domain agora inclui "
+                    "V28.7.2C0.2.4 materializada em legacy_shadow. Evidence → Observation → Domain agora inclui "
                     "Requirement Identity/Occurrence antes de Strategy + Creative Platform + Experience/Journey; o Truth Gate permaneceu ativo e o Graph V28.6 continuou congelado."
                 )
                 st.caption(
@@ -605,10 +635,17 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     "O Graph V28.6 permaneceu congelado; consulte os avisos técnicos."
                 )
             elif not requirement_ok:
-                st.error(
-                    "Truth Gate, Solution reconciliation e audits permaneceram válidos, mas a Requirement Semantic Reconciliation V28.7.2C0.2.3 não terminou. "
-                    "A V28.7.2B não foi executada nesta run; nenhum cutover foi promovido e o Graph V28.6 permaneceu congelado."
-                )
+                req_status = str(requirement_reconciliation.get("status") or "")
+                if req_status == "semantic_gate_blocked":
+                    st.error(
+                        "Truth Gate, Solution reconciliation e audits permaneceram válidos, mas o Requirement Semantic Gate bloqueou esta run. "
+                        "A V28.7.2B não foi executada; nenhum cutover foi promovido e o Graph V28.6 permaneceu congelado."
+                    )
+                else:
+                    st.error(
+                        "Truth Gate, Solution reconciliation e audits permaneceram válidos, mas a Requirement Semantic Reconciliation V28.7.2C0.2.4 não terminou. "
+                        "A V28.7.2B não foi executada nesta run; nenhum cutover foi promovido e o Graph V28.6 permaneceu congelado."
+                    )
             else:
                 st.error(
                     "A V28.7.2A permaneceu válida, mas Strategy / Creative / Experience V28.7.2B não terminou. "

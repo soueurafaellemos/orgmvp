@@ -1,7 +1,8 @@
 from pathlib import Path
 
 from project_requirement_semantic_extractor import _classify, _discover_requirement_atoms, _observation_identity, _looks_like_unanswered_form_prompt, _legacy_recall_requirements
-from project_requirement_reconciliation import build_requirement_reconciliation_plan
+from project_requirement_reconciliation import build_requirement_reconciliation_plan, _semantic_gate
+from project_requirement_identity import resolve_requirement_identity
 
 
 PROJECT_ID = "00000000-0000-0000-3000-000000000001"
@@ -73,7 +74,9 @@ def test_legacy_template_prompt_is_no_domain_context():
 def test_suggestion_is_not_auto_promoted_but_negative_exclusion_is_requirement():
     suggestion = _discover_requirement_atoms("Vale sugerirmos também um presskit para convidados especiais.")
     exclusion = _discover_requirement_atoms("Não é necessário orçarmos mestre de cerimônias para este evento.")
-    assert suggestion == []
+    assert len(suggestion) == 1
+    assert suggestion[0]["semantic_role"] == "suggestion_signal"
+    assert suggestion[0]["mandatory"] is False
     assert len(exclusion) == 1
     assert exclusion[0]["polarity"] == "negative"
 
@@ -199,3 +202,161 @@ def test_c023_sql_legacy_truth_lookup_is_identity_isolated():
     assert "e.legacy_source_id is not null" in truth
     assert "=e.legacy_source_id::text" in truth
     assert "truth_state in ('verified','human_confirmed','review_required')" in sql
+
+
+# V28.7.2C0.2.4 — Requirement Role & Binding Precision Gate
+
+def test_c024_jovi_product_name_is_attribute_not_requirement():
+    kind, role, occurrence_role = _classify(
+        {"title": "JOVI X300 Ultra", "requirement_type": "other", "mandatory": True, "attributes": {}},
+        "Foco do Produto\nJOVI X300 Ultra\nKit de lentes teleobjetivas destacáveis\nModo profissional avançado",
+    )
+    assert (kind, role, occurrence_role) == ("attribute_signal", "product_attribute", "attribute")
+
+
+def test_c024_jovi_audience_fragment_is_context_not_requirement():
+    kind, role, occurrence_role = _classify(
+        {"title": "Frequentadores de festivais de música", "requirement_type": "other", "mandatory": True, "attributes": {}},
+        "Público-Alvo Principal – X300 Ultra\nCriadores de conteúdo profissionais\nFrequentadores de festivais de música",
+    )
+    assert (kind, role, occurrence_role) == ("context_signal", "audience_context", "context")
+
+
+def test_c024_jovi_platform_fit_fragment_is_scope_not_requirement():
+    kind, role, occurrence_role = _classify(
+        {"title": "Storytelling detalhado", "requirement_type": "deliverable", "mandatory": True, "attributes": {}},
+        "Adequação à Plataforma - O YouTube é o ambiente ideal para:\nConteúdo de longa duração\nReviews técnicos aprofundados\nStorytelling detalhado",
+    )
+    assert (kind, role, occurrence_role) == ("scope_signal", "platform_scope", "scope")
+
+
+def test_c024_jovi_example_after_como_is_example_signal():
+    kind, role, occurrence_role = _classify(
+        {"title": "Mini show ao vivo", "requirement_type": "other", "mandatory": True, "attributes": {}},
+        "A experiência deve permitir testes em um ambiente dinâmico, como:\nMini show ao vivo\nPerformance com muito movimento",
+    )
+    assert (kind, role, occurrence_role) == ("reference_signal", "example_signal", "reference")
+
+
+def test_c024_explicit_children_under_requirement_parent_remain_requirements():
+    atoms = _discover_requirement_atoms(
+        "A ativação deve explorar:\nLinhas arquitetônicas sofisticadas\nDesign urbano contemporâneo\nEspelhos conceituais\nIluminação premium para retratos"
+    )
+    roles = {row["name"]: row["semantic_role"] for row in atoms}
+    assert any("Linhas arquitetônicas sofisticadas" in name and role == "requirement_candidate" for name, role in roles.items())
+
+
+def test_c024_unconfirmed_presskit_is_suggestion_signal_not_requirement():
+    atoms = _discover_requirement_atoms(
+        "O cliente não nos confirmou em briefing, mas vale sugerirmos também o presskit para influenciadores e jornalistas pré-evento."
+    )
+    assert len(atoms) == 1
+    assert atoms[0]["semantic_role"] == "suggestion_signal"
+    assert atoms[0]["mandatory"] is False
+
+
+def test_c024_consider_children_type_parameter_and_constraint_qualifier():
+    atoms = _discover_requirement_atoms(
+        "Considerar:\nTotal de participantes\nBuffer adicional de 10%"
+    )
+    by_role = {row["semantic_role"]: row["name"] for row in atoms}
+    assert "parameter_signal" in by_role
+    assert "constraint_qualifier" in by_role
+
+
+def test_c024_evidence_first_timing_does_not_bind_to_mc_exclusion_description():
+    existing = [{
+        "id": "mc-id",
+        "entity_id": "mc-entity",
+        "title": "Não é necessário orçarmos MC para esse evento",
+        "description": "Não é necessário orçarmos MC. É necessário desenharmos/sugerirmos o timming dessa apresentação no gancho final da plenária.",
+        "requirement_type": "other",
+    }]
+    obs = {
+        "observed_name": "É necessário desenharmos/sugerirmos o timming dessa apresentação",
+        "observed_type": "deadline",
+        "semantic_role": "requirement_candidate",
+        "attributes": {"origin_route": "evidence_first"},
+    }
+    result = resolve_requirement_identity(obs, existing)
+    assert result["action"] == "create_new"
+
+
+def test_c024_constraint_family_can_use_narrow_description_support():
+    existing = [{
+        "id": "budget-id", "entity_id": "budget-entity",
+        "title": "Restrição de verba e estrutura",
+        "description": "Esse ano temos menos dinheiro que no ano passado e precisamos pensar uma casa com menos estrutura de cenografia.",
+        "requirement_type": "budget",
+    }]
+    obs = {
+        "observed_name": "Esse ano temos menos dinheiro que no ano passado, precisamos pensar em criar uma casa com menos estrutura de cenografia",
+        "observed_type": "budget",
+        "semantic_role": "requirement_candidate",
+        "attributes": {"origin_route": "evidence_first"},
+    }
+    result = resolve_requirement_identity(obs, existing)
+    assert result["action"] == "attach_existing"
+
+
+def test_c024_two_pass_blocks_no_domain_legacy_identity_from_absorbing_current_obligation():
+    existing = [{
+        "id": REQ_ID, "entity_id": ENTITY_ID, "legacy_source_id": "legacy-product",
+        "title": "JOVI X300 Ultra", "description": "É necessário criar uma ativação para JOVI X300 Ultra.", "requirement_type": "other",
+    }]
+    legacy_obs = {
+        "id": "00000000-0000-0000-5000-000000000010", "source_asset_id": ASSET_ID, "evidence_unit_id": EVIDENCE_ID,
+        "observed_name": "JOVI X300 Ultra", "observed_type": "other", "occurrence_phase": "briefing",
+        "semantic_role": "product_attribute", "model_confidence": 0.99, "source_authority_score": 0.9,
+        "attributes": {"origin_route": "legacy_recall", "legacy_requirement_id": "legacy-product", "requirement_id": REQ_ID, "evidence_text": "Foco do Produto: JOVI X300 Ultra"},
+    }
+    current_obs = {
+        "id": "00000000-0000-0000-5000-000000000011", "source_asset_id": ASSET_ID, "evidence_unit_id": "00000000-0000-0000-7000-000000000011",
+        "observed_name": "É necessário criar uma ativação para JOVI X300 Ultra", "observed_type": "other", "occurrence_phase": "briefing",
+        "semantic_role": "requirement_candidate", "model_confidence": 0.99, "source_authority_score": 0.9,
+        "attributes": {"origin_route": "evidence_first", "legacy_requirement_id": None, "requirement_id": None, "evidence_text": "É necessário criar uma ativação para JOVI X300 Ultra"},
+    }
+    plan = build_requirement_reconciliation_plan(PROJECT_ID, [legacy_obs, current_obs], existing)
+    assert len(plan["requirements"]) == 1
+    assert plan["requirements"][0]["id"] != REQ_ID
+
+
+def test_c024_semantic_gate_is_fail_closed_on_observation_review():
+    gate = _semantic_gate({
+        "observations_open": 0,
+        "observations_review_required": 3,
+        "unexplained_legacy_shadow": 0,
+        "conflicted": 0,
+        "review_required": 0,
+    })
+    assert gate["pass"] is False
+    assert gate["blockers"] == 3
+
+
+def test_c024_sql_role_precision_and_fail_closed_contract():
+    sql = (Path(__file__).parents[1] / "NAVE_V28_7_2C0_2_4_REQUIREMENT_ROLE_BINDING_PRECISION_GATE.sql").read_text(encoding="utf-8").casefold()
+    for role in ("suggestion_signal", "example_signal", "parameter_signal", "constraint_qualifier"):
+        assert role in sql
+    assert "semantic_gate_blockers" in sql
+    assert "semantic_gate_pass" in sql
+    assert "28.7.2c0.2.4" in sql
+    assert "delete from" not in sql
+    assert "domain_primary" not in sql
+
+
+def test_c024_audience_children_under_mandatory_alignment_parent_are_context():
+    kind, role, occurrence_role = _classify(
+        {"title": "Frequentadores de festivais de música", "requirement_type": "other", "mandatory": True, "attributes": {}},
+        "Alinhamento Estratégico:\nA proposta deve estar fortemente conectada ao nosso público-alvo principal:\nCriadores de conteúdo\nFilmmakers\nFotógrafos\nFrequentadores de festivais de música\nUniverso da moda e lifestyle",
+    )
+    assert (kind, role, occurrence_role) == ("context_signal", "audience_context", "context")
+
+
+def test_c024_evidence_first_preserves_example_children_without_promoting_them():
+    atoms = _discover_requirement_atoms(
+        "A experiência deve permitir que os convidados testem o kit em um ambiente dinâmico, como:\nMini show ao vivo\nPerformance com muito movimento"
+    )
+    roles = {row["name"]: row["semantic_role"] for row in atoms}
+    assert roles["Mini show ao vivo"] == "example_signal"
+    assert roles["Performance com muito movimento"] == "example_signal"
+    assert any(role == "requirement_candidate" for role in roles.values())

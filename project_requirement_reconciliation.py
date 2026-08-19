@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.3 — Evidence-first Requirement Semantic Reconciliation.
+"""NAVE V28.7.2C0.2.4 — Requirement Role & Binding Precision Gate.
 
 Runs in legacy_shadow after Solution reconciliation/audits and before Core Semantic B.
 It verifies or classifies Requirement knowledge without auto-merging two existing
@@ -16,9 +16,50 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from project_requirement_identity import normalize_requirement_text, resolve_requirement_identity
 from project_requirement_semantic_extractor import collect_project_requirement_observations
 
-C0_VERSION = "V28.7.2C0.2.3"
-C0_SCHEMA_VERSION = "28.7.2c0.2.3"
+C0_VERSION = "V28.7.2C0.2.4"
+C0_SCHEMA_VERSION = "28.7.2c0.2.4"
 C0_RPC = "apply_project_requirement_reconciliation_v2872c0"
+
+SCOPE_ROLES = {"channel_scope", "platform_scope", "deliverable_scope"}
+ATTRIBUTE_ROLES = {"product_attribute", "experience_attribute"}
+CONTEXT_ROLES = {"audience_context", "strategy_context", "form_prompt"}
+REFERENCE_ROLES = {"reference_signal", "solution_reference"}
+ROLE_ONLY_NO_DOMAIN = {
+    "suggestion_signal", "example_signal", "parameter_signal", "constraint_qualifier",
+}
+NO_DOMAIN_ROLES = SCOPE_ROLES | ATTRIBUTE_ROLES | CONTEXT_ROLES | REFERENCE_ROLES | ROLE_ONLY_NO_DOMAIN
+
+
+def _no_domain_resolution_action(role: str) -> tuple[str, str]:
+    if role in SCOPE_ROLES:
+        return "attach_scope", "scope"
+    if role in ATTRIBUTE_ROLES:
+        return "attach_attribute", "attribute"
+    if role in CONTEXT_ROLES:
+        return "preserve_context", "context"
+    if role in REFERENCE_ROLES:
+        return "preserve_reference", "reference"
+    if role == "suggestion_signal":
+        return "preserve_suggestion", "suggestion"
+    if role == "example_signal":
+        return "preserve_example", "example"
+    if role == "parameter_signal":
+        return "attach_parameter", "parameter"
+    if role == "constraint_qualifier":
+        return "attach_constraint_qualifier", "constraint_qualifier"
+    return "no_domain_object", role or "no_domain_object"
+
+
+def _semantic_gate(status: Mapping[str, Any]) -> dict[str, Any]:
+    components = {
+        "observations_open": int(status.get("observations_open") or 0),
+        "observations_review_required": int(status.get("observations_review_required") or 0),
+        "unexplained_legacy_shadow": int(status.get("unexplained_legacy_shadow") or 0),
+        "conflicted_identities": int(status.get("conflicted") or 0),
+        "identity_review_required": int(status.get("review_required") or 0),
+    }
+    blockers = sum(components.values())
+    return {"pass": blockers == 0, "blockers": blockers, "components": components}
 
 
 def _rows(response: Any) -> list[dict[str, Any]]:
@@ -96,34 +137,46 @@ def build_requirement_reconciliation_plan(
     resolutions: list[dict[str, Any]] = []
     evidence_links: list[dict[str, Any]] = []
 
+    # Pass 1: current Evidence classifies legacy recall identities before any Evidence-first
+    # binding is attempted. A legacy identity classified as no-domain may remain preserved
+    # for recall/history, but it is not eligible to absorb a current Requirement obligation.
+    blocked_existing_ids: set[str] = set()
+    for raw in observations:
+        obs = dict(raw)
+        attrs = obs.get("attributes") if isinstance(obs.get("attributes"), Mapping) else {}
+        if str(attrs.get("origin_route") or "") != "legacy_recall":
+            continue
+        if str(obs.get("semantic_role") or "") not in NO_DOMAIN_ROLES:
+            continue
+        rid = str(attrs.get("requirement_id") or "")
+        if rid:
+            blocked_existing_ids.add(rid)
+
     for raw in observations:
         obs = dict(raw)
         semantic_role = str(obs.get("semantic_role") or "")
         attrs = obs.get("attributes") if isinstance(obs.get("attributes"), Mapping) else {}
 
-        if semantic_role in {"channel_scope", "platform_scope", "deliverable_scope"}:
+        if semantic_role in NO_DOMAIN_ROLES:
+            resolution_action, classification = _no_domain_resolution_action(semantic_role)
             resolutions.append({
-                "id": obs["id"], "status": "no_domain_object", "resolution_action": "attach_scope",
+                "id": obs["id"], "status": "no_domain_object", "resolution_action": resolution_action,
                 "resolved_entity_id": None, "resolved_domain_table": None, "resolved_domain_id": None,
-                "resolution_detail": {"classification": "scope", "legacy_requirement_id": attrs.get("legacy_requirement_id")},
-            })
-            continue
-        if semantic_role in {"product_attribute", "experience_attribute"}:
-            resolutions.append({
-                "id": obs["id"], "status": "no_domain_object", "resolution_action": "attach_attribute",
-                "resolved_entity_id": None, "resolved_domain_table": None, "resolved_domain_id": None,
-                "resolution_detail": {"classification": "attribute", "legacy_requirement_id": attrs.get("legacy_requirement_id")},
-            })
-            continue
-        if semantic_role in {"audience_context", "strategy_context", "reference_signal", "solution_reference", "form_prompt"}:
-            resolutions.append({
-                "id": obs["id"], "status": "no_domain_object", "resolution_action": "no_domain_object",
-                "resolved_entity_id": None, "resolved_domain_table": None, "resolved_domain_id": None,
-                "resolution_detail": {"classification": semantic_role, "legacy_requirement_id": attrs.get("legacy_requirement_id")},
+                "resolution_detail": {
+                    "classification": classification,
+                    "semantic_role": semantic_role,
+                    "legacy_requirement_id": attrs.get("legacy_requirement_id"),
+                    "requirement_id": attrs.get("requirement_id"),
+                },
             })
             continue
 
-        resolution = resolve_requirement_identity(obs, requirements)
+        resolver_requirements = requirements
+        if str(attrs.get("origin_route") or "") == "evidence_first" and blocked_existing_ids:
+            resolver_requirements = [
+                row for row in requirements if str(row.get("id") or "") not in blocked_existing_ids
+            ]
+        resolution = resolve_requirement_identity(obs, resolver_requirements)
         action = str(resolution.get("action") or "")
         if action == "review_required":
             resolutions.append({
@@ -268,7 +321,7 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
         return {
             "project_id": project_id,
             "status": "blocked_empty_requirement_observation_bundle",
-            "warnings": ["C0.2.3 não encontrou Evidence-backed Requirement observations; estado anterior preservado."],
+            "warnings": ["C0.2.4 não encontrou Evidence-backed Requirement observations; estado anterior preservado."],
             "diagnostics": extraction.get("diagnostics") or [],
         }
     plan = build_requirement_reconciliation_plan(project_id, observations, existing)
@@ -287,30 +340,40 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
         rpc_rows = _rows(response)
         status = fetch_project_requirement_reconciliation_status(client, project_id)
         classified = {
-            "scopes": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in {"channel_scope", "platform_scope", "deliverable_scope"}],
-            "attributes": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in {"product_attribute", "experience_attribute"}],
-            "contexts": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in {"audience_context", "strategy_context"}],
-            "references": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in {"reference_signal", "solution_reference"}],
+            "scopes": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in SCOPE_ROLES],
+            "attributes": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in ATTRIBUTE_ROLES],
+            "contexts": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in CONTEXT_ROLES],
+            "references": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) in REFERENCE_ROLES],
+            "suggestions": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) == "suggestion_signal"],
+            "examples": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) == "example_signal"],
+            "parameters": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) == "parameter_signal"],
+            "constraint_qualifiers": [str(row.get("observed_name")) for row in observations if str(row.get("semantic_role")) == "constraint_qualifier"],
             "evidence_first": [str(row.get("observed_name")) for row in observations if str((row.get("attributes") or {}).get("origin_route")) == "evidence_first"],
+            "blocked_legacy_identity_ids": sorted(blocked_existing_ids),
         }
+        gate = _semantic_gate(status)
         return {
             "project_id": project_id,
-            "status": "completed",
+            "status": "completed" if gate["pass"] else "semantic_gate_blocked",
             "run_id": run_id,
             "rpc": rpc_rows[0] if rpc_rows else {},
             "requirement_reconciliation": status,
+            "semantic_gate": gate,
             "actions": {
                 "observations": len(observations),
                 "new_requirements": len(plan.get("requirements") or []),
                 "occurrences": len(plan.get("occurrences") or []),
                 "review_required": sum(1 for row in plan.get("observation_resolutions") or [] if row.get("status") == "review_required"),
                 "no_domain_object": sum(1 for row in plan.get("observation_resolutions") or [] if row.get("status") == "no_domain_object"),
+                "semantic_gate_blockers": gate["blockers"],
                 "new_requirement_titles": [str(row.get("title")) for row in plan.get("requirements") or []],
                 **classified,
             },
             "diagnostics": extraction.get("diagnostics") or [],
             "extraction_summary": extraction.get("summary") or {},
-            "warnings": [],
+            "warnings": [] if gate["pass"] else [
+                "Requirement Semantic Gate bloqueou V28.7.2B: " + json.dumps(gate["components"], ensure_ascii=False, sort_keys=True)
+            ],
         }
     except Exception as exc:
         _mark_run_error(client, run_id, exc)
