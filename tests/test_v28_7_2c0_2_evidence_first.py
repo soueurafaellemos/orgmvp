@@ -443,3 +443,115 @@ def test_h2_product_target_parent_carries_across_evidence_unit_boundary():
     assert len(atoms) == 1
     assert atoms[0]["semantic_role"] == "product_attribute"
     assert atoms[0]["mandatory"] is False
+
+
+# V28.7.2C0.2.4H3 — bare product identity guard
+
+def test_h3_bare_model_label_under_legacy_deliverables_is_not_requirement():
+    kind, role, occurrence_role = _classify(
+        {
+            "title": "JOVI X300 Ultra",
+            "requirement_type": "deliverable",
+            "mandatory": False,
+            "attributes": {"source_reference": "Entregáveis"},
+        },
+        "JOVI X300 Ultra",
+    )
+    assert (kind, role, occurrence_role) == ("attribute_signal", "product_attribute", "attribute")
+
+
+def test_h3_bare_model_guard_is_generic_not_client_named():
+    kind, role, occurrence_role = _classify(
+        {
+            "title": "Acme V70 Pro",
+            "requirement_type": "deliverable",
+            "mandatory": True,
+            "attributes": {"source_reference": "Deliverables"},
+        },
+        "Acme V70 Pro",
+    )
+    assert (kind, role, occurrence_role) == ("attribute_signal", "product_attribute", "attribute")
+
+
+def test_h3_media_duration_deliverable_is_not_mistaken_for_product_model():
+    kind, role, occurrence_role = _classify(
+        {
+            "title": "Vídeo 30s",
+            "requirement_type": "deliverable",
+            "mandatory": False,
+            "attributes": {"source_reference": "Entregáveis"},
+        },
+        "Vídeo 30s",
+    )
+    assert (kind, role, occurrence_role) == ("requirement_candidate", "requirement_candidate", "requirement")
+
+
+def test_h3_explicit_obligation_that_mentions_model_remains_requirement():
+    kind, role, occurrence_role = _classify(
+        {
+            "title": "Entregar 3 unidades do X300 Ultra",
+            "requirement_type": "deliverable",
+            "mandatory": True,
+            "attributes": {"source_reference": "Entregáveis"},
+        },
+        "Entregar 3 unidades do X300 Ultra",
+    )
+    assert (kind, role, occurrence_role) == ("requirement_candidate", "requirement_candidate", "requirement")
+
+
+def test_h3_real_survivor_shape_is_blocked_before_evidence_first_binding():
+    _kind, legacy_role, _occ_role = _classify(
+        {
+            "title": "JOVI X300 Ultra",
+            "requirement_type": "deliverable",
+            "mandatory": False,
+            "attributes": {"source_reference": "Entregáveis"},
+        },
+        "JOVI X300 Ultra",
+    )
+    existing = [{
+        "id": REQ_ID,
+        "entity_id": ENTITY_ID,
+        "legacy_source_id": "dc46dfb2-1178-4ac6-a102-53c770c75883",
+        "title": "JOVI X300 Ultra",
+        "description": "JOVI X300 Ultra",
+        "requirement_type": "deliverable",
+    }]
+    legacy_obs = {
+        "id": "00000000-0000-0000-5000-000000000201",
+        "source_asset_id": ASSET_ID,
+        "evidence_unit_id": EVIDENCE_ID,
+        "observed_name": "JOVI X300 Ultra",
+        "observed_type": "deliverable",
+        "occurrence_phase": "briefing",
+        "semantic_role": legacy_role,
+        "model_confidence": 1.0,
+        "source_authority_score": 0.88,
+        "attributes": {
+            "origin_route": "legacy_recall",
+            "legacy_requirement_id": "dc46dfb2-1178-4ac6-a102-53c770c75883",
+            "requirement_id": REQ_ID,
+            "evidence_text": "JOVI X300 Ultra",
+        },
+    }
+    current_obs = {
+        "id": "00000000-0000-0000-5000-000000000202",
+        "source_asset_id": ASSET_ID,
+        "evidence_unit_id": "00000000-0000-0000-7000-000000000202",
+        "observed_name": "Experience & Hands-On Lab: Após a revelação dos produtos, deverá existir uma área de exposição para testes práticos de: JOVI X300 Ultra;",
+        "observed_type": "other",
+        "occurrence_phase": "briefing",
+        "semantic_role": "requirement_candidate",
+        "model_confidence": 0.98,
+        "source_authority_score": 0.88,
+        "attributes": {
+            "origin_route": "evidence_first",
+            "legacy_requirement_id": None,
+            "requirement_id": None,
+            "evidence_text": "Experience & Hands-On Lab: Após a revelação dos produtos, deverá existir uma área de exposição para testes práticos de: JOVI X300 Ultra;",
+        },
+    }
+    plan = build_requirement_reconciliation_plan(PROJECT_ID, [legacy_obs, current_obs], existing)
+    assert REQ_ID in plan["blocked_existing_ids"]
+    assert all(str(o.get("requirement_id")) != REQ_ID for o in plan["occurrences"])
+    assert any(str(r.get("id")) != REQ_ID for r in plan["requirements"])

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.4H2 — Structural role boundary + evidence-first observation collector.
+"""NAVE V28.7.2C0.2.4H3 — Bare product identity guard + structural role boundary + evidence-first observation collector.
 
-C0.2 removes the semantic privilege previously granted to legacy Requirements that
+H3 closes the last proven legacy-recall false positive after C0.2 removed the semantic privilege previously granted to legacy Requirements that
 already had Evidence. Every legacy row is reclassified against the current source, and
 the briefing Evidence is scanned independently to recover explicit obligations that the
 legacy extractor never materialized.
@@ -23,7 +23,7 @@ from uuid import NAMESPACE_URL, uuid5
 from project_requirement_identity import normalize_requirement_text
 from project_semantic_observations import _project_evidence, _source_role, _phase_role, _authority
 
-C0_VERSION = "V28.7.2C0.2.4H2"
+C0_VERSION = "V28.7.2C0.2.4H3"
 
 CHANNEL_TERMS = {
     "youtube", "instagram", "tiktok", "tik tok", "kwai", "facebook", "linkedin",
@@ -63,6 +63,14 @@ PRODUCT_TARGET_PARENT_RE = re.compile(
     r"products?\s+(?:to\s+test|for\s+testing|on\s+display))\b",
     re.I,
 )
+
+# A bare model/SKU-like label is an object mention, not an obligation by itself.
+# This is intentionally generic: it looks for a compact alphanumeric model token such
+# as X300 / S24 / V70 / A320, never for a client or brand name. The rule only fires
+# when the Evidence Unit itself is just that nominal label, so explicit clauses such as
+# "Entregar 3 unidades do X300" remain Requirements.
+BARE_MODEL_CODE_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z-]*\d{2,}[A-Za-z0-9-]*$", re.I)
+
 
 # Strong source-language obligation. Action verbs are accepted only at a clause
 # boundary; matching them after arbitrary whitespace caused descriptive prose such as
@@ -328,6 +336,27 @@ def _title_is_product_target(title: str, evidence_text: str, surrounding_text: s
     return False
 
 
+def _looks_like_bare_product_model(title: str, evidence_text: str) -> bool:
+    """True when current Evidence is only a compact model/SKU-like object label.
+
+    A legacy extractor may have placed a product name under a broad "Entregáveis"
+    bucket. That historical taxonomy cannot turn the object into Requirement truth.
+    Only current source modality can do that.
+    """
+    raw = re.sub(r"\s+", " ", str(title or "")).strip(" \t•·;,.")
+    if not raw or _direct_obligation(raw) or _is_suggestion_or_unconfirmed(raw):
+        return False
+    norm = _norm(raw)
+    if not norm or len(norm.split()) > 8:
+        return False
+    # Critical precision guard: do not infer from a larger sentence that merely mentions
+    # a model. The current Evidence Unit must be the nominal label itself.
+    if _norm(evidence_text) != norm:
+        return False
+    tokens = re.findall(r"[A-Za-z0-9-]+", raw)
+    return any(BARE_MODEL_CODE_TOKEN_RE.fullmatch(token) for token in tokens)
+
+
 def _looks_like_solution_heading(value: str) -> bool:
     norm = _norm(value)
     return bool(re.match(
@@ -481,6 +510,11 @@ def _classify(req: Mapping[str, Any], evidence_text: str, surrounding_text: str 
     if _is_channel_title(title):
         return "scope_signal", "channel_scope", "scope"
     if _title_is_product_target(title, evidence_text, surrounding_text):
+        return "attribute_signal", "product_attribute", "attribute"
+    # H3: a standalone model/SKU label remains a product object even when the legacy
+    # extractor had filed it under a broad Deliverables section. The historical
+    # source_reference is recall only and cannot manufacture obligation modality.
+    if _looks_like_bare_product_model(title, evidence_text):
         return "attribute_signal", "product_attribute", "attribute"
 
     # A source-explicit obligation/exclusion in the title is a real Requirement even if

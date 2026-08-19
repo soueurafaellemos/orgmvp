@@ -31,7 +31,7 @@ apply_nave_branding()
 page_header(
     "Importar projeto completo",
     "Envie briefing, proposta, orçamento, planilha, apresentação, feedbacks e relatórios em um único lote. A NAVE organiza os papéis, evita duplicidade de projeto e prepara cada arquivo para a área correta do workspace.",
-    eyebrow="NAVE by VOE · V28.7.2C0.2.4H2",
+    eyebrow="NAVE by VOE · V28.7.2C0.2.4H3",
 )
 
 client = get_nave_client()
@@ -74,13 +74,13 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
     status = str(result.get("status") or "")
     if status == "schema_missing":
         st.warning(
-            "Requirement Semantic Reconciliation V28.7.2C0.2.4H2 ainda não está visível no Data API. "
-            "O H2 reutiliza o contrato SQL C0.2.4 já instalado. Se o schema estiver ausente, execute NAVE_V28_7_2C0_2_4H1_RESOLUTION_ACTION_CONTRACT_HOTFIX.sql no Supabase e rode novamente."
+            "Requirement Semantic Reconciliation V28.7.2C0.2.4H3 ainda não está visível no Data API. "
+            "O H3 reutiliza o contrato SQL C0.2.4 já instalado. Se o schema estiver ausente, execute NAVE_V28_7_2C0_2_4H1_RESOLUTION_ACTION_CONTRACT_HOTFIX.sql no Supabase e rode novamente."
         )
         return
     if status in {"schema_check_error", "transaction_error", "orchestration_error", "blocked"} or status.startswith("blocked_"):
         st.error(
-            "A V28.7.2C0.2.4H2 não promoveu uma nova geração de Requirement Reconciliation. "
+            "A V28.7.2C0.2.4H3 não promoveu uma nova geração de Requirement Reconciliation. "
             "A materialização anterior permanece válida; a V28.7.2B não foi executada nesta run."
         )
         for warning in (result.get("warnings") or [])[:10]:
@@ -88,7 +88,7 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
                 st.caption("• " + str(warning))
         return
     if status not in {"completed", "semantic_gate_blocked"}:
-        st.warning(f"Requirement Semantic Reconciliation V28.7.2C0.2.4H2: {status or 'status desconhecido'}.")
+        st.warning(f"Requirement Semantic Reconciliation V28.7.2C0.2.4H3: {status or 'status desconhecido'}.")
         return
 
     rec = result.get("requirement_reconciliation") or {}
@@ -100,7 +100,7 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
             "A V28.7.2B foi bloqueada nesta run; o estado anterior permanece válido em legacy_shadow."
         )
     actions = result.get("actions") or {}
-    with st.expander("Requirement Semantic Reconciliation · V28.7.2C0.2.4H2", expanded=expanded):
+    with st.expander("Requirement Semantic Reconciliation · V28.7.2C0.2.4H3", expanded=expanded):
         cols = st.columns(7)
         cols[0].metric("Legacy rows", int(rec.get("legacy_requirement_rows") or rec.get("requirement_identities") or 0))
         cols[1].metric("Current identities", int(rec.get("current_requirement_identities") or 0))
@@ -141,7 +141,7 @@ def _render_requirement_reconciliation(container: dict, *, expanded: bool = Fals
         )
         st.caption(
             "Requirement Identity ≠ Requirement Occurrence ≠ Constraint. Legacy requirement é apenas sinal de recall; "
-            "Evidence histórica é provenance, não passe semântico. C0.2.4H2 classifica role antes de binding, preserva targets de produto/exemplos como no-domain, mantém modalidade obrigatória mesmo quando a frase contém um verbo de sugestão e faz fail-closed quando restam observações semânticas em review/open. "
+            "Evidence histórica é provenance, não passe semântico. C0.2.4H3 classifica role antes de binding, preserva targets e rótulos nominais de produto/modelo como no-domain, preserva exemplos sem virar Requirement, mantém modalidade obrigatória mesmo quando a frase contém um verbo de sugestão e faz fail-closed quando restam observações semânticas em review/open. "
             "Duas Requirement identities existentes nunca são auto-merged."
         )
 
@@ -571,11 +571,11 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
             st.page_link("pages/4_Historico_de_Projetos.py", label="Abrir projeto reprocessado")
 
         if st.button(
-            "Reconciliar Requirements + Core Semantics · V28.7.2C0.2.4H2",
+            "Reconciliar Requirements + Core Semantics · V28.7.2C0.2.4H3",
             width="stretch",
             disabled=not confirm_reprocess,
             key="v2872c0_reconcile_requirements_core",
-            help="Executa Truth Gate + V28.7.2A + audits, reconcilia Requirement Identity/Occurrence em V28.7.2C0.2.4H2 por legacy recall + Evidence-first e só então materializa V28.7.2B. Não reconstrói o Graph V28.6.",
+            help="Executa Truth Gate + V28.7.2A + audits, reconcilia Requirement Identity/Occurrence em V28.7.2C0.2.4H3 por legacy recall + Evidence-first e só então materializa V28.7.2B. Não reconstrói o Graph V28.6.",
         ):
             from project_intelligence_pipeline import finalize_project_intelligence
 
@@ -599,7 +599,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                 coverage = audits.get("coverage") or {}
                 identity = audits.get("identity") or {}
                 st.success(
-                    "V28.7.2C0.2.4H2 materializada em legacy_shadow. Evidence → Observation → Domain agora inclui "
+                    "V28.7.2C0.2.4H3 materializada em legacy_shadow. Evidence → Observation → Domain agora inclui "
                     "Requirement Identity/Occurrence antes de Strategy + Creative Platform + Experience/Journey; o Truth Gate permaneceu ativo e o Graph V28.6 continuou congelado."
                 )
                 st.caption(
@@ -643,7 +643,7 @@ with st.expander("Corrigir um projeto importado por uma versão anterior da V28"
                     )
                 else:
                     st.error(
-                        "Truth Gate, Solution reconciliation e audits permaneceram válidos, mas a Requirement Semantic Reconciliation V28.7.2C0.2.4H2 não terminou. "
+                        "Truth Gate, Solution reconciliation e audits permaneceram válidos, mas a Requirement Semantic Reconciliation V28.7.2C0.2.4H3 não terminou. "
                         "A V28.7.2B não foi executada nesta run; nenhum cutover foi promovido e o Graph V28.6 permaneceu congelado."
                     )
             else:

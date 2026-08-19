@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.4H2 — Structural Role Boundary Hotfix.
+"""NAVE V28.7.2C0.2.4H3 — Bare Product Identity Guard Hotfix.
 
 Runs in legacy_shadow after Solution reconciliation/audits and before Core Semantic B.
 It verifies or classifies Requirement knowledge without auto-merging two existing
@@ -16,7 +16,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from project_requirement_identity import normalize_requirement_text, resolve_requirement_identity
 from project_requirement_semantic_extractor import collect_project_requirement_observations
 
-C0_VERSION = "V28.7.2C0.2.4H2"
+C0_VERSION = "V28.7.2C0.2.4H3"
 C0_SCHEMA_VERSION = "28.7.2c0.2.4"
 C0_RPC = "apply_project_requirement_reconciliation_v2872c0"
 
