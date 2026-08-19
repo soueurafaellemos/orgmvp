@@ -17,7 +17,7 @@ Core invariants:
 from dataclasses import dataclass, asdict
 from typing import Any, Callable, Mapping, Sequence
 
-READ_PATH_VERSION = "V28.7.3A"
+READ_PATH_VERSION = "V28.7.3A2"
 READ_SCHEMA_VERSION = "28.7.3a"
 SUPPORTED_DOMAIN_KEYS = (
     "context",
@@ -178,8 +178,16 @@ def _comparison_status(domain_rows: Sequence[Mapping[str, Any]], legacy_rows: Se
     return "row_count_diff_not_semantic_failure"
 
 
-def _audit_read(client: Any, result: DomainReadResult) -> None:
+def _audit_read(
+    client: Any,
+    result: DomainReadResult,
+    *,
+    request_scope: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
     try:
+        audit_metadata = {"governed_findings_count": len(result.governed_findings)}
+        audit_metadata.update(dict(metadata or {}))
         client.table("project_domain_read_audit").insert({
             "project_id": result.project_id,
             "domain_key": result.domain_key,
@@ -191,7 +199,8 @@ def _audit_read(client: Any, result: DomainReadResult) -> None:
             "fallback_used": result.fallback_used,
             "comparison_status": result.comparison_status,
             "reader_version": result.reader_version,
-            "metadata": {"governed_findings_count": len(result.governed_findings)},
+            "request_scope": request_scope,
+            "metadata": audit_metadata,
         }).execute()
     except Exception:
         # Observability must never alter read semantics. A missing/broken audit
@@ -206,6 +215,8 @@ def read_domain(
     *,
     legacy_loader: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
     audit: bool = False,
+    audit_scope: str | None = None,
+    audit_metadata: Mapping[str, Any] | None = None,
 ) -> DomainReadResult:
     """Read one project/domain according to the cutover registry.
 
@@ -246,7 +257,12 @@ def read_domain(
             governed_findings=findings,
         )
         if audit:
-            _audit_read(client, result)
+            _audit_read(
+                client,
+                result,
+                request_scope=audit_scope,
+                metadata=audit_metadata,
+            )
         return result
 
     if legacy_loader is None:
@@ -286,5 +302,10 @@ def read_domain(
         )
 
     if audit:
-        _audit_read(client, result)
+        _audit_read(
+            client,
+            result,
+            request_scope=audit_scope,
+            metadata=audit_metadata,
+        )
     return result
