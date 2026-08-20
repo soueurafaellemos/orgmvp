@@ -71,3 +71,12 @@ with second_row[1]:
         icon="📚",
         width="stretch",
     )
+
+st.divider()
+st.caption("Diagnóstico temporário · V28.7.3A2")
+st.page_link(
+    "pages/15_Domain_Read_Canary.py",
+    label="Domain Read Canary",
+    icon="🧪",
+    width="stretch",
+)
