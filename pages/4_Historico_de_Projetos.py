@@ -11,7 +11,7 @@ from project_workspace_runtime import (
     apply_existing_login_gate,
     get_workspace_client,
 )
-from project_workspace_ui import render_projects_page
+from project_workspace_ui_b1 import render_projects_page
 
 
 st.set_page_config(
