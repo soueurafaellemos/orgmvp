@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3A3 — evidence-aware Semantic Shadow Comparator.
+"""NAVE V28.7.3A3.1 — subject/provenance-aware Semantic Shadow Comparator.
 
 The comparator explains *why* Legacy and Domain differ. It does not require row
 count parity and never mutates truth/readiness/read_mode.
@@ -23,8 +23,8 @@ import re
 import unicodedata
 from typing import Any
 
-COMPARATOR_VERSION = "V28.7.3A3"
-COMPARISON_SCOPE = "v28.7.3a3_semantic_shadow_compare"
+COMPARATOR_VERSION = "V28.7.3A3.1"
+COMPARISON_SCOPE = "v28.7.3a3_1_semantic_scope_compare"
 STRUCTURAL_DOMAINS = {"context", "outcomes", "strategy", "creative", "experience", "journey"}
 CLASSIFICATIONS = {
     "same_semantics",
@@ -32,6 +32,7 @@ CLASSIFICATIONS = {
     "expected_structural_difference",
     "legacy_only_unverified",
     "domain_only_evidence_led",
+    "expected_truth_correction",
     "semantic_conflict",
     "review_required",
 }
@@ -130,6 +131,10 @@ class SemanticComparisonItem:
     legacy_id: str | None
     legacy_source: str | None
     reason: str
+    domain_subject: str | None = None
+    legacy_subject: str | None = None
+    domain_phase: str | None = None
+    legacy_phase: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -266,7 +271,14 @@ def _domain_evidence_backed(row: Mapping[str, Any]) -> bool:
     truth_state = str(row.get("truth_state") or row.get("verification_state") or "").casefold()
     if truth_state in {"verified", "human_confirmed", "confirmed"}:
         return True
-    if row.get("evidence_unit_id") or row.get("source_asset_id"):
+    if (
+        row.get("evidence_unit_id")
+        or row.get("source_asset_id")
+        or row.get("source_evidence_id")
+        or row.get("source_claim_id")
+        or row.get("is_human_confirmed")
+        or row.get("_semantic_evidence_backed")
+    ):
         return True
     for key in ("evidence_count", "evidence_links", "current_evidence_count"):
         try:
@@ -323,6 +335,93 @@ def _outcome_conflict(domain_row: Mapping[str, Any], legacy_row: Mapping[str, An
     return True
 
 
+
+
+def _subject_key(row: Mapping[str, Any]) -> str | None:
+    value = str(row.get("_semantic_subject_key") or "").strip()
+    return value or None
+
+
+def _subject_phase(row: Mapping[str, Any]) -> str | None:
+    value = str(row.get("_semantic_lifecycle_phase") or "").strip()
+    return value or None
+
+
+def _legacy_material_feedback(row: Mapping[str, Any]) -> bool:
+    return bool(row.get("_semantic_material_feedback"))
+
+
+def _legacy_evidence_backed(row: Mapping[str, Any]) -> bool:
+    return bool(row.get("_legacy_human_confirmed") or row.get("_semantic_evidence_backed"))
+
+
+def _outcome_subjects_match(domain_row: Mapping[str, Any], legacy_row: Mapping[str, Any]) -> bool:
+    d_subject = _subject_key(domain_row)
+    l_subject = _subject_key(legacy_row)
+    return bool(d_subject and l_subject and d_subject == l_subject)
+
+
+def _identity_name(row: Mapping[str, Any], *, legacy: bool) -> str:
+    fields = ("title", "name", "canonical_name", "solution_name", "observed_name") if legacy else (
+        "solution_name", "canonical_name", "name", "title", "observed_name"
+    )
+    for field in fields:
+        value = str(row.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _domain_legacy_source_ids(row: Mapping[str, Any]) -> set[str]:
+    values: set[str] = set()
+    raw = row.get("legacy_source_ids")
+    if isinstance(raw, str):
+        if raw.strip():
+            values.add(raw.strip())
+    elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray, str)):
+        values.update(str(item) for item in raw if item)
+    attributes = row.get("attributes") or {}
+    if isinstance(attributes, Mapping):
+        raw = attributes.get("legacy_memory_item_ids")
+        if isinstance(raw, str):
+            if raw.strip():
+                values.add(raw.strip())
+        elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray, str)):
+            values.update(str(item) for item in raw if item)
+    return values
+
+
+def _solution_identity_anchor(domain_row: Mapping[str, Any], legacy_row: Mapping[str, Any]) -> str | None:
+    legacy_id = str(legacy_row.get("_legacy_source_id") or legacy_row.get("id") or "").strip()
+    d_name = _fold(_identity_name(domain_row, legacy=False))
+    l_name = _fold(_identity_name(legacy_row, legacy=True))
+    if legacy_id and legacy_id in _domain_legacy_source_ids(domain_row):
+        if d_name and l_name and d_name == l_name:
+            return "legacy_source_id+exact_name"
+        return "legacy_source_id"
+    if d_name and l_name and d_name == l_name:
+        return "exact_name"
+    return None
+
+
+def _legacy_project_execution_covered_by_domain(
+    legacy_row: Mapping[str, Any],
+    domain_rows: Sequence[Mapping[str, Any]],
+) -> bool:
+    if str(legacy_row.get("_semantic_subject_kind") or "") != "project":
+        return False
+    l_dim, l_val = _outcome_dimension_value(legacy_row, legacy=True)
+    if l_dim != "execution_status" or not l_val:
+        return False
+    for row in domain_rows:
+        if str(row.get("_semantic_subject_kind") or "") != "solution":
+            continue
+        d_dim, d_val = _outcome_dimension_value(row, legacy=False)
+        if d_dim == l_dim and d_val == l_val and _domain_evidence_backed(row):
+            return True
+    return False
+
+
 def _collective_overlap(text: str, rows: Sequence[Mapping[str, Any]], domain_key: str, *, legacy_rows: bool) -> float:
     base = _tokens(text)
     if not base:
@@ -367,13 +466,19 @@ def compare_domain_candidates(
     for d_index, d_text in enumerate(domain_texts):
         for l_index, l_text in enumerate(legacy_texts):
             if domain_key == "outcomes":
-                d_dim, d_val = _outcome_dimension_value(domain_rows[d_index], legacy=False)
-                l_dim, l_val = _outcome_dimension_value(legacy_rows[l_index], legacy=True)
-                # Outcome dimensions are categorical truth. Never pair process,
-                # commercial, proposal and execution merely because their prose
-                # looks alike. Same dimension is an explicit candidate even when
-                # values contradict, so conflict cannot be hidden by low lexical score.
-                if not d_dim or not l_dim or d_dim != l_dim:
+                d_row = domain_rows[d_index]
+                l_row = legacy_rows[l_index]
+                d_dim, d_val = _outcome_dimension_value(d_row, legacy=False)
+                l_dim, l_val = _outcome_dimension_value(l_row, legacy=True)
+                # A3.1: categorical dimensions are comparable only for the SAME
+                # semantic subject. A project outcome can never conflict with a
+                # solution outcome merely because both use proposal_status.
+                if (
+                    not d_dim
+                    or not l_dim
+                    or d_dim != l_dim
+                    or not _outcome_subjects_match(d_row, l_row)
+                ):
                     continue
                 if d_val and l_val and d_val == l_val:
                     score, dice, containment, sequence = 1.0, 1.0, 1.0, 1.0
@@ -384,6 +489,15 @@ def compare_domain_candidates(
                 continue
 
             score, dice, containment, sequence = _score(d_text, l_text)
+            if domain_key == "solutions":
+                anchor = _solution_identity_anchor(domain_rows[d_index], legacy_rows[l_index])
+                if anchor == "legacy_source_id+exact_name":
+                    score, dice, containment, sequence = 1.0, 1.0, 1.0, 1.0
+                elif anchor == "exact_name":
+                    score = max(score, 0.93)
+                elif anchor == "legacy_source_id":
+                    # Preserve lineage without blindly declaring semantic identity.
+                    score = max(score, 0.70)
             if score >= 0.34:
                 candidates.append((score, d_index, l_index, dice, containment, sequence))
     candidates.sort(reverse=True, key=lambda item: item[0])
@@ -401,11 +515,38 @@ def compare_domain_candidates(
         l_text = legacy_texts[l_index]
 
         if domain_key == "outcomes" and _outcome_conflict(d_row, l_row):
-            classification = "semantic_conflict"
-            reason = "same outcome dimension carries contradictory current values"
+            d_phase = _subject_phase(d_row)
+            l_phase = _subject_phase(l_row)
+            if _legacy_material_feedback(l_row):
+                classification = "review_required"
+                reason = (
+                    "same subject/dimension has a documented feedback-state disagreement; "
+                    "treat as a possible lifecycle transition and reconcile explicitly before cutover"
+                )
+            elif _domain_evidence_backed(d_row) and not _legacy_evidence_backed(l_row):
+                classification = "expected_truth_correction"
+                reason = (
+                    "same subject/dimension differs, but Domain is evidence-backed while Legacy "
+                    "is unverified; preserve Legacy as recall without overriding current truth"
+                )
+            elif d_phase and l_phase and d_phase != l_phase:
+                classification = "review_required"
+                reason = (
+                    f"same subject/dimension differs across lifecycle phases "
+                    f"({d_phase} vs {l_phase}); ordering/current-state semantics require review"
+                )
+            elif _domain_evidence_backed(d_row) and _legacy_evidence_backed(l_row):
+                classification = "semantic_conflict"
+                reason = "same subject/dimension carries contradictory evidence-backed current values"
+            else:
+                classification = "review_required"
+                reason = "same subject/dimension differs without enough provenance to declare a hard conflict"
         elif score >= 0.82:
             classification = "same_semantics"
-            reason = f"strong semantic equivalence (score={score:.2f})"
+            if domain_key == "solutions" and _solution_identity_anchor(d_row, l_row):
+                reason = "same solution identity preserved by exact name and/or legacy source binding"
+            else:
+                reason = f"strong semantic equivalence (score={score:.2f})"
         elif score >= 0.60 and containment >= 0.64:
             classification = "domain_more_precise"
             reason = f"core meaning preserved with narrower/cleaner Domain wording (containment={containment:.2f})"
@@ -431,6 +572,10 @@ def compare_domain_candidates(
                 legacy_id=_row_id(l_row, legacy=True),
                 legacy_source=str(l_row.get("_legacy_source_table") or "") or None,
                 reason=reason,
+                domain_subject=_subject_key(d_row),
+                legacy_subject=_subject_key(l_row),
+                domain_phase=_subject_phase(d_row),
+                legacy_phase=_subject_phase(l_row),
             )
         )
 
@@ -439,14 +584,18 @@ def compare_domain_candidates(
 
     for row in unmatched_domain:
         text = _row_text(row, domain_key, legacy=False)
-        structural_overlap = _collective_overlap(text, legacy_rows, domain_key, legacy_rows=True)
+        structural_overlap = (
+            0.0
+            if domain_key == "outcomes"
+            else _collective_overlap(text, legacy_rows, domain_key, legacy_rows=True)
+        )
         evidence_backed = domain_evidence_ready or _domain_evidence_backed(row)
-        if domain_key in STRUCTURAL_DOMAINS and structural_overlap >= 0.55:
+        if domain_key in STRUCTURAL_DOMAINS and domain_key != "outcomes" and structural_overlap >= 0.55:
             classification = "expected_structural_difference"
             reason = f"Domain atom is covered collectively by legacy container(s) (coverage={structural_overlap:.2f})"
         elif evidence_backed:
             classification = "domain_only_evidence_led"
-            reason = "current Domain truth is evidence-ready but has no legacy row-level counterpart"
+            reason = "current Domain truth is evidence-ready but has no same-subject legacy row-level counterpart"
         else:
             classification = "review_required"
             reason = "Domain-only row lacks row-level evidence signal and could not be structurally explained"
@@ -461,14 +610,31 @@ def compare_domain_candidates(
                 legacy_id=None,
                 legacy_source=None,
                 reason=reason,
+                domain_subject=_subject_key(row),
+                legacy_subject=None,
+                domain_phase=_subject_phase(row),
+                legacy_phase=None,
             )
         )
 
     for row in unmatched_legacy:
         text = _row_text(row, domain_key, legacy=True)
-        structural_overlap = _collective_overlap(text, domain_rows, domain_key, legacy_rows=False)
+        structural_overlap = (
+            0.0
+            if domain_key == "outcomes"
+            else _collective_overlap(text, domain_rows, domain_key, legacy_rows=False)
+        )
         human_confirmed = bool(row.get("_legacy_human_confirmed"))
-        if domain_key in STRUCTURAL_DOMAINS and structural_overlap >= 0.55:
+        if domain_key == "outcomes" and _legacy_material_feedback(row):
+            classification = "review_required"
+            reason = (
+                "documented client-feedback outcome has no same-subject current Domain counterpart; "
+                "it does not become truth by label alone, but must be reconciled before cutover"
+            )
+        elif domain_key == "outcomes" and _legacy_project_execution_covered_by_domain(row, domain_rows):
+            classification = "expected_structural_difference"
+            reason = "legacy project-level execution container is represented by evidence-backed solution execution outcomes"
+        elif domain_key in STRUCTURAL_DOMAINS and domain_key != "outcomes" and structural_overlap >= 0.55:
             classification = "expected_structural_difference"
             reason = f"legacy container/atom is covered collectively by Domain representation (coverage={structural_overlap:.2f})"
         elif human_confirmed:
@@ -476,7 +642,7 @@ def compare_domain_candidates(
             reason = "human-confirmed legacy truth disappeared from Domain and requires explicit review"
         else:
             classification = "legacy_only_unverified"
-            reason = "legacy recall has no current evidence-backed Domain counterpart"
+            reason = "legacy recall has no same-subject current evidence-backed Domain counterpart"
         items.append(
             SemanticComparisonItem(
                 classification=classification,
@@ -488,6 +654,10 @@ def compare_domain_candidates(
                 legacy_id=_row_id(row, legacy=True),
                 legacy_source=str(row.get("_legacy_source_table") or "") or None,
                 reason=reason,
+                domain_subject=None,
+                legacy_subject=_subject_key(row),
+                domain_phase=None,
+                legacy_phase=_subject_phase(row),
             )
         )
 
@@ -519,6 +689,7 @@ def semantic_audit_metadata(
     comparison: SemanticComparisonResult,
     *,
     legacy_adapter_version: str,
+    semantic_scope_version: str | None = None,
 ) -> dict[str, Any]:
     details = []
     for item in comparison.items[:160]:
@@ -529,6 +700,10 @@ def semantic_audit_metadata(
                 "domain_id": item.domain_id,
                 "legacy_id": item.legacy_id,
                 "legacy_source": item.legacy_source,
+                "domain_subject": item.domain_subject,
+                "legacy_subject": item.legacy_subject,
+                "domain_phase": item.domain_phase,
+                "legacy_phase": item.legacy_phase,
                 "domain_text": _clip(item.domain_text),
                 "legacy_text": _clip(item.legacy_text),
                 "reason": _clip(item.reason, 260),
@@ -542,6 +717,7 @@ def semantic_audit_metadata(
         "classification_counts": comparison.classification_counts,
         "comparator_version": comparison.comparator_version,
         "legacy_adapter_version": legacy_adapter_version,
+        "semantic_scope_version": semantic_scope_version,
         "details": details,
     }
 
@@ -560,8 +736,9 @@ def persist_semantic_comparison_audit(
     reader_version: str,
     comparison: SemanticComparisonResult,
     legacy_adapter_version: str,
+    semantic_scope_version: str | None = None,
 ) -> None:
-    """Persist A3 proof. Unlike optional runtime audit, failure blocks A3."""
+    """Persist A3.1 proof. Unlike optional runtime audit, failure blocks A3.1."""
     payload = {
         "project_id": project_id,
         "domain_key": domain_key,
@@ -577,6 +754,7 @@ def persist_semantic_comparison_audit(
         "metadata": semantic_audit_metadata(
             comparison,
             legacy_adapter_version=legacy_adapter_version,
+            semantic_scope_version=semantic_scope_version,
         ),
     }
     try:

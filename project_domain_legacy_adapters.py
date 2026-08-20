@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3A3 — comparator-side Legacy semantic adapters.
+"""NAVE V28.7.3A3.1 — comparator-side Legacy semantic adapters.
 
 These adapters make the legacy side explicit for semantic shadow comparison.
 They are intentionally *not* production view-model adapters yet. They preserve
@@ -16,7 +16,7 @@ Important invariants:
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-LEGACY_ADAPTER_VERSION = "V28.7.3A3"
+LEGACY_ADAPTER_VERSION = "V28.7.3A3.1"
 SUPPORTED_DOMAIN_KEYS = (
     "context",
     "requirements",
@@ -404,6 +404,7 @@ def _outcome_rows(snapshot: Mapping[str, Any], project_id: str) -> list[dict[str
                 role="item_outcome",
                 semantic_text=f"{dimension}: {value}" + (f" | {text}" if text else ""),
                 human_confirmed=False,
+                synthetic_id=f"{item_outcome.get('item_id') or 'item'}:{dimension}",
                 extra={
                     "_legacy_outcome_dimension": dimension,
                     "_legacy_outcome_value": value,

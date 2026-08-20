@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 
 import project_domain_legacy_adapters as legacy
 import project_domain_semantic_comparator as cmp
+import project_domain_semantic_scope as scope
 
 
 class Resp:
@@ -120,11 +121,16 @@ def test_outcome_same_dimension_contradiction_is_hard_conflict():
             "outcome_type": "commercial_result",
             "outcome_status": "won",
             "truth_state": "verified",
+            "_semantic_subject_key": "project:p1",
+            "_semantic_evidence_backed": True,
         }],
         [legacy_row(
             "commercial_result: lost",
+            human=True,
             _legacy_outcome_dimension="commercial_result",
             _legacy_outcome_value="lost",
+            _semantic_subject_key="project:p1",
+            _semantic_evidence_backed=True,
         )],
         domain_evidence_ready=True,
     )
@@ -141,10 +147,12 @@ def test_outcomes_never_pair_different_dimensions():
             "outcome_type": "execution_status",
             "outcome_status": "executed",
             "truth_state": "verified",
+            "_semantic_subject_key": "solution:e1",
         }],
         [legacy_row(
             "commercial_result: won",
             _legacy_outcome_dimension="commercial_result",
+            _semantic_subject_key="solution:e1",
             _legacy_outcome_value="won",
         )],
         domain_evidence_ready=True,
@@ -236,14 +244,16 @@ def test_semantic_audit_reuses_existing_audit_sink_and_contains_versions():
         reader_version="V28.7.3A2",
         comparison=result,
         legacy_adapter_version=legacy.LEGACY_ADAPTER_VERSION,
+        semantic_scope_version=scope.SCOPE_BINDING_VERSION,
     )
     assert len(client.inserts) == 1
     table, payload = client.inserts[0]
     assert table == "project_domain_read_audit"
-    assert payload["request_scope"] == cmp.COMPARISON_SCOPE
+    assert payload["request_scope"] == "v28.7.3a3_1_semantic_scope_compare"
     assert payload["read_mode"] == "shadow_compare"
-    assert payload["metadata"]["comparator_version"] == "V28.7.3A3"
-    assert payload["metadata"]["legacy_adapter_version"] == "V28.7.3A3"
+    assert payload["metadata"]["comparator_version"] == "V28.7.3A3.1"
+    assert payload["metadata"]["legacy_adapter_version"] == "V28.7.3A3.1"
+    assert payload["metadata"]["semantic_scope_version"] == "V28.7.3A3.1"
 
 
 def test_a3_sources_have_no_golden_hardcode_and_no_cutover_write():
@@ -252,6 +262,7 @@ def test_a3_sources_have_no_golden_hardcode_and_no_cutover_write():
         for name in (
             "project_domain_legacy_adapters.py",
             "project_domain_semantic_comparator.py",
+            "project_domain_semantic_scope.py",
             "pages/15_Domain_Read_Canary.py",
         )
     ).casefold()
@@ -267,3 +278,200 @@ def test_a3_canary_uses_existing_audit_read_at_contract():
     source = (ROOT / "pages/15_Domain_Read_Canary.py").read_text(encoding="utf-8")
     assert '.order("read_at", desc=True)' in source
     assert '.order("created_at", desc=True)' not in source
+
+
+def test_same_outcome_dimension_different_subjects_never_conflict():
+    result = cmp.compare_domain_candidates(
+        "outcomes",
+        [{
+            "id": "d1",
+            "outcome_type": "proposal_status",
+            "outcome_status": "proposed",
+            "source_evidence_id": "ev1",
+            "_semantic_subject_key": "solution:youtube",
+            "_semantic_lifecycle_phase": "proposal",
+        }],
+        [legacy_row(
+            "proposal_status: rejected",
+            _legacy_outcome_dimension="proposal_status",
+            _legacy_outcome_value="rejected",
+            _semantic_subject_key="project:p1",
+            _semantic_lifecycle_phase="feedback",
+        )],
+        domain_evidence_ready=False,
+    )
+    assert result.semantic_conflicts == 0
+    assert result.classification_counts["domain_only_evidence_led"] == 1
+    assert result.classification_counts["legacy_only_unverified"] == 1
+
+
+def test_evidence_backed_domain_correction_beats_unverified_legacy_without_conflict():
+    result = cmp.compare_domain_candidates(
+        "outcomes",
+        [{
+            "id": "d1",
+            "outcome_type": "commercial_result",
+            "outcome_status": "not_applicable",
+            "source_evidence_id": "ev1",
+            "_semantic_subject_key": "project:p1",
+            "_semantic_lifecycle_phase": "project_current",
+        }],
+        [legacy_row(
+            "commercial_result: won",
+            _legacy_outcome_dimension="commercial_result",
+            _legacy_outcome_value="won",
+            _semantic_subject_key="project:p1",
+            _semantic_lifecycle_phase="project_result",
+        )],
+        domain_evidence_ready=False,
+    )
+    assert result.semantic_status == "semantic_pass"
+    assert result.semantic_conflicts == 0
+    assert result.review_required == 0
+    assert result.classification_counts["expected_truth_correction"] == 1
+
+
+def test_documented_client_feedback_without_current_domain_counterpart_requires_review():
+    result = cmp.compare_domain_candidates(
+        "outcomes",
+        [],
+        [legacy_row(
+            "proposal_status: rejected | client said no",
+            source="memory_project_outcomes",
+            _legacy_outcome_dimension="proposal_status",
+            _legacy_outcome_value="rejected",
+            _semantic_subject_key="project:p1",
+            _semantic_lifecycle_phase="feedback",
+            _semantic_material_feedback=True,
+        )],
+        domain_evidence_ready=True,
+    )
+    assert result.semantic_status == "semantic_review"
+    assert result.review_required == 1
+    assert result.semantic_conflicts == 0
+
+
+def test_feedback_disagreement_same_subject_is_lifecycle_review_not_hard_conflict():
+    result = cmp.compare_domain_candidates(
+        "outcomes",
+        [{
+            "id": "d1",
+            "outcome_type": "proposal_status",
+            "outcome_status": "proposed",
+            "source_evidence_id": "proposal_ev",
+            "_semantic_subject_key": "solution:s1",
+            "_semantic_lifecycle_phase": "proposal",
+        }],
+        [legacy_row(
+            "proposal_status: rejected | later feedback",
+            source="memory_item_outcomes",
+            _legacy_outcome_dimension="proposal_status",
+            _legacy_outcome_value="rejected",
+            _semantic_subject_key="solution:s1",
+            _semantic_lifecycle_phase="feedback",
+            _semantic_material_feedback=True,
+        )],
+        domain_evidence_ready=False,
+    )
+    assert result.semantic_status == "semantic_review"
+    assert result.review_required == 1
+    assert result.semantic_conflicts == 0
+
+
+def test_solution_exact_identity_binding_prevents_long_legacy_text_false_review():
+    result = cmp.compare_domain_candidates(
+        "solutions",
+        [{
+            "id": "s1",
+            "name": "Munhequeira",
+            "description": "Munhequeira em tecido personalizada com identidade visual.",
+            "legacy_source_ids": ["m1"],
+            "evidence_count": 1,
+        }],
+        [legacy_row(
+            "Munhequeira | Munhequeira personalizada | Brinde / kit | Crianças | Visitantes | Distribuição",
+            id="m1",
+            source_id="m1",
+            source="memory_items",
+            title="Munhequeira",
+        )],
+        domain_evidence_ready=True,
+    )
+    assert result.semantic_status == "semantic_pass"
+    assert result.review_required == 0
+    assert result.classification_counts["same_semantics"] == 1
+
+
+def test_scope_binder_uses_solution_entity_id_and_legacy_source_ids():
+    snapshot = {
+        "solution_instances": [{
+            "id": "psi1",
+            "project_id": "p1",
+            "entity_id": "entity1",
+            "name": "Jogo da memória",
+            "legacy_source_ids": ["memory1"],
+            "attributes": {},
+        }],
+        "solution_occurrences": [{
+            "id": "occ1",
+            "project_id": "p1",
+            "solution_instance_id": "psi1",
+            "evidence_unit_id": "ev1",
+            "occurrence_phase": "execution",
+            "lifecycle_status": "active",
+        }],
+    }
+    domain_rows, legacy_rows = scope.bind_semantic_subjects(
+        "outcomes",
+        [{
+            "id": "o1",
+            "project_id": "p1",
+            "entity_id": "entity1",
+            "outcome_type": "execution_status",
+            "outcome_status": "executed",
+            "source_evidence_id": "ev1",
+        }],
+        [{
+            "item_id": "memory1",
+            "_legacy_source_table": "memory_item_outcomes",
+            "_legacy_role": "item_outcome",
+            "_legacy_outcome_dimension": "execution_status",
+            "_legacy_outcome_value": "executed",
+            "_legacy_text": "execution_status: executed",
+        }],
+        project_id="p1",
+        scope_snapshot=snapshot,
+    )
+    assert domain_rows[0]["_semantic_subject_key"] == "solution:entity1"
+    assert domain_rows[0]["_semantic_solution_instance_id"] == "psi1"
+    assert domain_rows[0]["_semantic_lifecycle_phase"] == "execution"
+    assert legacy_rows[0]["_semantic_subject_key"] == "solution:entity1"
+
+
+def test_scope_binder_infers_project_entity_from_project_scoped_dimensions():
+    domain_rows, legacy_rows = scope.bind_semantic_subjects(
+        "outcomes",
+        [
+            {
+                "id": "o1", "project_id": "p1", "entity_id": "project_entity",
+                "outcome_type": "process_type", "outcome_status": "direct",
+                "source_evidence_id": "ev1",
+            },
+            {
+                "id": "o2", "project_id": "p1", "entity_id": "project_entity",
+                "outcome_type": "commercial_result", "outcome_status": "not_applicable",
+                "source_evidence_id": "ev1",
+            },
+        ],
+        [{
+            "_legacy_source_table": "memory_project_outcomes",
+            "_legacy_role": "project_outcome",
+            "_legacy_outcome_dimension": "process_type",
+            "_legacy_outcome_value": "direct",
+            "_legacy_text": "process_type: direct",
+        }],
+        project_id="p1",
+        scope_snapshot={"solution_instances": [], "solution_occurrences": []},
+    )
+    assert all(row["_semantic_subject_key"] == "project:p1" for row in domain_rows)
+    assert legacy_rows[0]["_semantic_subject_key"] == "project:p1"

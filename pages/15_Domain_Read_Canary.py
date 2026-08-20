@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3A3 — Runtime + Semantic Shadow Canary.
+"""NAVE V28.7.3A3.1 — Runtime + Subject-aware Semantic Shadow Canary.
 
 Temporary diagnostic page. It never changes read_mode/readiness/Truth and never
 serves Domain to a production consumer.
 
 A2 proves runtime materialization of Domain candidates.
-A3 compares real legacy semantic adapters against the real Domain candidates and
-persists only observability/audit rows in project_domain_read_audit.
+A3.1 compares real legacy semantic adapters against real Domain candidates after
+binding outcome subject/lifecycle scope, and persists only observability/audit rows
+in project_domain_read_audit.
 """
 
 from typing import Any, Mapping
@@ -29,6 +30,11 @@ from project_domain_reader import (
     probe_domain_read_schema,
     read_domain,
 )
+from project_domain_semantic_scope import (
+    SCOPE_BINDING_VERSION,
+    bind_semantic_subjects,
+    build_semantic_scope_snapshot,
+)
 from project_domain_semantic_comparator import (
     COMPARATOR_VERSION,
     COMPARISON_SCOPE,
@@ -48,8 +54,8 @@ enforce_existing_app_access()
 apply_nave_branding()
 page_header(
     "Domain Read Canary",
-    "Runtime A2 + comparação semântica A3. Nenhuma ação desta página promove Domain Primary.",
-    eyebrow="NAVE by VOE · V28.7.3A3 · shadow only",
+    "Runtime A2 + comparação semântica A3.1 subject-aware. Nenhuma ação desta página promove Domain Primary.",
+    eyebrow="NAVE by VOE · V28.7.3A3.1 · shadow only",
 )
 
 client = get_nave_client()
@@ -147,7 +153,7 @@ for domain_key in SUPPORTED_DOMAIN_KEYS:
 st.caption(
     "Pré-condição: todos os domínios permanecem em shadow_compare e ready/ready_with_findings."
 )
-st.dataframe(pd.DataFrame(states), use_container_width=True, hide_index=True)
+st.dataframe(pd.DataFrame(states), width="stretch", hide_index=True)
 
 st.subheader("A2 · Runtime Shadow Canary")
 if st.button("Executar Runtime Shadow Canary A2"):
@@ -215,10 +221,10 @@ if st.button("Executar Runtime Shadow Canary A2"):
         st.caption(
             "A2 prova somente materialização runtime do Domain Candidate. Não é comparação semântica."
         )
-    st.dataframe(frame, use_container_width=True, hide_index=True)
+    st.dataframe(frame, width="stretch", hide_index=True)
 
 st.divider()
-st.subheader("A3 · Semantic Shadow Comparator")
+st.subheader("A3.1 · Semantic Shadow Comparator")
 a2 = _a2_proof(project_id)
 if a2.get("ok"):
     st.success("Pré-condição A2: PASS · 8/8 domínios com prova runtime persistida.")
@@ -229,20 +235,21 @@ else:
     )
 
 st.caption(
-    "A3 usa Legacy real + Domain real. Diferença de cardinalidade não é falha por si só. "
-    "O comparador explica equivalência, maior precisão, diferenças estruturais, recall legado, "
-    "novas verdades evidence-led, conflitos e ambiguidades que exigem revisão."
+    "A3.1 usa Legacy real + Domain real e só compara outcomes categóricos quando o sujeito semântico coincide. "
+    "Diferença de cardinalidade não é falha por si só. O comparador também distingue correção de Truth "
+    "evidence-backed, transição de lifecycle, feedback que exige reconciliação e conflito realmente autoritativo."
 )
 
-if st.button("Executar Semantic Shadow Comparator A3", type="primary", disabled=not bool(a2.get("ok"))):
+if st.button("Executar Semantic Shadow Comparator A3.1", type="primary", disabled=not bool(a2.get("ok"))):
     summary_rows: list[dict[str, Any]] = []
     detail_rows: list[dict[str, Any]] = []
     errors: list[str] = []
 
     try:
         legacy_snapshot = build_legacy_domain_snapshot(client, project_id)
+        semantic_scope_snapshot = build_semantic_scope_snapshot(client, project_id)
     except Exception as exc:
-        st.error(f"A3 BLOCKED: Legacy adapter falhou antes da comparação: {type(exc).__name__}: {exc}")
+        st.error(f"A3.1 BLOCKED: leitura de escopo/Legacy falhou antes da comparação: {type(exc).__name__}: {exc}")
         st.stop()
 
     for domain_key in SUPPORTED_DOMAIN_KEYS:
@@ -256,7 +263,7 @@ if st.button("Executar Semantic Shadow Comparator A3", type="primary", disabled=
             )
             if not precondition_ok:
                 raise RuntimeError(
-                    "A3 precondition failed: domain must remain shadow_compare, ready, semantic_gate_ok and current_evidence_ok"
+                    "A3.1 precondition failed: domain must remain shadow_compare, ready, semantic_gate_ok and current_evidence_ok"
                 )
 
             legacy_rows = legacy_rows_for_domain(legacy_snapshot, project_id, domain_key)
@@ -267,14 +274,21 @@ if st.button("Executar Semantic Shadow Comparator A3", type="primary", disabled=
                 legacy_loader=lambda rows=legacy_rows: rows,
                 audit=False,
             )
-            comparison = compare_domain_candidates(
+            scoped_domain_rows, scoped_legacy_rows = bind_semantic_subjects(
                 domain_key,
                 result.domain_candidate,
                 legacy_rows,
+                project_id=project_id,
+                scope_snapshot=semantic_scope_snapshot,
+            )
+            comparison = compare_domain_candidates(
+                domain_key,
+                scoped_domain_rows,
+                scoped_legacy_rows,
                 domain_evidence_ready=bool(state.get("current_evidence_ok")),
             )
 
-            # A3 proof must be persisted. Audit persistence failure blocks A3;
+            # A3.1 proof must be persisted. Audit persistence failure blocks A3.1;
             # it is not silently ignored like non-gating runtime telemetry.
             persist_semantic_comparison_audit(
                 client,
@@ -289,6 +303,7 @@ if st.button("Executar Semantic Shadow Comparator A3", type="primary", disabled=
                 reader_version=READ_PATH_VERSION,
                 comparison=comparison,
                 legacy_adapter_version=LEGACY_ADAPTER_VERSION,
+                semantic_scope_version=SCOPE_BINDING_VERSION,
             )
 
             counts = comparison.classification_counts
@@ -303,6 +318,7 @@ if st.button("Executar Semantic Shadow Comparator A3", type="primary", disabled=
                     "structural_difference": int(counts.get("expected_structural_difference", 0)),
                     "legacy_only_unverified": int(counts.get("legacy_only_unverified", 0)),
                     "domain_only_evidence_led": int(counts.get("domain_only_evidence_led", 0)),
+                    "expected_truth_correction": int(counts.get("expected_truth_correction", 0)),
                     "review_required": comparison.review_required,
                     "semantic_conflict": comparison.semantic_conflicts,
                 }
@@ -319,6 +335,10 @@ if st.button("Executar Semantic Shadow Comparator A3", type="primary", disabled=
                         "domain": item.domain_text,
                         "legacy": item.legacy_text,
                         "legacy_source": item.legacy_source,
+                        "domain_subject": item.domain_subject,
+                        "legacy_subject": item.legacy_subject,
+                        "domain_phase": item.domain_phase,
+                        "legacy_phase": item.legacy_phase,
                         "reason": item.reason,
                     }
                 )
@@ -338,13 +358,13 @@ if st.button("Executar Semantic Shadow Comparator A3", type="primary", disabled=
 
     if errors or conflicts:
         st.error(
-            f"Semantic Shadow Comparator A3: BLOCKED · conflicts={conflicts} · technical_errors={len(errors)}"
+            f"Semantic Shadow Comparator A3.1: BLOCKED · conflicts={conflicts} · technical_errors={len(errors)}"
         )
     elif reviews:
-        st.warning(f"Semantic Shadow Comparator A3: PASS WITH REVIEW · review_required={reviews}")
+        st.warning(f"Semantic Shadow Comparator A3.1: PASS WITH REVIEW · review_required={reviews}")
     else:
         st.success(
-            f"Semantic Shadow Comparator A3: PASS · 8/8 domínios · comparator {COMPARATOR_VERSION}"
+            f"Semantic Shadow Comparator A3.1: PASS · 8/8 domínios · comparator {COMPARATOR_VERSION}"
         )
 
     if errors:
@@ -352,11 +372,12 @@ if st.button("Executar Semantic Shadow Comparator A3", type="primary", disabled=
             st.caption("• " + error)
 
     st.caption(
-        f"Audit scope: {COMPARISON_SCOPE} · Legacy adapter {LEGACY_ADAPTER_VERSION}. "
-        "A3 escreve somente auditoria de observabilidade; não altera Truth, readiness ou read_mode."
+        f"Audit scope: {COMPARISON_SCOPE} · Legacy adapter {LEGACY_ADAPTER_VERSION} · "
+        f"scope binder {SCOPE_BINDING_VERSION}. A3.1 escreve somente auditoria de observabilidade; "
+        "não altera Truth, readiness ou read_mode."
     )
-    st.dataframe(summary, use_container_width=True, hide_index=True)
+    st.dataframe(summary, width="stretch", hide_index=True)
 
     if detail_rows:
         st.markdown("#### Diferenças explicadas / itens para revisão")
-        st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(detail_rows), width="stretch", hide_index=True)
