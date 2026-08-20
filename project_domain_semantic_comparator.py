@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3A3.1 — subject/provenance-aware Semantic Shadow Comparator.
+"""NAVE V28.7.3A3.1.1 — governance-aware Semantic Shadow Comparator.
 
 The comparator explains *why* Legacy and Domain differ. It does not require row
 count parity and never mutates truth/readiness/read_mode.
@@ -11,6 +11,7 @@ Classification vocabulary:
 - expected_structural_difference
 - legacy_only_unverified
 - domain_only_evidence_led
+- governed_feedback_context (explicitly reviewed as feedback, not Current Outcome)
 - semantic_conflict
 - review_required  (fail-closed ambiguity; blocks cutover until reviewed)
 """
@@ -23,7 +24,7 @@ import re
 import unicodedata
 from typing import Any
 
-COMPARATOR_VERSION = "V28.7.3A3.1"
+COMPARATOR_VERSION = "V28.7.3A3.1.1"
 COMPARISON_SCOPE = "v28.7.3a3_1_semantic_scope_compare"
 STRUCTURAL_DOMAINS = {"context", "outcomes", "strategy", "creative", "experience", "journey"}
 CLASSIFICATIONS = {
@@ -33,6 +34,7 @@ CLASSIFICATIONS = {
     "legacy_only_unverified",
     "domain_only_evidence_led",
     "expected_truth_correction",
+    "governed_feedback_context",
     "semantic_conflict",
     "review_required",
 }
@@ -351,6 +353,10 @@ def _legacy_material_feedback(row: Mapping[str, Any]) -> bool:
     return bool(row.get("_semantic_material_feedback"))
 
 
+def _legacy_governed_feedback_context(row: Mapping[str, Any]) -> bool:
+    return bool(row.get("_semantic_governed_feedback_context"))
+
+
 def _legacy_evidence_backed(row: Mapping[str, Any]) -> bool:
     return bool(row.get("_legacy_human_confirmed") or row.get("_semantic_evidence_backed"))
 
@@ -468,6 +474,10 @@ def compare_domain_candidates(
             if domain_key == "outcomes":
                 d_row = domain_rows[d_index]
                 l_row = legacy_rows[l_index]
+                if _legacy_governed_feedback_context(l_row):
+                    # Explicit Human Review recategorized this legacy row as
+                    # feedback context, not as a Current Outcome candidate.
+                    continue
                 d_dim, d_val = _outcome_dimension_value(d_row, legacy=False)
                 l_dim, l_val = _outcome_dimension_value(l_row, legacy=True)
                 # A3.1: categorical dimensions are comparable only for the SAME
@@ -625,7 +635,14 @@ def compare_domain_candidates(
             else _collective_overlap(text, domain_rows, domain_key, legacy_rows=False)
         )
         human_confirmed = bool(row.get("_legacy_human_confirmed"))
-        if domain_key == "outcomes" and _legacy_material_feedback(row):
+        if domain_key == "outcomes" and _legacy_governed_feedback_context(row):
+            classification = "governed_feedback_context"
+            reason = (
+                "explicit Human Review recategorized this legacy item state as governed feedback "
+                "context rather than a Current Outcome; preserve it as learning/recall without "
+                "promoting it into outcome truth"
+            )
+        elif domain_key == "outcomes" and _legacy_material_feedback(row):
             classification = "review_required"
             reason = (
                 "documented client-feedback outcome has no same-subject current Domain counterpart; "

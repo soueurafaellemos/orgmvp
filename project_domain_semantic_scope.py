@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3A3.1 — semantic subject / lifecycle binding for A3.
+"""NAVE V28.7.3A3.1.1 — governance-aware semantic subject / lifecycle binding for A3.
 
 This module is comparator-only infrastructure. It reads Domain identity/occurrence
 rows needed to determine *what subject* an outcome belongs to before the
@@ -12,7 +12,7 @@ It never mutates Truth, readiness, read_mode, Graph or legacy data.
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-SCOPE_BINDING_VERSION = "V28.7.3A3.1"
+SCOPE_BINDING_VERSION = "V28.7.3A3.1.1"
 
 
 class SemanticScopeError(RuntimeError):
@@ -40,12 +40,40 @@ def _read_project_rows(client: Any, table_name: str, project_id: str) -> list[di
         ) from exc
 
 
+def _read_outcome_reviews(
+    client: Any,
+    outcome_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    outcome_ids = [
+        str(row.get("id") or "").strip()
+        for row in outcome_rows
+        if isinstance(row, Mapping) and str(row.get("id") or "").strip()
+    ]
+    if not outcome_ids:
+        return []
+    try:
+        return _rows(
+            client.table("intelligence_reviews")
+            .select("*")
+            .eq("object_type", "outcome")
+            .in_("object_id", outcome_ids)
+            .execute()
+        )
+    except Exception as exc:  # runtime integration path
+        raise SemanticScopeError(
+            f"Semantic scope binding failed reading outcome reviews: {exc}"
+        ) from exc
+
+
 def build_semantic_scope_snapshot(client: Any, project_id: str) -> dict[str, Any]:
-    """Read only the Domain rows required to bind outcome subjects/lifecycle."""
+    """Read Domain scope plus explicit review-led semantic corrections."""
+    outcome_rows = _read_project_rows(client, "entity_outcomes", project_id)
     return {
         "project_id": project_id,
         "solution_instances": _read_project_rows(client, "project_solution_instances", project_id),
         "solution_occurrences": _read_project_rows(client, "project_solution_occurrences", project_id),
+        "entity_outcomes": outcome_rows,
+        "outcome_reviews": _read_outcome_reviews(client, outcome_rows),
         "binding_version": SCOPE_BINDING_VERSION,
     }
 
@@ -87,6 +115,57 @@ def _material_feedback(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _review_is_feedback_context(review: Mapping[str, Any]) -> bool:
+    if str(review.get("decision") or "").strip().casefold() != "correct":
+        return False
+    payload = review.get("corrected_payload") or {}
+    if not isinstance(payload, Mapping):
+        return False
+    semantic_role = str(payload.get("semantic_role") or "").strip().casefold()
+    not_current = payload.get("not_current_outcome")
+    return semantic_role == "feedback_context" and bool(not_current)
+
+
+def _governed_feedback_context_keys(
+    scope_snapshot: Mapping[str, Any],
+) -> set[tuple[str, str]]:
+    """Return (legacy_source_id, outcome_dimension) corrected out of Current Outcome scope."""
+    outcomes = [
+        dict(row)
+        for row in (scope_snapshot.get("entity_outcomes") or [])
+        if isinstance(row, Mapping)
+    ]
+    reviews = [
+        dict(row)
+        for row in (scope_snapshot.get("outcome_reviews") or [])
+        if isinstance(row, Mapping)
+    ]
+    latest_reviews: dict[str, dict[str, Any]] = {}
+    for review in reviews:
+        object_id = str(review.get("object_id") or "").strip()
+        if not object_id:
+            continue
+        created_at = str(review.get("created_at") or "")
+        previous = latest_reviews.get(object_id)
+        if previous is None or created_at >= str(previous.get("created_at") or ""):
+            latest_reviews[object_id] = review
+
+    corrected_ids = {
+        object_id
+        for object_id, review in latest_reviews.items()
+        if _review_is_feedback_context(review)
+    }
+    keys: set[tuple[str, str]] = set()
+    for outcome in outcomes:
+        if str(outcome.get("id") or "").strip() not in corrected_ids:
+            continue
+        legacy_source_id = str(outcome.get("legacy_source_id") or "").strip()
+        dimension = _outcome_dimension(outcome)
+        if legacy_source_id and dimension:
+            keys.add((legacy_source_id, dimension))
+    return keys
+
+
 def bind_semantic_subjects(
     domain_key: str,
     domain_rows: Sequence[Mapping[str, Any]],
@@ -116,6 +195,7 @@ def bind_semantic_subjects(
         for row in (scope_snapshot.get("solution_occurrences") or [])
         if isinstance(row, Mapping)
     ]
+    governed_feedback_keys = _governed_feedback_context_keys(scope_snapshot)
 
     entity_to_solution: dict[str, dict[str, Any]] = {}
     legacy_item_to_entities: dict[str, set[str]] = {}
@@ -250,6 +330,13 @@ def bind_semantic_subjects(
             row["_semantic_subject_key"] = None
             row["_semantic_subject_name"] = None
             row["_semantic_subject_binding"] = "unknown_legacy_outcome_subject"
+
+        item_id = str(row.get("item_id") or "").strip()
+        row["_semantic_governed_feedback_context"] = (
+            source_table == "memory_item_outcomes"
+            and bool(item_id)
+            and (item_id, dimension) in governed_feedback_keys
+        )
 
         material_feedback = _material_feedback(row)
         row["_semantic_material_feedback"] = material_feedback

@@ -31,7 +31,11 @@ class Query:
         return self
 
     def eq(self, key, value):
-        self.filters[key] = value
+        self.filters[key] = ("eq", value)
+        return self
+
+    def in_(self, key, values):
+        self.filters[key] = ("in", set(values))
         return self
 
     def limit(self, value):
@@ -49,8 +53,12 @@ class Query:
             self.client.inserts.append((self.table, dict(self.insert_payload)))
             return Resp([self.insert_payload])
         rows = [dict(row) for row in self.client.tables.get(self.table, [])]
-        for key, value in self.filters.items():
-            rows = [row for row in rows if row.get(key) == value]
+        for key, filter_spec in self.filters.items():
+            op, value = filter_spec
+            if op == "eq":
+                rows = [row for row in rows if row.get(key) == value]
+            elif op == "in":
+                rows = [row for row in rows if row.get(key) in value]
         if self._limit is not None:
             rows = rows[: self._limit]
         return Resp(rows)
@@ -251,9 +259,9 @@ def test_semantic_audit_reuses_existing_audit_sink_and_contains_versions():
     assert table == "project_domain_read_audit"
     assert payload["request_scope"] == "v28.7.3a3_1_semantic_scope_compare"
     assert payload["read_mode"] == "shadow_compare"
-    assert payload["metadata"]["comparator_version"] == "V28.7.3A3.1"
+    assert payload["metadata"]["comparator_version"] == "V28.7.3A3.1.1"
     assert payload["metadata"]["legacy_adapter_version"] == "V28.7.3A3.1"
-    assert payload["metadata"]["semantic_scope_version"] == "V28.7.3A3.1"
+    assert payload["metadata"]["semantic_scope_version"] == "V28.7.3A3.1.1"
 
 
 def test_a3_sources_have_no_golden_hardcode_and_no_cutover_write():
@@ -475,3 +483,163 @@ def test_scope_binder_infers_project_entity_from_project_scoped_dimensions():
     )
     assert all(row["_semantic_subject_key"] == "project:p1" for row in domain_rows)
     assert legacy_rows[0]["_semantic_subject_key"] == "project:p1"
+
+
+def test_governed_feedback_context_is_nonblocking_and_preserved_as_context():
+    result = cmp.compare_domain_candidates(
+        "outcomes",
+        [],
+        [legacy_row(
+            "proposal_status: rejected | feedback transversal",
+            source="memory_item_outcomes",
+            _legacy_outcome_dimension="proposal_status",
+            _legacy_outcome_value="rejected",
+            _semantic_subject_key="solution:s1",
+            _semantic_lifecycle_phase="feedback",
+            _semantic_material_feedback=True,
+            _semantic_governed_feedback_context=True,
+        )],
+        domain_evidence_ready=True,
+    )
+    assert result.semantic_status == "semantic_pass"
+    assert result.review_required == 0
+    assert result.semantic_conflicts == 0
+    assert result.classification_counts["governed_feedback_context"] == 1
+
+
+def test_governed_feedback_context_never_pairs_as_current_outcome():
+    result = cmp.compare_domain_candidates(
+        "outcomes",
+        [{
+            "id": "d1",
+            "outcome_type": "proposal_status",
+            "outcome_status": "proposed",
+            "source_evidence_id": "ev1",
+            "_semantic_subject_key": "solution:s1",
+            "_semantic_lifecycle_phase": "proposal",
+        }],
+        [legacy_row(
+            "proposal_status: rejected | feedback transversal",
+            source="memory_item_outcomes",
+            _legacy_outcome_dimension="proposal_status",
+            _legacy_outcome_value="rejected",
+            _semantic_subject_key="solution:s1",
+            _semantic_lifecycle_phase="feedback",
+            _semantic_material_feedback=True,
+            _semantic_governed_feedback_context=True,
+        )],
+        domain_evidence_ready=False,
+    )
+    assert result.semantic_status == "semantic_pass"
+    assert result.review_required == 0
+    assert result.semantic_conflicts == 0
+    assert result.classification_counts["domain_only_evidence_led"] == 1
+    assert result.classification_counts["governed_feedback_context"] == 1
+
+
+def test_scope_snapshot_reads_only_reviews_for_project_outcomes():
+    client = Client(tables={
+        "project_solution_instances": [],
+        "project_solution_occurrences": [],
+        "entity_outcomes": [
+            {"id": "o1", "project_id": "p1", "legacy_source_id": "m1",
+             "outcome_type": "proposal_status", "outcome_status": "rejected"},
+            {"id": "o2", "project_id": "p2", "legacy_source_id": "m2",
+             "outcome_type": "proposal_status", "outcome_status": "rejected"},
+        ],
+        "intelligence_reviews": [
+            {"id": "r1", "object_type": "outcome", "object_id": "o1", "decision": "correct",
+             "corrected_payload": {"semantic_role": "feedback_context", "not_current_outcome": True}},
+            {"id": "r2", "object_type": "outcome", "object_id": "o2", "decision": "correct",
+             "corrected_payload": {"semantic_role": "feedback_context", "not_current_outcome": True}},
+        ],
+    })
+    snapshot = scope.build_semantic_scope_snapshot(client, "p1")
+    assert [row["id"] for row in snapshot["entity_outcomes"]] == ["o1"]
+    assert [row["id"] for row in snapshot["outcome_reviews"]] == ["r1"]
+
+
+def test_scope_binder_honors_explicit_feedback_context_correction_by_legacy_source():
+    snapshot = {
+        "solution_instances": [{
+            "id": "psi1",
+            "project_id": "p1",
+            "entity_id": "entity1",
+            "name": "Recomendação de creator",
+            "legacy_source_ids": ["m1"],
+            "attributes": {},
+        }],
+        "solution_occurrences": [],
+        "entity_outcomes": [{
+            "id": "o1",
+            "project_id": "p1",
+            "entity_id": "entity1",
+            "legacy_source_id": "m1",
+            "legacy_source_table": "memory_item_outcomes",
+            "outcome_type": "proposal_status",
+            "outcome_status": "rejected",
+            "event_status": "invalidated",
+        }],
+        "outcome_reviews": [{
+            "id": "r1",
+            "object_type": "outcome",
+            "object_id": "o1",
+            "decision": "correct",
+            "corrected_payload": {
+                "semantic_role": "feedback_context",
+                "not_current_outcome": True,
+            },
+        }],
+    }
+    _, legacy_rows = scope.bind_semantic_subjects(
+        "outcomes",
+        [],
+        [{
+            "item_id": "m1",
+            "information_source": "client_feedback",
+            "feedback_summary": "feedback transversal",
+            "_legacy_source_table": "memory_item_outcomes",
+            "_legacy_role": "item_outcome",
+            "_legacy_outcome_dimension": "proposal_status",
+            "_legacy_outcome_value": "rejected",
+            "_legacy_text": "proposal_status: rejected | feedback transversal",
+        }],
+        project_id="p1",
+        scope_snapshot=snapshot,
+    )
+    assert legacy_rows[0]["_semantic_governed_feedback_context"] is True
+    result = cmp.compare_domain_candidates(
+        "outcomes", [], legacy_rows, domain_evidence_ready=True
+    )
+    assert result.semantic_status == "semantic_pass"
+    assert result.classification_counts["governed_feedback_context"] == 1
+
+
+def test_unreviewed_material_feedback_still_fails_closed_after_governance_patch():
+    snapshot = {
+        "solution_instances": [],
+        "solution_occurrences": [],
+        "entity_outcomes": [],
+        "outcome_reviews": [],
+    }
+    _, legacy_rows = scope.bind_semantic_subjects(
+        "outcomes",
+        [],
+        [{
+            "item_id": "m1",
+            "information_source": "client_feedback",
+            "feedback_summary": "feedback material",
+            "_legacy_source_table": "memory_item_outcomes",
+            "_legacy_role": "item_outcome",
+            "_legacy_outcome_dimension": "proposal_status",
+            "_legacy_outcome_value": "rejected",
+            "_legacy_text": "proposal_status: rejected | feedback material",
+        }],
+        project_id="p1",
+        scope_snapshot=snapshot,
+    )
+    result = cmp.compare_domain_candidates(
+        "outcomes", [], legacy_rows, domain_evidence_ready=True
+    )
+    assert result.semantic_status == "semantic_review"
+    assert result.review_required == 1
