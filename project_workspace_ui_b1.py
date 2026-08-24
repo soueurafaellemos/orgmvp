@@ -33,6 +33,7 @@ def _render_domain_requirement_cards(rows: list[dict[str, Any]]) -> None:
         "desirable": "Desejável",
         "context": "Contexto",
         "other": "Outro requisito",
+        "deadline": "Prazo",
     }
     priority_labels = {
         "critical": "Crítica",

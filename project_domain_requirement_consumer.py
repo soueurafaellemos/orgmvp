@@ -21,7 +21,7 @@ from project_domain_consumer_canary import (
 
 DOMAIN_KEY = "requirements"
 CONSUMER_KEY = "workspace.briefing.requirements_readonly"
-CONSUMER_ADAPTER_VERSION = "V28.7.3B1.1"
+CONSUMER_ADAPTER_VERSION = "V28.7.3B1.2.1"
 
 VALID_REQUIREMENT_TYPES = {
     "objective",
@@ -37,6 +37,7 @@ VALID_REQUIREMENT_TYPES = {
     "desirable",
     "context",
     "other",
+    "deadline",
 }
 VALID_PRIORITIES = {"critical", "high", "medium", "low", "not_informed"}
 DOMAIN_TRUTH_STATES = {"verified", "human_confirmed"}

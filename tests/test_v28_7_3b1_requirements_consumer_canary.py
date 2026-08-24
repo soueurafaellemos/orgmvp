@@ -258,3 +258,25 @@ def test_workspace_overlay_replaces_only_briefing_renderer():
     assert "_legacy._render_briefing = _render_briefing_b1" in text
     assert "render_projects_page = _legacy.render_projects_page" in text
     assert "read_requirement_consumer" in text
+
+
+def test_domain_contract_accepts_deadline_requirement_type():
+    rows = adapt_domain_requirements([
+        {
+            "id": "deadline-1",
+            "title": "Entrega do material gravado no dia seguinte do evento",
+            "requirement_type": "deadline",
+            "priority": "not_informed",
+            "truth_state": "verified",
+            "evidence_unit_id": "ev-deadline-1",
+        }
+    ])
+    validate_requirement_contract(rows, expected_source="domain")
+    assert rows[0]["requirement_type"] == "deadline"
+    assert rows[0]["evidence_ref"] == "ev-deadline-1"
+
+
+def test_workspace_overlay_labels_deadline_as_prazo():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "project_workspace_ui_b1.py").read_text(encoding="utf-8")
+    assert '"deadline": "Prazo"' in text
