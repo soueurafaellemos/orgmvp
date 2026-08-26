@@ -75,7 +75,7 @@ with second_row[1]:
 st.divider()
 st.caption("Diagnósticos temporários · V28.7.3")
 
-diagnostic_row = st.columns(3)
+diagnostic_row = st.columns(4)
 
 with diagnostic_row[0]:
     st.page_link(
@@ -98,5 +98,13 @@ with diagnostic_row[2]:
         "pages/17_Requirements_Relational_Consumer_Shadow.py",
         label="Requirements Relational Shadow",
         icon="🧬",
+        width="stretch",
+    )
+
+with diagnostic_row[3]:
+    st.page_link(
+        "pages/18_Unified_Requirements_Reconciliation.py",
+        label="Unified Requirements Reconciliation",
+        icon="🔬",
         width="stretch",
     )
