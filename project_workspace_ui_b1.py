@@ -14,6 +14,7 @@ from supabase import Client
 
 import project_workspace_ui as _legacy
 from project_domain_requirement_consumer import read_requirement_consumer
+from project_workspace_intelligence_b23 import render_project_intelligence_b23
 
 _ORIGINAL_RENDER_BRIEFING = _legacy._render_briefing
 
@@ -200,7 +201,8 @@ def _render_briefing_b1(
         st.caption("Nenhuma demanda Domain current foi materializada.")
 
 
-# Patch only the function referenced by the existing render_projects_page flow.
+# Patch only the two explicitly governed consumer surfaces.
 _legacy._render_briefing = _render_briefing_b1
+_legacy.render_project_intelligence = render_project_intelligence_b23
 render_projects_page = _legacy.render_projects_page
 render_project_workspace = _legacy.render_project_workspace
