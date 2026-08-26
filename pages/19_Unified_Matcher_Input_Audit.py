@@ -22,7 +22,7 @@ enforce_existing_app_access()
 apply_nave_branding()
 page_header(
     "Unified Matcher Input-Shape Audit",
-    "Testa se requirements semanticamente idênticos por título recebem scores diferentes porque o objeto Domain carrega mais texto no matcher. Diagnóstico apenas.",
+    "Repete a auditoria com paridade do adapter B1 e com a fórmula exata de score usada pelo Unified em produção. Diagnóstico apenas.",
     eyebrow=f"NAVE by VOE · {INPUT_SHAPE_AUDIT_VERSION} · read only",
 )
 
@@ -71,11 +71,11 @@ for project_id in project_ids:
 selected = st.selectbox("Projeto", [label for label, _ in projects])
 project_id = dict(projects)[selected]
 
-if st.button("Executar Unified Matcher Input Audit B2.4.1", type="primary"):
+if st.button("Executar Unified Matcher Input Audit B2.4.2", type="primary"):
     try:
         readiness = get_cutover_state(client, project_id, "requirements")
         if readiness.get("read_mode") != "shadow_compare":
-            st.error("B2.4.1 BLOCKED: requirements não está em shadow_compare.")
+            st.error("B2.4.2 BLOCKED: requirements não está em shadow_compare.")
             st.stop()
 
         with st.spinner("Comparando input Legacy e Domain contra a mesma evidência..."):
@@ -86,22 +86,22 @@ if st.button("Executar Unified Matcher Input Audit B2.4.1", type="primary"):
 
         if result.status == "INPUT_SHAPE_CALIBRATION_REQUIRED":
             st.warning(
-                "B2.4.1: INPUT_SHAPE_CALIBRATION_REQUIRED · existe counterpart Domain "
+                "B2.4.2: INPUT_SHAPE_CALIBRATION_REQUIRED · existe counterpart Domain "
                 "com título exatamente igual, mas o score cai abaixo do threshold ao "
                 "usar o input Domain mais rico."
             )
         elif result.status == "IDENTITY_LINEAGE_REVIEW_REQUIRED":
             st.warning(
-                "B2.4.1: IDENTITY_LINEAGE_REVIEW_REQUIRED · existem counterparts por "
+                "B2.4.2: IDENTITY_LINEAGE_REVIEW_REQUIRED · existem counterparts por "
                 "título exato, mas a divergência não é explicada apenas por score dilution."
             )
         elif result.status == "SEMANTIC_SET_REVIEW_REQUIRED":
             st.warning(
-                "B2.4.1: SEMANTIC_SET_REVIEW_REQUIRED · a divergência vem de requirements "
+                "B2.4.2: SEMANTIC_SET_REVIEW_REQUIRED · a divergência vem de requirements "
                 "sem counterpart exato no outro conjunto."
             )
         else:
-            st.success("B2.4.1: PASS")
+            st.success("B2.4.2: PASS")
 
         st.caption(
             "Título exato aqui é apenas diagnóstico. Nenhum alias é criado e nenhum "
@@ -136,11 +136,11 @@ if st.button("Executar Unified Matcher Input Audit B2.4.1", type="primary"):
                 height=min(850, 120 + len(detail) * 40),
             )
             st.download_button(
-                "Baixar B2.4.1 em CSV",
+                "Baixar B2.4.2 em CSV",
                 data=detail.to_csv(index=False).encode("utf-8-sig"),
                 file_name=f"NAVE_B2_4_1_{project_id}.csv",
                 mime="text/csv",
             )
 
     except Exception as exc:
-        st.error(f"B2.4.1 BLOCKED: {type(exc).__name__}: {exc}")
+        st.error(f"B2.4.2 BLOCKED: {type(exc).__name__}: {exc}")

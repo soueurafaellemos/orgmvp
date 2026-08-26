@@ -106,38 +106,25 @@ def _json_attrs(row: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _normalise_domain_requirement(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Use the approved B1 Domain adapter as the canonical shadow shape."""
+    from project_domain_requirement_consumer import adapt_domain_requirements
+
     truth = (_text(row, "truth_state", "verification_state") or "").casefold()
     requirement_id = _text(row, "id", "requirement_id", "resolved_domain_id")
     if not requirement_id or truth not in _CURRENT_TRUTH:
         return None
 
-    attrs = _json_attrs(row)
-    title = _text(
-        row,
-        "title",
-        "requirement_name",
-        "canonical_name",
-        "name",
-        "observed_name",
-        "requirement_text",
-        "statement",
-        "description",
-        "observed_text",
-    ) or "Demanda"
+    adapted_rows = adapt_domain_requirements([row])
+    if not adapted_rows:
+        return None
+    adapted = adapted_rows[0]
 
-    description = (
-        _text(row, "description", "requirement_text", "statement", "observed_text")
-        or _text(attrs, "description", "requirement_text", "statement")
-        or title
-    )
-    source_quote = (
-        _text(row, "source_quote")
-        or _text(attrs, "source_quote")
-        or None
-    )
+    title = str(adapted.get("title") or "").strip() or "Demanda"
+    description = str(adapted.get("description") or "").strip() or title
+    source_quote = str(adapted.get("source_excerpt") or "").strip() or None
 
     return {
-        "id": requirement_id,
+        "id": str(adapted.get("stable_key") or requirement_id),
         "project_id": _text(row, "project_id"),
         "entity_id": _text(row, "entity_id"),
         "legacy_source_id": _text(row, "legacy_source_id"),
@@ -145,15 +132,15 @@ def _normalise_domain_requirement(row: Mapping[str, Any]) -> dict[str, Any] | No
         "description": description,
         "original_text": description,
         "source_quote": source_quote,
-        "requirement_type": _text(row, "requirement_type", "semantic_role") or "other",
-        "mandatory": bool(row.get("mandatory", row.get("is_mandatory", False))),
-        "priority": _text(row, "priority") or "not_informed",
-        # Adherence is relationship state, not Requirement Truth.
+        "requirement_type": str(adapted.get("requirement_type") or "other"),
+        "mandatory": adapted.get("mandatory"),
+        "priority": adapted.get("priority") or "not_informed",
         "adherence_status": "not_assessed",
         "adherence_evidence": None,
         "adherence_notes": None,
-        "truth_state": truth,
+        "truth_state": str(adapted.get("truth_status") or truth),
         "_identity_source": "current_domain_truth",
+        "_domain_adapter_parity": "V28.7.3B2.4.2",
     }
 
 

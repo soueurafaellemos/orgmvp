@@ -29,7 +29,7 @@ from project_requirement_unified_reconciliation import (
 )
 
 
-INPUT_SHAPE_AUDIT_VERSION = "V28.7.3B2.4.1"
+INPUT_SHAPE_AUDIT_VERSION = "V28.7.3B2.4.2"
 MATCH_THRESHOLD = 0.38
 
 
@@ -79,6 +79,21 @@ def _matcher_input(requirement: Mapping[str, Any]) -> str:
     ).strip()
 
 
+def _production_briefing_pair_score(query: str, evidence_text: str) -> float:
+    """Exact pairwise score used by production _briefing_matches."""
+    from project_intelligence_unified import _match_score, _tokens
+
+    score = _match_score(query, evidence_text)
+    rt = _tokens(query)
+    et = _tokens(evidence_text)
+    if rt and et:
+        score = max(
+            score,
+            len(rt & et) / max(1, min(len(rt), 8)) * 0.85,
+        )
+    return min(score, 0.98)
+
+
 def _evidence(match: Mapping[str, Any]) -> Mapping[str, Any]:
     value = match.get("evidence")
     return value if isinstance(value, Mapping) else {}
@@ -119,7 +134,7 @@ def audit_unified_input_shape(
 ) -> UnifiedInputShapeAudit:
     # Import the exact production matcher helpers. This audit must observe the
     # current algorithm rather than reimplementing it differently.
-    from project_intelligence_unified import _match_score, _norm, _tokens
+    from project_intelligence_unified import _norm, _tokens
 
     legacy_idx = _requirement_index(legacy_requirement_rows)
     domain_idx = _requirement_index(domain_requirement_rows)
@@ -169,7 +184,7 @@ def audit_unified_input_shape(
                 "legacy_type": legacy_req.get("requirement_type"),
                 "legacy_score_recorded": legacy_match.get("score"),
                 "legacy_score_same_evidence":
-                    round(_match_score(legacy_input, evidence_text), 4),
+                    round(_production_briefing_pair_score(legacy_input, evidence_text), 4),
                 "legacy_input_chars": len(legacy_input),
                 "legacy_input_tokens": len(_tokens(legacy_input)),
                 "domain_requirement_id": None,
@@ -188,8 +203,8 @@ def audit_unified_input_shape(
         for domain_req in exact_candidates:
             domain_id = str(domain_req.get("id") or "")
             domain_input = _matcher_input(domain_req)
-            domain_same_score = _match_score(domain_input, evidence_text)
-            legacy_same_score = _match_score(legacy_input, evidence_text)
+            domain_same_score = _production_briefing_pair_score(domain_input, evidence_text)
+            legacy_same_score = _production_briefing_pair_score(legacy_input, evidence_text)
 
             if legacy_same_score >= MATCH_THRESHOLD and domain_same_score < MATCH_THRESHOLD:
                 outcome = "EXACT_DOMAIN_TITLE_SCORE_DILUTION"
@@ -264,7 +279,7 @@ def audit_unified_input_shape(
             "domain_truth_state": domain_req.get("truth_state"),
             "domain_score_recorded": domain_match.get("score"),
             "domain_score_same_evidence":
-                round(_match_score(domain_input, evidence_text), 4),
+                round(_production_briefing_pair_score(domain_input, evidence_text), 4),
             "domain_input_chars": len(domain_input),
             "domain_input_tokens": len(_tokens(domain_input)),
             "same_evidence_threshold_result": "DOMAIN_ONLY_CURRENT_MATCH",
