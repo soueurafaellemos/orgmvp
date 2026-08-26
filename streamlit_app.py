@@ -73,10 +73,22 @@ with second_row[1]:
     )
 
 st.divider()
-st.caption("Diagnóstico temporário · V28.7.3A2")
-st.page_link(
-    "pages/15_Domain_Read_Canary.py",
-    label="Domain Read Canary",
-    icon="🧪",
-    width="stretch",
-)
+st.caption("Diagnósticos temporários · V28.7.3")
+
+diagnostic_row = st.columns(2)
+
+with diagnostic_row[0]:
+    st.page_link(
+        "pages/15_Domain_Read_Canary.py",
+        label="Domain Read Canary",
+        icon="🧪",
+        width="stretch",
+    )
+
+with diagnostic_row[1]:
+    st.page_link(
+        "pages/16_Requirement_Identity_Compatibility.py",
+        label="Requirement Identity Compatibility",
+        icon="🔗",
+        width="stretch",
+    )
