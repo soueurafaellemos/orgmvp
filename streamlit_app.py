@@ -75,7 +75,7 @@ with second_row[1]:
 st.divider()
 st.caption("Diagnósticos temporários · V28.7.3")
 
-diagnostic_row = st.columns(4)
+diagnostic_row = st.columns(5)
 
 with diagnostic_row[0]:
     st.page_link(
@@ -108,3 +108,12 @@ with diagnostic_row[3]:
         icon="🔬",
         width="stretch",
     )
+
+
+# B2.4.1 diagnostic link
+st.page_link(
+    "pages/19_Unified_Matcher_Input_Audit.py",
+    label="Unified Matcher Input Audit",
+    icon="🧫",
+    width="stretch",
+)
