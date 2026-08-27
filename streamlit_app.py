@@ -56,3 +56,11 @@ with d3[1]:
     st.page_link("pages/22_Unified_Residual_Evidence_Coverage.py", label="Unified Residual Evidence Coverage", icon="🔎", width="stretch")
 with d3[2]:
     st.page_link("pages/23_Cross_Domain_Residual_Placement.py", label="Cross-Domain Residual Placement", icon="🧭", width="stretch")
+
+
+st.page_link(
+    "pages/24_Semantic_Ownership_Response_Evidence.py",
+    label="Semantic Ownership & Response Evidence",
+    icon="🧠",
+    width="stretch",
+)
