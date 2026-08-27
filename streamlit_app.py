@@ -72,3 +72,11 @@ st.page_link(
     icon="🧪",
     width="stretch",
 )
+
+
+st.page_link(
+    "pages/26_Requirement_Response_Contract.py",
+    label="Requirement Response Contract",
+    icon="✅",
+    width="stretch",
+)
