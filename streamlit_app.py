@@ -49,8 +49,10 @@ with d2[1]:
     st.page_link("pages/19_Unified_Matcher_Input_Audit.py", label="Unified Matcher Input Audit", icon="🧫", width="stretch")
 with d2[2]:
     st.page_link("pages/20_Unified_Semantic_Counterpart_Audit.py", label="Unified Semantic Counterpart Audit", icon="🧭", width="stretch")
-d3 = st.columns(2)
+d3 = st.columns(3)
 with d3[0]:
     st.page_link("pages/21_Unified_Evidence_Role_Shadow.py", label="Unified Evidence Role Shadow", icon="🧪", width="stretch")
 with d3[1]:
     st.page_link("pages/22_Unified_Residual_Evidence_Coverage.py", label="Unified Residual Evidence Coverage", icon="🔎", width="stretch")
+with d3[2]:
+    st.page_link("pages/23_Cross_Domain_Residual_Placement.py", label="Cross-Domain Residual Placement", icon="🧭", width="stretch")
