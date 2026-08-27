@@ -87,3 +87,11 @@ st.page_link(
     icon="🔎",
     width="stretch",
 )
+
+
+st.page_link(
+    "pages/28_Semantic_Recall_Bridge.py",
+    label="Semantic Recall Bridge",
+    icon="🌐",
+    width="stretch",
+)
