@@ -80,3 +80,10 @@ st.page_link(
     icon="✅",
     width="stretch",
 )
+
+st.page_link(
+    "pages/27_Response_Evidence_Recall.py",
+    label="Response Evidence Recall",
+    icon="🔎",
+    width="stretch",
+)
