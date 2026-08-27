@@ -57,7 +57,6 @@ with d3[1]:
 with d3[2]:
     st.page_link("pages/23_Cross_Domain_Residual_Placement.py", label="Cross-Domain Residual Placement", icon="🧭", width="stretch")
 
-
 st.page_link(
     "pages/24_Semantic_Ownership_Response_Evidence.py",
     label="Semantic Ownership & Response Evidence",
@@ -65,14 +64,12 @@ st.page_link(
     width="stretch",
 )
 
-
 st.page_link(
     "pages/25_Response_Entailment_Shadow.py",
     label="Response Entailment Shadow",
     icon="🧪",
     width="stretch",
 )
-
 
 st.page_link(
     "pages/26_Requirement_Response_Contract.py",
@@ -88,10 +85,16 @@ st.page_link(
     width="stretch",
 )
 
-
 st.page_link(
     "pages/28_Semantic_Recall_Bridge.py",
     label="Semantic Recall Bridge",
     icon="🌐",
+    width="stretch",
+)
+
+st.page_link(
+    "pages/29_Requirement_Obligation_Atom_Gate.py",
+    label="Requirement Obligation Atom Gate",
+    icon="🧩",
     width="stretch",
 )
