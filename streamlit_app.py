@@ -64,3 +64,11 @@ st.page_link(
     icon="🧠",
     width="stretch",
 )
+
+
+st.page_link(
+    "pages/25_Response_Entailment_Shadow.py",
+    label="Response Entailment Shadow",
+    icon="🧪",
+    width="stretch",
+)
