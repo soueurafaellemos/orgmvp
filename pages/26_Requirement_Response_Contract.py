@@ -70,11 +70,11 @@ for project_id in project_ids:
 selected = st.selectbox("Projeto", [label for label, _ in projects])
 project_id = dict(projects)[selected]
 
-if st.button("Executar Requirement Response Contract B2.7", type="primary"):
+if st.button("Executar Requirement Response Contract B2.7.1", type="primary"):
     try:
         state = get_cutover_state(client, project_id, "requirements")
         if state.get("read_mode") != "shadow_compare":
-            st.error("B2.7 BLOCKED: requirements não está em shadow_compare.")
+            st.error("B2.7.1 BLOCKED: requirements não está em shadow_compare.")
             st.stop()
 
         briefing_canary = fetch_active_canary(
@@ -91,7 +91,7 @@ if st.button("Executar Requirement Response Contract B2.7", type="primary"):
         )
         if not briefing_canary or not matrix_canary:
             st.error(
-                "B2.7 BLOCKED: briefing/matrix canaries devem permanecer ativos."
+                "B2.7.1 BLOCKED: briefing/matrix canaries devem permanecer ativos."
             )
             st.stop()
 
@@ -103,25 +103,25 @@ if st.button("Executar Requirement Response Contract B2.7", type="primary"):
 
         if result.status == "BLOCKED_CURRENT_RESPONSE_FALSE_POSITIVE":
             st.error(
-                "B2.7: BLOCKED_CURRENT_RESPONSE_FALSE_POSITIVE · a leitura atual "
+                "B2.7.1: BLOCKED_CURRENT_RESPONSE_FALSE_POSITIVE · a leitura atual "
                 "ainda contém pelo menos uma resposta governada sustentada por "
                 "evidência semanticamente incompatível."
             )
         elif result.status == "PASS_WITH_RESPONSE_REVIEW":
             st.warning(
-                "B2.7: PASS_WITH_RESPONSE_REVIEW · não há falso positivo material "
+                "B2.7.1: PASS_WITH_RESPONSE_REVIEW · não há falso positivo material "
                 "confirmado, mas existe evidência/ownership que ainda exige revisão."
             )
         else:
             st.success(
-                "B2.7: PASS_RESPONSE_PRECISION · as respostas atualmente afirmadas "
+                "B2.7.1: PASS_RESPONSE_PRECISION · as respostas atualmente afirmadas "
                 "passam pelo contrato de precisão."
             )
 
         st.caption(
             "IMPORTANTE: `no_verified_response` NÃO significa automaticamente que a "
             "proposta não respondeu. Pode significar que o retrieval ainda não encontrou "
-            "evidência suficiente. B2.7 mede precisão das afirmações atuais, não recall completo."
+            "evidência suficiente. B2.7.1 mede precisão das afirmações atuais, não recall completo."
         )
 
         st.dataframe(
@@ -181,4 +181,4 @@ if st.button("Executar Requirement Response Contract B2.7", type="primary"):
                 mime="text/csv",
             )
     except Exception as exc:
-        st.error(f"B2.7 BLOCKED: {type(exc).__name__}: {exc}")
+        st.error(f"B2.7.1 BLOCKED: {type(exc).__name__}: {exc}")

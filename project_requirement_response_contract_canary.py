@@ -24,7 +24,7 @@ from project_requirement_response_entailment_shadow import (
     run_response_entailment_shadow,
 )
 
-RESPONSE_CONTRACT_VERSION = "V28.7.3B2.7"
+RESPONSE_CONTRACT_VERSION = "V28.7.3B2.7.1"
 
 _VERIFIED = {
     "SUPPORTED_CANONICAL_ANCHORS",
@@ -277,6 +277,31 @@ def build_response_contract_canary(
     )
 
 
+CURRENT_TRUTH_STATES = {"verified", "human_confirmed"}
+
+
+def _only_current_truth_requirements(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Defense-in-depth: B2.7.1 must never project Legacy/historical rows.
+
+    The central Domain Reader already applies this policy for requirements.
+    Keeping the filter here prevents a future reader/view drift from silently
+    inflating the client-facing denominator.
+    """
+    current: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        truth_state = str(
+            row.get("truth_state")
+            or row.get("verification_state")
+            or ""
+        ).casefold()
+        if truth_state in CURRENT_TRUTH_STATES:
+            current.append(row)
+    return current
+
+
 def _rows(response: Any) -> list[dict[str, Any]]:
     return [
         dict(row)
@@ -295,11 +320,27 @@ def run_response_contract_canary(
         project_id=project_id,
     )
 
-    current = _rows(
-        client.table("project_requirement_truth_status")
-        .select("*")
-        .eq("project_id", project_id)
-        .execute()
+    # B2.7 bugfix:
+    # Do NOT query the full Truth Status view directly. That view intentionally
+    # preserves verified + legacy_unverified + historical rows for audit.
+    # The client-facing Current Domain denominator must come from the governed
+    # Domain Reader, whose requirements candidate contains current truth only.
+    from project_domain_reader import read_domain
+
+    shadow = read_domain(
+        client,
+        project_id,
+        "requirements",
+        legacy_loader=lambda: [],
+        audit=False,
+    )
+    if str(shadow.read_mode) != "shadow_compare":
+        raise RuntimeError(
+            f"B2.7.1 BLOCKED: requirements read_mode={shadow.read_mode}"
+        )
+
+    current = _only_current_truth_requirements(
+        shadow.domain_candidate
     )
 
     return build_response_contract_canary(
