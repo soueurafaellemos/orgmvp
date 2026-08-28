@@ -21,7 +21,7 @@ enforce_existing_app_access()
 apply_nave_branding()
 page_header(
     "Requirement Obligation Atom Gate",
-    "Reduz o ruído dos reviews B2.9 verificando cobertura da obrigação completa — combinações, quantidades e qualificadores — sem promover nenhuma resposta.",
+    "B2.10.1: atomiza somente a requirement canônica, rejeita restatements e mede cobertura real da obrigação sem promover nenhuma resposta.",
     eyebrow=f"NAVE by VOE · {OBLIGATION_ATOM_VERSION} · review precision shadow",
 )
 
@@ -69,11 +69,11 @@ for project_id in project_ids:
 selected = st.selectbox("Projeto", [label for label, _ in projects])
 project_id = dict(projects)[selected]
 
-if st.button("Executar Obligation Atom Gate B2.10", type="primary"):
+if st.button("Executar Obligation Atom Gate B2.10.1", type="primary"):
     try:
         state = get_cutover_state(client, project_id, "requirements")
         if state.get("read_mode") != "shadow_compare":
-            st.error("B2.10 BLOCKED: requirements não está em shadow_compare.")
+            st.error("B2.10.1 BLOCKED: requirements não está em shadow_compare.")
             st.stop()
 
         briefing_canary = fetch_active_canary(
@@ -90,13 +90,11 @@ if st.button("Executar Obligation Atom Gate B2.10", type="primary"):
         )
         if not briefing_canary or not matrix_canary:
             st.error(
-                "B2.10 BLOCKED: briefing/matrix requirements canaries devem permanecer ativos."
+                "B2.10.1 BLOCKED: briefing/matrix requirements canaries devem permanecer ativos."
             )
             st.stop()
 
-        with st.spinner(
-            "Decompondo requirements e medindo cobertura das obrigações..."
-        ):
+        with st.spinner("Recalculando cobertura canônica das obrigações..."):
             result = run_obligation_atom_gate(
                 client,
                 project_id=project_id,
@@ -104,29 +102,23 @@ if st.button("Executar Obligation Atom Gate B2.10", type="primary"):
 
         if result.status == "PASS_WITH_STRICT_SAFE_RECALL":
             st.success(
-                "B2.10: PASS_WITH_STRICT_SAFE_RECALL · existe recall estrito preservado. "
-                "Ainda assim, esta página não promove nenhuma resposta."
+                "B2.10.1: PASS_WITH_STRICT_SAFE_RECALL · existe recall estrito preservado; nenhum write foi executado."
             )
         elif result.status == "PASS_WITH_HIGH_CONFIDENCE_REVIEWS":
             st.success(
-                "B2.10: PASS_WITH_HIGH_CONFIDENCE_REVIEWS · o ruído B2.9 foi reduzido "
-                "e há um conjunto pequeno de candidatos de revisão com cobertura forte "
-                "da obrigação completa."
+                "B2.10.1: PASS_WITH_HIGH_CONFIDENCE_REVIEWS · há candidatos pequenos e defensáveis para revisão humana."
             )
         elif result.status == "PASS_WITH_PARTIAL_REVIEWS":
             st.warning(
-                "B2.10: PASS_WITH_PARTIAL_REVIEWS · há apenas cobertura parcial; "
-                "nenhuma resposta deve ser promovida."
+                "B2.10.1: PASS_WITH_PARTIAL_REVIEWS · só há cobertura parcial; nenhuma resposta pode ser promovida."
             )
         else:
             st.info(
-                "B2.10: PASS_NO_ACTIONABLE_RECALL · nenhum candidato sobreviveu "
-                "ao gate de obrigação completa."
+                "B2.10.1: PASS_NO_ACTIONABLE_RECALL · nenhum recall suficientemente defensável sobreviveu."
             )
 
         st.caption(
-            "HIGH_CONFIDENCE continua sendo REVIEW. Quantidade, negação, qualificadores "
-            "e conjunções ausentes impedem promoção. Nenhum write é executado."
+            "Requirement atoms vêm exclusivamente do título canônico. BRIEF RECAP/OUR GOAL não podem gerar review positivo. HIGH_CONFIDENCE continua REVIEW ONLY."
         )
 
         st.dataframe(
@@ -137,6 +129,7 @@ if st.button("Executar Obligation Atom Gate B2.10", type="primary"):
                 "strict_safe_auto_preserved": result.strict_safe_auto_preserved_count,
                 "high_confidence_review": result.high_confidence_review_count,
                 "partial_obligation_coverage": result.partial_obligation_coverage_count,
+                "source_role_rejected": result.source_role_rejected_count,
                 "generic_overlap_rejected": result.generic_overlap_rejected_count,
                 "no_candidate": result.no_candidate_count,
             }]),
@@ -146,7 +139,7 @@ if st.button("Executar Obligation Atom Gate B2.10", type="primary"):
 
         detail = pd.DataFrame(list(result.detail_rows))
         if not detail.empty:
-            st.markdown("#### Review precision por requirement")
+            st.markdown("#### Review precision B2.10.1")
             st.dataframe(
                 detail,
                 hide_index=True,
@@ -154,11 +147,11 @@ if st.button("Executar Obligation Atom Gate B2.10", type="primary"):
                 height=min(1100, 140 + len(detail) * 30),
             )
             st.download_button(
-                "Baixar B2.10 em CSV",
+                "Baixar B2.10.1 em CSV",
                 data=detail.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"NAVE_B2_10_OBLIGATION_ATOMS_{project_id}.csv",
+                file_name=f"NAVE_B2_10_1_OBLIGATION_ATOMS_{project_id}.csv",
                 mime="text/csv",
             )
 
     except Exception as exc:
-        st.error(f"B2.10 BLOCKED: {type(exc).__name__}: {exc}")
+        st.error(f"B2.10.1 BLOCKED: {type(exc).__name__}: {exc}")
