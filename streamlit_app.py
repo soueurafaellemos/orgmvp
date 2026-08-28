@@ -98,3 +98,10 @@ st.page_link(
     icon="🧩",
     width="stretch",
 )
+
+st.page_link(
+    "pages/30_Governed_Response_Recall_Review_Projection.py",
+    label="Governed Response Recall Review Projection",
+    icon="🛡️",
+    width="stretch",
+)
