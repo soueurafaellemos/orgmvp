@@ -105,3 +105,10 @@ st.page_link(
     icon="🛡️",
     width="stretch",
 )
+
+st.page_link(
+    "pages/31_Human_Response_Adjudication_Contract.py",
+    label="Human Response Adjudication Contract",
+    icon="👤",
+    width="stretch",
+)
