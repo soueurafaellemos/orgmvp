@@ -2,9 +2,9 @@
 
 ## Current phase
 
-Latest functional checkpoint: **V28.7.3B2.11 — Governed Response Recall Review Projection**.
+Latest functional checkpoint: **V28.7.3B2.12 — Human Response Adjudication Contract**.
 
-B2.11 is a **read-only projection phase**. It combines the governed response contract from B2.7.1 with calibrated recall from B2.10.1. It does not persist Human Review, alter Truth, change served consumers, or perform cutover.
+B2.12 is a **human review contract and export phase**. It converts B2.11 review rows into explicit human decisions with provenance, but it does **not** persist Human Review, alter Truth, change served consumers, or perform cutover.
 
 ## Completed governed shadow chain
 
@@ -21,69 +21,104 @@ B2.11 is a **read-only projection phase**. It combines the governed response con
 - B2.10 — Obligation Atom Gate Golden run; superseded for precision by B2.10.1
 - B2.10.1 — Canonical requirement-title atom calibration
 - B2.11 — Governed Response Recall Review Projection
+- B2.12 — Human Response Adjudication Contract
 
-## B2.10.1 Golden result accepted for progression
-
-### Chambinho
-
-10 requirements were scanned in recall scope.
-Best disposition per requirement:
-- 1 `HIGH_CONFIDENCE_REVIEW_CANDIDATE`;
-- 2 `PARTIAL_OBLIGATION_COVERAGE`;
-- 7 `NO_CANDIDATE`.
-
-Controls passed:
-- `Item para ser incluído no press kit / Seeding` → high-confidence review;
-- `Promotores e monitores` → partial with promoter missing;
-- `Cobertura de foto e vídeo` → partial with video missing;
-- `Restrição de verba e estrutura` → no candidate;
-- direct cenography payment requirement → no candidate.
+## B2.11 Golden result accepted for B2.12
 
 ### JOVI
 
-75 requirements were scanned in recall scope.
-Best disposition per requirement:
-- 3 `HIGH_CONFIDENCE_REVIEW_CANDIDATE`;
-- 30 `PARTIAL_OBLIGATION_COVERAGE`;
-- 8 `REJECT_SOURCE_ROLE_NON_RESPONSE`;
-- 8 `REJECT_GENERIC_OVERLAP`;
-- 26 `NO_CANDIDATE`.
+B2.11 projected:
+- 75 Current Domain requirements;
+- 0 `verified_response`;
+- 3 `response_review_high_confidence`;
+- 30 `response_review_partial`;
+- 42 `no_safely_verified_response`;
+- 8 source-role rejections;
+- 8 generic-overlap rejections;
+- 0 strict-safe recall candidates;
+- `cutover_approved=false`;
+- `persistence_performed=false`.
 
-The three high-confidence requirements are semantically defensible review candidates:
+High-confidence candidates manually accepted as defensible **review**, not Truth:
 - graphic materials: invitation + Save the Date + Reminder;
 - venue with plenary space;
 - detailed storytelling.
 
-Important negative controls also passed:
-- Gift Out requiring 3+ options remained partial because quantity was missing;
-- registration/no-queue/foreign constraints remained partial;
-- streaming/recording/next-day did not become high-confidence;
-- premium portrait lighting remained partial;
-- movement performance remained partial;
-- satisfaction survey remained partial;
-- generic creative/logistics overlap did not become high-confidence;
-- insights/results/report rejected unrelated agenda overlap;
-- BRIEF RECAP / OUR GOAL candidates became `REJECT_SOURCE_ROLE_NON_RESPONSE`.
+Important negative controls remained conservative:
+- Gift Out requiring 3+ options remained partial because `minqty:3` was missing;
+- registration remained partial with queue-free/foreign/communication qualifiers missing;
+- streaming remained no-safe-response with live/recording/streaming/next-day missing;
+- satisfaction survey remained partial rather than being inferred from gift distribution;
+- insights/results/report rejected irrelevant overlap.
 
-## B2.11 contract
+B2.12 expected editable JOVI queue: **33 rows** = 3 high-confidence + 30 partial.
 
-B2.11 projects one status per Current Domain requirement:
+### Chambinho
 
-- `verified_response`
+B2.11 projected:
+- 13 Current Domain requirements;
+- 3 `verified_response`;
+- 1 `response_review_high_confidence`;
+- 2 `response_review_partial`;
+- 1 `false_positive_excluded`;
+- 6 `no_safely_verified_response`;
+- `cutover_approved=false`;
+- `persistence_performed=false`.
+
+Controls:
+- Press kit / Seeding → high-confidence review;
+- Cobertura de foto e vídeo → partial, video missing;
+- Promotores e monitores → partial, promoter missing;
+- Restrição de verba e estrutura → false positive remains excluded.
+
+B2.12 expected editable Chambinho queue: **3 rows**.
+
+## B2.12 contract
+
+Only B2.11 review statuses enter the editable adjudication queue:
+
 - `response_review_high_confidence`
 - `response_review_visual_or_structured_evidence`
 - `response_review_partial`
 - `response_review_existing_evidence`
-- `false_positive_excluded`
-- `no_safely_verified_response`
 
-Critical governance rule:
+Already-verified responses are not re-adjudicated. `false_positive_excluded` and `no_safely_verified_response` remain visible as non-editable audit context and are not silently promoted into a review queue.
 
-**Only B2.7.1 `verified_response` remains verified.**
+### Allowed explicit human decisions
 
-No B2.10.1 recall result can create Truth. Even `STRICT_SAFE_AUTO_PRESERVED` is projected as review-only in B2.11.
+- `confirm_response` — Confirmar resposta
+- `partial_response` — Resposta parcial
+- `reject_match` — Rejeitar correspondência
+- `visual_structured_review` — Requer revisão visual/estruturada
+- `defer` — Adiar decisão
 
-Cross-domain semantic responses remain preserved separately and are not converted into requirement compliance.
+Nothing is selected by default. The UI placeholder `— Selecione —` is not a decision.
+
+Any explicit decision requires a reviewer identity. Confirm/partial/reject also require a human rationale.
+
+### Provenance
+
+Every B2.12 candidate gets a stable `candidate_id` and exports a frozen snapshot containing:
+- project and requirement identity;
+- canonical requirement title;
+- current Truth state at review time;
+- B2.11 projected status/reason;
+- current response evidence snapshot;
+- recall evidence id/source/page/text;
+- obligation atoms, shared/missing/hard-missing atoms;
+- B2.11, B2.10.1 and B2.7.1 algorithm versions;
+- human decision, rationale, reviewer and timestamp.
+
+Every exported row explicitly contains `truth_effect_applied=false` and `persistence_performed=false`.
+
+### Package states
+
+- `EMPTY_DRAFT`
+- `PARTIAL_DRAFT`
+- `INVALID_DRAFT`
+- `COMPLETE_REVIEW_PACKAGE`
+
+`COMPLETE_REVIEW_PACKAGE` means every review row received an explicit valid human decision. It still does **not** mean Truth changed.
 
 ## Governance freeze
 
@@ -91,8 +126,8 @@ Until a later explicit phase is separately designed and approved:
 
 - do **not** set or activate `domain_primary`;
 - do **not** change the governed `read_mode` from `shadow_compare` for requirements;
-- do **not** treat PASS/PASS_WITH_REVIEW as cutover approval;
-- do **not** persist B2.10.1/B2.11 review candidates as Truth automatically;
+- do **not** treat PASS or COMPLETE_REVIEW_PACKAGE as cutover approval;
+- do **not** persist B2.12 decisions into Truth automatically;
 - do **not** synthesize Human Review from algorithmic review classes;
 - do **not** change active briefing/matrix canaries;
 - do **not** relax matcher thresholds to increase recall;
@@ -103,34 +138,42 @@ Current requirement Truth remains constrained to valid provenance and the Curren
 
 ## Golden run required now
 
-Run `Governed Response Recall Review Projection` for both Golden projects.
+Open `Human Response Adjudication Contract` for both Golden projects.
 
-Expected UI/version marker:
+Expected version marker:
 
-`V28.7.3B2.11`
+`V28.7.3B2.12`
 
-Expected CSV name:
+Expected queue sizes:
+- JOVI: 33
+- Chambinho: 3
 
-`NAVE_B2_11_RESPONSE_RECALL_REVIEW_<project_id>.csv`
+Adjudicate every review row explicitly. Use `defer` where the evidence cannot responsibly support a decision yet. Do not confirm a response merely because B2.11 called it high-confidence.
 
-Export the CSV for Chambinho and JOVI. Inspect every `response_review_high_confidence` row manually before designing persistence.
+Expected exports:
+
+`NAVE_B2_12_HUMAN_ADJUDICATION_<project_id>.csv`
+
+`NAVE_B2_12_HUMAN_ADJUDICATION_<project_id>.json`
+
+Only a `COMPLETE_REVIEW_PACKAGE` should be used as input for designing the next phase.
 
 ## Next phase — not yet implemented
 
-Only after B2.11 Golden outputs are manually reviewed and semantically clean should a separate **Human Review adjudication/persistence contract** be designed.
+After both Golden B2.12 packages are manually reviewed, design a separate **V28.7.3B2.13 — Human Review Truth-Effect Projection**.
 
-That future phase must require explicit human decisions and provenance. It must not convert B2.11 review classes into Truth automatically.
+B2.13 must begin read-only. It may project what effect explicit B2.12 decisions would have on requirement-response Truth, but must not persist those effects until a later separately approved write path exists.
 
 ## Repository files for the current checkpoint
 
+- `project_requirement_human_response_adjudication_contract.py`
+- `pages/31_Human_Response_Adjudication_Contract.py`
+- `tests/test_v28_7_3b2_12_human_response_adjudication_contract.py`
+- `GUIA_NAVE_V28_7_3B2_12_HUMAN_RESPONSE_ADJUDICATION.md`
 - `project_requirement_response_recall_review_projection.py`
 - `pages/30_Governed_Response_Recall_Review_Projection.py`
-- `tests/test_v28_7_3b2_11_response_recall_review_projection.py`
-- `GUIA_NAVE_V28_7_3B2_11_RESPONSE_RECALL_REVIEW_PROJECTION.md`
 - `project_requirement_obligation_atom_gate.py`
 - `pages/29_Requirement_Obligation_Atom_Gate.py`
-- `tests/test_v28_7_3b2_10_1_atom_gate.py`
-- `GUIA_NAVE_V28_7_3B2_10_1_CANONICAL_ATOM_FIX.md`
 - `NAVE_V28_7_3_CURRENT_CHECKPOINT.md`
 
-The Home navigation now points to page 30 for B2.11.
+The Home navigation now points to page 31 for B2.12.
