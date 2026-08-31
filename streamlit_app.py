@@ -121,3 +121,12 @@ st.page_link(
     icon="🤖",
     width="stretch",
 )
+
+# H3.1 is a governed upstream Requirement Truth repair used during Golden validation.
+# It is intentionally separate from the normal import/reconciliation pipeline.
+st.page_link(
+    "pages/33_Requirement_Semantic_Truth_Repair.py",
+    label="Requirement Semantic Truth Repair",
+    icon="🧬",
+    width="stretch",
+)
