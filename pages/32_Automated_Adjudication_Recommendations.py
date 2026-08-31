@@ -22,7 +22,7 @@ apply_nave_branding()
 page_header(
     "Automated Adjudication Recommendations",
     (
-        "B2.12.2 aplica elegibilidade semântica antes da adjudicação, reconstrói a "
+        "B2.12.2.1 corrige a precedência semântica antes da adjudicação, reconstrói a "
         "obrigação canônica a partir da fonte e endurece qualificadores compostos. "
         "Continua machine-only, read-only e sem efeito em Truth."
     ),
@@ -74,16 +74,16 @@ selected = st.selectbox("Projeto", [label for label, _ in projects])
 project_id = dict(projects)[selected]
 
 st.info(
-    "B2.12.2 não usa a fila antiga como verdade. Primeiro remove sinais que a "
+    "B2.12.2.1 não usa a fila antiga como verdade. Primeiro remove sinais que a "
     "reconciliação semântica já classificou como scope/attribute/context/example, "
     "depois recalibra os atoms com a obrigação canônica completa e só então recomenda."
 )
 
-if st.button("Executar hardening automático B2.12.2", type="primary"):
+if st.button("Executar hardening automático B2.12.2.1", type="primary"):
     try:
         state = get_cutover_state(client, project_id, "requirements")
         if state.get("read_mode") != "shadow_compare":
-            st.error("B2.12.2 BLOCKED: requirements não está em shadow_compare.")
+            st.error("B2.12.2.1 BLOCKED: requirements não está em shadow_compare.")
             st.stop()
 
         with st.spinner("Aplicando semantic eligibility + canonical obligation hardening..."):
@@ -94,13 +94,13 @@ if st.button("Executar hardening automático B2.12.2", type="primary"):
 
         if result.status == "BLOCKED_SEMANTIC_ELIGIBILITY_UNKNOWN":
             st.error(
-                "B2.12.2 bloqueou avanço: existem Requirements Current sem uma "
+                "B2.12.2.1 bloqueou avanço: existem Requirements Current sem uma "
                 "classificação semântica explícita suficiente. O relatório pode ser "
                 "exportado para diagnóstico, mas NÃO deve alimentar Truth."
             )
         else:
             st.success(
-                "B2.12.2 concluído. A fila foi semanticamente filtrada e recalibrada "
+                "B2.12.2.1 concluído. A fila foi semanticamente filtrada e recalibrada "
                 "sem intervenção humana linha a linha."
             )
 
@@ -119,6 +119,7 @@ if st.button("Executar hardening automático B2.12.2", type="primary"):
                 "semantic_eligible": result.semantic_eligible_requirement_count,
                 "excluded_no_domain": result.semantic_excluded_no_domain_count,
                 "semantic_unknown": result.semantic_unknown_count,
+                "identity_collisions": result.canonical_identity_collision_count,
                 "queue_count": result.queue_count,
                 "recommend_confirm": result.recommend_confirm_count,
                 "recommend_partial": result.recommend_partial_count,
@@ -159,6 +160,21 @@ if st.button("Executar hardening automático B2.12.2", type="primary"):
                 height=min(900, 180 + len(excluded) * 34),
             )
 
+        collisions = pd.DataFrame(list(result.canonical_identity_collision_rows))
+        if not collisions.empty:
+            st.markdown("#### Colisões de identidade canônica")
+            st.warning(
+                "A mesma obrigação canônica está representada por mais de uma identidade Current. "
+                "O B2.12.2.1 NÃO faz auto-merge. As recomendações podem ser auditadas, mas qualquer "
+                "Truth-effect futuro permanece bloqueado até uma fase explícita de identidade."
+            )
+            st.dataframe(
+                collisions,
+                hide_index=True,
+                width="stretch",
+                height=min(700, 180 + len(collisions) * 46),
+            )
+
         detail = pd.DataFrame(list(result.recommendation_rows))
         if not detail.empty:
             st.markdown("#### Recomendações automáticas semanticamente endurecidas")
@@ -189,23 +205,23 @@ if st.button("Executar hardening automático B2.12.2", type="primary"):
             )
 
             st.download_button(
-                "Baixar B2.12.2 em CSV",
+                "Baixar B2.12.2.1 em CSV",
                 data=detail.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"NAVE_B2_12_2_SEMANTIC_HARDENING_{project_id}.csv",
+                file_name=f"NAVE_B2_12_2_1_SEMANTIC_HARDENING_{project_id}.csv",
                 mime="text/csv",
             )
 
         st.download_button(
-            "Baixar B2.12.2 completo em JSON",
+            "Baixar B2.12.2.1 completo em JSON",
             data=json.dumps(
                 result.to_dict(),
                 ensure_ascii=False,
                 indent=2,
                 default=str,
             ).encode("utf-8"),
-            file_name=f"NAVE_B2_12_2_SEMANTIC_HARDENING_{project_id}.json",
+            file_name=f"NAVE_B2_12_2_1_SEMANTIC_HARDENING_{project_id}.json",
             mime="application/json",
         )
 
     except Exception as exc:
-        st.error(f"B2.12.2 BLOCKED: {type(exc).__name__}: {exc}")
+        st.error(f"B2.12.2.1 BLOCKED: {type(exc).__name__}: {exc}")

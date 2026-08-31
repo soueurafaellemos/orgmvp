@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3B2.12.2 — Requirement semantic eligibility + canonical obligation boundary.
+"""NAVE V28.7.3B2.12.2.1 — Requirement semantic eligibility + precedence veto.
 
 READ ONLY.
 
@@ -20,7 +20,7 @@ from typing import Any, Mapping, Sequence
 import re
 import unicodedata
 
-SEMANTIC_ELIGIBILITY_VERSION = "V28.7.3B2.12.2"
+SEMANTIC_ELIGIBILITY_VERSION = "V28.7.3B2.12.2.1"
 
 ELIGIBLE_SEMANTIC_ROLES = {
     "requirement_candidate",
@@ -131,30 +131,17 @@ def classify_requirement_semantic_eligibility(
     row: Mapping[str, Any],
     observation: Mapping[str, Any] | None = None,
 ) -> tuple[bool, str, str | None]:
-    """Fail closed on explicit no-domain or unresolved semantic identity."""
+    """Fail closed with semantic-precedence rules.
+
+    B2.12.2 Golden JOVI exposed a precedence bug: an eligible-looking newer
+    observation could mask the Requirement Truth row's persisted H3 legacy
+    explanation (for example ``platform_scope`` or ``example_signal``).
+    The H3 no-domain explanation is therefore a hard veto for machine-derived
+    ``verified`` rows. Only an explicit ``human_confirmed`` Requirement Truth
+    may override that machine semantic veto.
+    """
 
     obs = dict(observation or {})
-    role = str(
-        obs.get("semantic_role")
-        or row.get("legacy_explanation_role")
-        or ""
-    ).strip()
-    status = str(
-        obs.get("status")
-        or row.get("legacy_explanation_status")
-        or ""
-    ).strip()
-    action = str(
-        obs.get("resolution_action")
-        or row.get("legacy_explanation_action")
-        or ""
-    ).strip()
-
-    if role in NO_DOMAIN_SEMANTIC_ROLES or status == "no_domain_object" or action in NO_DOMAIN_ACTIONS:
-        return False, "excluded_no_domain_semantic_role", role or None
-
-    if role in ELIGIBLE_SEMANTIC_ROLES:
-        return True, "eligible_explicit_requirement_role", role
 
     truth_state = str(
         row.get("truth_state")
@@ -163,8 +150,36 @@ def classify_requirement_semantic_eligibility(
         or ""
     ).casefold()
 
+    legacy_role = str(row.get("legacy_explanation_role") or "").strip()
+    legacy_status = str(row.get("legacy_explanation_status") or "").strip()
+    legacy_action = str(row.get("legacy_explanation_action") or "").strip()
+
+    legacy_no_domain = (
+        legacy_role in NO_DOMAIN_SEMANTIC_ROLES
+        or legacy_status == "no_domain_object"
+        or legacy_action in NO_DOMAIN_ACTIONS
+    )
+
+    # Human correction is the only allowed override of an H3 machine no-domain
+    # explanation. This preserves the architecture invariant that human
+    # corrections can become learning signals without letting a later machine
+    # observation silently resurrect a pseudo-requirement.
     if truth_state == "human_confirmed":
-        return True, "eligible_human_confirmed_without_no_domain_signal", role or None
+        role = str(obs.get("semantic_role") or legacy_role or "").strip()
+        return True, "eligible_human_confirmed_override", role or None
+
+    if legacy_no_domain:
+        return False, "excluded_legacy_no_domain_veto", legacy_role or None
+
+    role = str(obs.get("semantic_role") or legacy_role or "").strip()
+    status = str(obs.get("status") or legacy_status or "").strip()
+    action = str(obs.get("resolution_action") or legacy_action or "").strip()
+
+    if role in NO_DOMAIN_SEMANTIC_ROLES or status == "no_domain_object" or action in NO_DOMAIN_ACTIONS:
+        return False, "excluded_no_domain_semantic_role", role or None
+
+    if role in ELIGIBLE_SEMANTIC_ROLES:
+        return True, "eligible_explicit_requirement_role", role
 
     return False, "semantic_eligibility_unknown", role or None
 
@@ -397,6 +412,12 @@ def resolve_requirement_semantics(
             "semantic_eligibility_reason": reason,
             "semantic_role_current": role,
             "semantic_observation_id": (obs or {}).get("id"),
+            "selected_observation_semantic_role": (obs or {}).get("semantic_role"),
+            "selected_observation_status": (obs or {}).get("status"),
+            "selected_observation_resolution_action": (obs or {}).get("resolution_action"),
+            "legacy_explanation_role_at_gate": row.get("legacy_explanation_role"),
+            "legacy_explanation_status_at_gate": row.get("legacy_explanation_status"),
+            "legacy_explanation_action_at_gate": row.get("legacy_explanation_action"),
             "canonical_obligation_text": canonical,
             "canonical_obligation_source": canonical_source,
             "canonical_obligation_confidence": round(float(canonical_confidence), 4),
@@ -415,6 +436,11 @@ def resolve_requirement_semantics(
                 "truth_state": row.get("truth_state") or row.get("verification_state"),
                 "semantic_role_current": role,
                 "semantic_observation_id": (obs or {}).get("id"),
+                "selected_observation_semantic_role": (obs or {}).get("semantic_role"),
+                "selected_observation_status": (obs or {}).get("status"),
+                "legacy_explanation_role_at_gate": row.get("legacy_explanation_role"),
+                "legacy_explanation_status_at_gate": row.get("legacy_explanation_status"),
+                "legacy_explanation_action_at_gate": row.get("legacy_explanation_action"),
                 "semantic_eligibility_reason": reason,
                 "canonical_obligation_text": canonical,
             })

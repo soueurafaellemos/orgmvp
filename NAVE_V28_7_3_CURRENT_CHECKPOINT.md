@@ -2,13 +2,16 @@
 
 ## Current phase
 
-Latest functional checkpoint: **V28.7.3B2.12.2 — Semantic Eligibility & Core Obligation Hardening**.
+Latest functional checkpoint: **V28.7.3B2.12.2.1 — Semantic Precedence Veto + Hard Qualifier Hotfix**.
 
-B2.12.1 proved that automatic adjudication can replace row-by-row manual classification, but the JOVI Golden exposed a more fundamental boundary problem: a historical Requirement identity can still appear as Current `verified` because it has Evidence/Occurrence even when C0/H3 has already classified the underlying signal as scope, attribute, context, reference or example.
+B2.12.1 automated the B2.12 review queue without creating Human Review or Truth.
+B2.12.2 added semantic eligibility, canonical obligation reconstruction and locality-aware
+core-obligation guards. Chambinho passed B2.12.2, but the JOVI Golden exposed a
+semantic-precedence defect: a newer eligible-looking observation could mask the H3
+`legacy_explanation_*` no-domain decision, allowing pseudo-requirements such as
+`Storytelling detalhado` to remain Current and receive a machine recommendation.
 
-B2.12.2 therefore hardens the **response-adjudication boundary** without mutating Requirement Truth.
-
-`recommend_confirm` remains **not** `verified_response`, **not** Human Review, has **no Truth effect**, performs **no persistence**, and does **not** approve cutover.
+B2.12.2.1 fixes that defect without database writes or cutover.
 
 ## Completed governed shadow chain
 
@@ -22,152 +25,128 @@ B2.12.2 therefore hardens the **response-adjudication boundary** without mutatin
 - B2.7.1 — Requirement Response Contract denominator correction
 - B2.8 — Response Evidence Recall Shadow
 - B2.9 — Multilingual Semantic Recall Bridge Shadow
-- B2.10 — Obligation Atom Gate Golden run; superseded for precision by B2.10.1
+- B2.10 — Obligation Atom Gate Golden; superseded for precision by B2.10.1
 - B2.10.1 — Canonical requirement-title atom calibration
 - B2.11 — Governed Response Recall Review Projection
 - B2.12 — Human Response Adjudication Contract
 - B2.12.1 — Automated Response Adjudication Recommendations
 - B2.12.2 — Semantic Eligibility & Core Obligation Hardening
+- **B2.12.2.1 — Semantic Precedence Veto + Hard Qualifier Hotfix**
 
-## B2.12.1 Golden finding
+## Golden findings entering B2.12.2.1
 
 ### Chambinho
 
-B2.12.1 was accepted:
-- queue 3;
-- Press kit / Seeding → `recommend_confirm`;
-- Promotores e monitores → `recommend_partial`;
-- Cobertura de foto e vídeo → `recommend_reject`;
-- `Restrição de verba e estrutura` remained excluded.
+B2.12.2 passed:
+- Current before semantic gate: 13
+- Semantic eligible: 13
+- Excluded no-domain: 0
+- Semantic unknown: 0
+- Queue: 3
+- 1 confirm / 1 partial / 1 reject
+- no Human Review, no Truth, no persistence, no cutover.
+
+The three adjudications remained semantically correct:
+- Press kit / Seeding → confirm;
+- Promotores e monitores → partial;
+- Cobertura de foto e vídeo → reject.
+
+`Restrição de verba e estrutura` remained `false_positive_excluded`.
 
 ### JOVI
 
-B2.12.1 was **not** accepted as a Golden checkpoint:
-- input queue 33;
-- 3 `recommend_confirm`;
-- 10 `recommend_partial`;
-- 20 `recommend_reject`.
+B2.12.2 is **NOT approved**.
 
-Critical findings:
-- `Storytelling detalhado` received a false `recommend_confirm` even though the requirement semantic layer had previously defined platform/example/context signals as no-domain;
-- travel product activation was incorrectly left partial from a travel-inspired press kit because a distant `PR activation` token contaminated the evidence window;
-- a food-service mention was treated as partial support for a financial/budget-reduction obligation;
-- physical stage semantics were vulnerable to the idiom `set the stage`;
-- several display titles were truncated and therefore unsafe as the sole canonical atom source.
+Observed:
+- Current before semantic gate: 75
+- Semantic eligible: 75
+- Excluded no-domain: 0
+- Semantic unknown: 0
+- Queue: 35
+- 3 confirm / 8 partial / 24 reject.
 
-## B2.12.2 contract
+Critical regression:
+- `Storytelling detalhado.` remained `requirement_candidate` and received
+  `recommend_confirm`.
 
-### 1. Semantic Eligibility
+This violates the previously approved H3 semantic boundary. H3 explicitly treats
+platform scope, product/audience context and examples as no-domain and the Cross-Golden
+gate forbids Current verified identities such as:
+- Frequentadores de festivais de música
+- Universo da moda e lifestyle
+- Storytelling detalhado
+- Mini show ao vivo
+- Performance com muito movimento
+(and the bare product identity JOVI X300 Ultra).
 
-Response adjudication reuses C0/H3 semantic decisions.
+Other B2.12.2 improvements were validated:
+- truncated obligations were reconstructed from source;
+- travel press kit ≠ travel product activation;
+- food service ≠ budget/cost answer;
+- horizontal format qualifier was recovered;
+- no Human Review/Truth/persistence/cutover occurred.
 
-Explicit no-domain roles are excluded **before** response adjudication:
-- channel/platform/deliverable scope;
-- product/experience attribute;
-- audience/strategy/form context;
-- reference/solution reference;
-- suggestion/example;
-- parameter;
-- constraint qualifier.
+Additional hardening in B2.12.2.1:
+- persisted H3 no-domain explanation has precedence over newer machine observations;
+- plural/hard qualifiers are augmented conservatively;
+- physical stage + LED is relational and fail-closed;
+- market/challenge copy cannot satisfy an experience-capability obligation;
+- specific direct-payment/co-investment/recap-video reasons beat generic financial reasons;
+- exact duplicate canonical obligations are surfaced as identity collisions, never auto-merged.
 
-These rows are not `recommend_reject`; they are not treated as Requirement response questions.
+## Semantic precedence contract
 
-Machine-verified rows with no explicit semantic eligibility fail closed as `semantic_eligibility_unknown`.
+For a Current Requirement row:
 
-### 2. Canonical Obligation
+1. `human_confirmed` may override machine semantic classification.
+2. Otherwise, persisted `legacy_explanation_role/status/action` no-domain is a hard veto.
+3. Only after that may the selected/current semantic observation establish
+   `requirement_candidate` or `constraint_candidate`.
+4. Unresolved semantics fail closed as `semantic_eligibility_unknown`.
 
-B2.12.2 derives `canonical_obligation_text` only from:
-1. `semantic_observation.attributes.source_atom`; or
-2. the matching source clause in the current Evidence Unit attached to that semantic observation.
-
-It does **not** concatenate arbitrary description/source_excerpt text.
-
-The display title remains visible for UX and identity, but does not silently truncate the obligation contract.
-
-### 3. Canonical atom recalibration
-
-B2.9 recall candidates are recalibrated using the full canonical obligation before the review queue is rebuilt.
-
-Therefore the B2.12.2 JOVI queue is **not expected to remain 33**. A lower queue count is desirable when pseudo-requirements are removed or canonical qualifiers make unsafe recall candidates fall out.
-
-### 4. Locality-aware core guards
-
-B2.12.2 adds conservative guards for:
-- financial/budget obligations;
-- travel-themed product activation;
-- physical stage + LED/screen;
-- platform-format qualifiers including horizontal/vertical.
-
-Locality is explicit: an unrelated token elsewhere in a multi-paragraph candidate window cannot satisfy a compound core obligation.
+This prevents a later machine observation from silently resurrecting a pseudo-requirement.
 
 ## Governance freeze
 
-Until a later explicit phase is separately designed and approved:
+Until a later separately designed and approved phase:
 
-- do **not** set or activate `domain_primary`;
-- do **not** change the governed requirements `read_mode` away from `shadow_compare`;
+- do **not** activate `domain_primary`;
+- do **not** move requirements `read_mode` away from `shadow_compare`;
 - do **not** treat PASS or recommendation output as cutover approval;
 - do **not** persist machine recommendations as Human Review;
 - do **not** synthesize Human Review from algorithmic classes;
 - do **not** change active briefing/matrix requirement canaries;
-- do **not** relax matcher thresholds merely to increase recall;
-- do **not** reprocess Golden masters as part of this phase;
+- do **not** relax matcher thresholds to increase recall;
+- do **not** reprocess Golden masters;
 - do **not** auto-merge Requirement identities;
-- do **not** run SQL for B2.12.2.
+- do **not** proceed to Truth-effect while semantic unknowns or canonical identity collisions remain unresolved.
 
 ## Golden run required now
 
-Open **Automated Adjudication Recommendations**.
+After installing B2.12.2.1:
 
-Expected version marker:
+1. Run **Chambinho first** on `Automated Adjudication Recommendations`.
+2. Confirm version `V28.7.3B2.12.2.1`.
+3. Export JSON and validate regression.
+4. Only after Chambinho passes, run **JOVI**.
 
-`V28.7.3B2.12.2`
+JOVI acceptance gates:
+- `semantic_unknown_count = 0`;
+- H3 no-domain pseudo-requirements must be excluded before adjudication;
+- `Storytelling detalhado` must not appear in recommendation queue;
+- `Performance com muito movimento` must not appear in recommendation queue;
+- known core-obligation controls remain conservative;
+- any `canonical_identity_collision_rows` are diagnostic only and block future Truth-effect.
 
-Run order:
-1. Chambinho;
-2. inspect/export JSON;
-3. only after Chambinho review, JOVI.
+`queue_count` is not frozen: semantic correction may legitimately reduce it.
 
-Required package fields include:
-- `current_requirement_count_before_semantic_gate`;
-- `semantic_eligible_requirement_count`;
-- `semantic_excluded_no_domain_count`;
-- `semantic_unknown_count`;
-- `queue_count`;
-- recommendation distribution;
-- `semantic_excluded_rows`;
-- `recommendation_rows`;
-- `projection_rows`.
-
-Any `semantic_unknown_count > 0` yields:
-
-`BLOCKED_SEMANTIC_ELIGIBILITY_UNKNOWN`
-
-and blocks any Truth-effect design.
-
-## Next phase — not yet implemented
-
-No B2.13 is approved.
-
-Only after both B2.12.2 Goldens are accepted should the next read-only Truth-effect projection be designed. That later phase must explicitly preserve the distinction among:
-- Requirement semantic eligibility;
-- requirement Truth;
-- response evidence;
-- machine recommendation;
-- optional Human Review;
-- persisted response Truth.
-
-## Repository files for the current checkpoint
+## Repository files for this checkpoint
 
 - `project_requirement_semantic_eligibility.py`
 - `project_requirement_auto_adjudication_hardening.py`
 - `pages/32_Automated_Adjudication_Recommendations.py`
 - `tests/test_v28_7_3b2_12_2_semantic_hardening.py`
-- `GUIA_NAVE_V28_7_3B2_12_2_SEMANTIC_HARDENING.md`
-- `project_requirement_auto_adjudication_recommendation.py` — B2.12.1 base scorer retained
-- `project_requirement_semantic_recall_bridge.py`
-- `project_requirement_obligation_atom_gate.py`
-- `project_requirement_response_contract_canary.py`
+- `GUIA_NAVE_V28_7_3B2_12_2_1_SEMANTIC_PRECEDENCE_HOTFIX.md`
 - `NAVE_V28_7_3_CURRENT_CHECKPOINT.md`
 
-The existing Home navigation continues to point to page 32; page 32 now exposes B2.12.2.
+No SQL is required.

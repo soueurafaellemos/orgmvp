@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3B2.12.2 — Semantic Eligibility & Core Obligation Hardening.
+"""NAVE V28.7.3B2.12.2.1 — Semantic Precedence + Core Obligation Hotfix.
 
 READ ONLY / shadow only.
 
-B2.12.2 is a governed hardening boundary over the B2 response chain. It does four
+B2.12.2.1 is a governed hotfix over the B2.12.2 response hardening chain. It does four
 things before any future Truth-effect phase may be designed:
 
 1) removes semantically ineligible/no-domain Requirement identities from response
@@ -40,7 +40,7 @@ from project_requirement_semantic_eligibility import (
     resolve_requirement_semantics,
 )
 
-SEMANTIC_HARDENING_VERSION = "V28.7.3B2.12.2"
+SEMANTIC_HARDENING_VERSION = "V28.7.3B2.12.2.1"
 
 RECOMMEND_CONFIRM = "recommend_confirm"
 RECOMMEND_PARTIAL = "recommend_partial"
@@ -64,6 +64,7 @@ class SemanticHardenedAdjudication:
     semantic_eligible_requirement_count: int
     semantic_excluded_no_domain_count: int
     semantic_unknown_count: int
+    canonical_identity_collision_count: int
     queue_count: int
     recommend_confirm_count: int
     recommend_partial_count: int
@@ -72,6 +73,7 @@ class SemanticHardenedAdjudication:
     recommend_defer_count: int
     recommendation_rows: tuple[dict[str, Any], ...]
     semantic_excluded_rows: tuple[dict[str, Any], ...]
+    canonical_identity_collision_rows: tuple[dict[str, Any], ...]
     projection_rows: tuple[dict[str, Any], ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,6 +85,7 @@ class SemanticHardenedAdjudication:
             "semantic_eligible_requirement_count": self.semantic_eligible_requirement_count,
             "semantic_excluded_no_domain_count": self.semantic_excluded_no_domain_count,
             "semantic_unknown_count": self.semantic_unknown_count,
+            "canonical_identity_collision_count": self.canonical_identity_collision_count,
             "queue_count": self.queue_count,
             "recommend_confirm_count": self.recommend_confirm_count,
             "recommend_partial_count": self.recommend_partial_count,
@@ -96,6 +99,7 @@ class SemanticHardenedAdjudication:
             "cutover_approved": False,
             "recommendation_rows": list(self.recommendation_rows),
             "semantic_excluded_rows": list(self.semantic_excluded_rows),
+            "canonical_identity_collision_rows": list(self.canonical_identity_collision_rows),
             "projection_rows": list(self.projection_rows),
         }
 
@@ -124,6 +128,105 @@ def _segments(text: str) -> list[str]:
             part = re.sub(r"\s+", " ", part).strip(" \t•·-")
             if part:
                 out.append(part)
+    return out
+
+
+
+_ATOM_ALIASES: dict[str, tuple[str, ...]] = {
+    "budget": (
+        "orcamento", "orçamento", "budget", "verba", "custo", "custos",
+        "cost", "costs", "cotacao", "cotação", "quotation", "price", "preco", "preço",
+    ),
+    "vegan": ("vegano", "vegana", "veganos", "veganas", "vegan"),
+    "vegetarian": (
+        "vegetariano", "vegetariana", "vegetarianos", "vegetarianas", "vegetarian",
+    ),
+    "bilingual": ("bilingue", "bilíngue", "bilingues", "bilíngues", "bilingual"),
+    "direct_payment": (
+        "pagamento direto", "pagamento será realizado diretamente",
+        "pagamento sera realizado diretamente", "pago diretamente", "pagos diretamente",
+        "paid directly", "direct payment",
+    ),
+    "co_investment": (
+        "co-investimento", "co investimento", "co-investment", "co investment",
+        "patrocinio", "patrocínio", "sponsorship", "compartilhamento de verba",
+        "shared investment",
+    ),
+    "recap_video": (
+        "video memoria", "vídeo memória", "video resumo", "vídeo resumo",
+        "aftermovie", "event recap", "recap video", "summary video", "highlight video",
+    ),
+    "horizontal": ("horizontal",),
+    "vertical": ("vertical",),
+    "professional_quality": (
+        "nivel profissional", "nível profissional", "professional quality",
+        "professional-quality",
+    ),
+    "ease": ("com facilidade", "facilidade", "easily", "easy to"),
+}
+
+_AUGMENTED_HARD_ATOMS = {
+    "vegan", "vegetarian", "bilingual", "direct_payment", "co_investment",
+    "recap_video", "horizontal", "vertical",
+}
+
+
+def _atom_set(value: Any) -> set[str]:
+    return {
+        part.strip()
+        for part in str(value or "").split("|")
+        if part.strip()
+    }
+
+
+def _explicit_atoms(text: str) -> set[str]:
+    atoms: set[str] = set()
+    for atom, aliases in _ATOM_ALIASES.items():
+        if _contains_any(text, aliases):
+            atoms.add(atom)
+    n = f" {_norm(text)} "
+    for match in re.finditer(r"\b(\d+)\s*(?:ou mais|or more|\+)", n):
+        atoms.add(f"minqty:{match.group(1)}")
+    return atoms
+
+
+def _augment_calibrated_atoms(
+    canonical_obligation_text: str,
+    candidate_text: str,
+    calibrated: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Add explicit hard qualifiers missed by the older B2.10.1 morphology.
+
+    This hotfix may only make a candidate *more conservative*. It never upgrades
+    the B2.10.1 class solely because a new alias was recognized.
+    """
+    out = dict(calibrated)
+    req = _atom_set(out.get("requirement_atoms")) | _explicit_atoms(canonical_obligation_text)
+    cand = _atom_set(out.get("candidate_atoms")) | _explicit_atoms(candidate_text)
+    shared = req & cand
+    missing = req - cand
+    hard_missing = {
+        atom for atom in missing
+        if atom in _AUGMENTED_HARD_ATOMS or atom.startswith("minqty:")
+    }
+    coverage = len(shared) / len(req) if req else 0.0
+
+    cls = str(out.get("b210_class") or "NO_CANDIDATE")
+    if hard_missing and cls in {
+        "STRICT_SAFE_AUTO_PRESERVED",
+        "HIGH_CONFIDENCE_REVIEW_CANDIDATE",
+    }:
+        cls = "PARTIAL_OBLIGATION_COVERAGE"
+
+    out.update({
+        "b210_class": cls,
+        "obligation_atom_coverage": round(coverage, 4),
+        "requirement_atoms": " | ".join(sorted(req)),
+        "candidate_atoms": " | ".join(sorted(cand)),
+        "shared_atoms": " | ".join(sorted(shared)),
+        "missing_atoms": " | ".join(sorted(missing)),
+        "missing_hard_atoms": " | ".join(sorted(hard_missing)),
+    })
     return out
 
 
@@ -239,16 +342,53 @@ def _core_obligation_guard(
         if not local_pair:
             if stage_any or screen_any:
                 return (
-                    RECOMMEND_PARTIAL,
-                    0.97,
+                    RECOMMEND_REJECT,
+                    0.98,
                     "physical_stage_led_not_jointly_supported",
-                    "Há menção isolada a palco ou tela/LED, mas a estrutura física de palco + LED exigida não está comprovada no mesmo contexto.",
+                    "Palco + LED é uma obrigação relacional; menções isoladas a palco ou tela não constituem resposta parcial suficiente.",
                 )
             return (
                 RECOMMEND_REJECT,
                 0.98,
                 "missing_core_physical_stage_led",
                 "A evidência não comprova uma estrutura física de palco com LED/tela; usos idiomáticos como 'set the stage' são ignorados.",
+            )
+
+    # ------------------------------------------------------------------
+    # Experience-demonstrates-capability obligations: market/challenge copy is not
+    # implementation evidence. The response must connect an experiential action to
+    # the requested product/camera capability in a local segment.
+    # ------------------------------------------------------------------
+    capability_req = (
+        _contains_any(requirement, (
+            "experiencia deve demonstrar", "experiência deve demonstrar",
+            "demonstrar como", "beneficios reais", "benefícios reais",
+            "nivel profissional", "nível profissional", "professional quality",
+        ))
+        and _contains_any(requirement, ("produto", "product", "smartphone", "camera", "câmera"))
+    )
+    if capability_req:
+        experience_terms = (
+            "ativacao", "ativação", "activation", "experiencia", "experiência",
+            "experience", "hands-on", "hands on", "test", "teste", "testar",
+            "installation", "instalacao", "instalação", "guests", "convidados",
+        )
+        capability_terms = (
+            "capability", "capabilities", "benefit", "benefits", "camera",
+            "câmera", "professional quality", "professional-quality",
+            "high quality", "qualidade", "zoom", "night mode", "low-light",
+            "stabil", "motion", "movimento", "zeiss",
+        )
+        local_capability_response = any(
+            _contains_any(seg, experience_terms) and _contains_any(seg, capability_terms)
+            for seg in segments
+        )
+        if not local_capability_response:
+            return (
+                RECOMMEND_REJECT,
+                0.98,
+                "missing_core_experience_capability_relation",
+                "A requirement exige demonstrar uma capacidade do produto por meio da experiência; contexto de mercado/challenge não comprova essa implementação.",
             )
 
     # ------------------------------------------------------------------
@@ -321,23 +461,32 @@ def harden_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
     canonical = str(original.get("canonical_obligation_text") or display_title)
     evidence = str(original.get("evidence_text") or original.get("recall_candidate_text") or "")
 
-    guard = _core_obligation_guard(canonical, evidence)
-    if guard is not None:
-        rec, conf, rule, rationale = guard
-        result = dict(original)
-        result.update({
-            "machine_recommendation": rec,
-            "machine_confidence": round(float(conf), 4),
-            "machine_rule_id": rule,
-            "machine_rationale": rationale,
-        })
-    else:
-        # Reuse the proven B2.12.1 scorer, but feed it the full canonical obligation
-        # instead of a potentially truncated display title.
-        scorer_row = dict(original)
-        scorer_row["requirement_title"] = canonical
-        result = _b2121_recommend_candidate(scorer_row)
-        result["requirement_title"] = display_title
+    # First obtain the B2.12.1 semantic-specific disposition using the full canonical
+    # obligation. This preserves precise reasons such as direct payment, co-investment
+    # and recap-video instead of masking them with a generic "financial" guard.
+    scorer_row = dict(original)
+    scorer_row["requirement_title"] = canonical
+    base = _b2121_recommend_candidate(scorer_row)
+    base["requirement_title"] = display_title
+
+    custom = _core_obligation_guard(canonical, evidence)
+    result = dict(base)
+    if custom is not None:
+        rec, conf, rule, rationale = custom
+        base_rule = str(base.get("machine_rule_id") or "")
+        specific_base_rules = {
+            "missing_core_direct_payment",
+            "missing_core_coinvestment",
+            "missing_core_recap_video",
+        }
+        # Generic finance should never hide a more specific governed semantic failure.
+        if not (rule == "missing_core_financial_obligation" and base_rule in specific_base_rules):
+            result.update({
+                "machine_recommendation": rec,
+                "machine_confidence": round(float(conf), 4),
+                "machine_rule_id": rule,
+                "machine_rationale": rationale,
+            })
 
     result["canonical_obligation_text"] = canonical
     result["adjudicator_type"] = "machine_rule_engine_semantic_hardening"
@@ -393,6 +542,11 @@ def _best_canonical_recall(
         classified: list[dict[str, Any]] = []
         for candidate in candidates:
             calibrated = _classify_obligation_candidate(canonical, candidate)
+            calibrated = _augment_calibrated_atoms(
+                canonical,
+                str(candidate.get("evidence_text") or candidate.get("window_text") or ""),
+                calibrated,
+            )
             out = {
                 "requirement_id": rid,
                 "canonical_obligation_text": canonical,
@@ -527,8 +681,8 @@ def _queue_from_projection(
             "shared_atoms": row.get("recall_shared_atoms"),
             "missing_atoms": row.get("recall_missing_atoms"),
             "missing_hard_atoms": row.get("recall_missing_hard_atoms"),
-            "source_projection_version": "V28.7.3B2.11/B2.12.2 projection",
-            "source_atom_gate_version": "V28.7.3B2.10.2 canonical recalibration",
+            "source_projection_version": "V28.7.3B2.11/B2.12.2.1 projection",
+            "source_atom_gate_version": "V28.7.3B2.10.2.1 canonical+hard-qualifier recalibration",
             "source_response_contract_version": "V28.7.3B2.7.1",
         }
         snapshot["candidate_id"] = _stable_candidate_id(project_id, {
@@ -546,6 +700,39 @@ def _queue_from_projection(
         )
     )
     return queue
+
+
+def _canonical_identity_collisions(
+    eligible_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for raw in eligible_rows:
+        row = dict(raw)
+        canonical = str(row.get("canonical_obligation_text") or "")
+        key = _norm(canonical)
+        rid = str(row.get("id") or row.get("requirement_id") or "")
+        if key and rid:
+            groups.setdefault(key, []).append(row)
+
+    collisions: list[dict[str, Any]] = []
+    for key, rows in groups.items():
+        ids = sorted({str(row.get("id") or row.get("requirement_id") or "") for row in rows})
+        if len(ids) <= 1:
+            continue
+        collisions.append({
+            "canonical_obligation_key": key,
+            "canonical_obligation_text": str(rows[0].get("canonical_obligation_text") or ""),
+            "requirement_ids": ids,
+            "requirement_titles": [
+                str(row.get("title") or row.get("requirement_name") or row.get("canonical_name") or "")
+                for row in rows
+            ],
+            "collision_type": "same_canonical_obligation_multiple_current_identities",
+            "truth_effect_blocked": True,
+            "auto_merge_performed": False,
+        })
+    collisions.sort(key=lambda row: row["canonical_obligation_key"])
+    return collisions
 
 
 def build_semantic_hardened_adjudication(
@@ -569,6 +756,7 @@ def build_semantic_hardened_adjudication(
         projection_rows=projection,
     )
     recommendations = [harden_candidate(row) for row in queue]
+    collisions = _canonical_identity_collisions(semantics.eligible_rows)
 
     counts = {
         RECOMMEND_CONFIRM: 0,
@@ -594,6 +782,8 @@ def build_semantic_hardened_adjudication(
     status = (
         "BLOCKED_SEMANTIC_ELIGIBILITY_UNKNOWN"
         if semantics.unknown_count
+        else "PASS_SEMANTIC_HARDENING_WITH_IDENTITY_COLLISIONS"
+        if collisions
         else "PASS_SEMANTIC_HARDENING_READY"
     )
 
@@ -604,6 +794,7 @@ def build_semantic_hardened_adjudication(
         semantic_eligible_requirement_count=semantics.eligible_count,
         semantic_excluded_no_domain_count=semantics.excluded_no_domain_count,
         semantic_unknown_count=semantics.unknown_count,
+        canonical_identity_collision_count=len(collisions),
         queue_count=len(recommendations),
         recommend_confirm_count=counts[RECOMMEND_CONFIRM],
         recommend_partial_count=counts[RECOMMEND_PARTIAL],
@@ -612,6 +803,7 @@ def build_semantic_hardened_adjudication(
         recommend_defer_count=counts[RECOMMEND_DEFER],
         recommendation_rows=tuple(recommendations),
         semantic_excluded_rows=tuple(semantics.excluded_rows),
+        canonical_identity_collision_rows=tuple(collisions),
         projection_rows=tuple(projection),
     )
 
@@ -621,7 +813,7 @@ def run_semantic_hardened_adjudication(
     *,
     project_id: str,
 ) -> SemanticHardenedAdjudication:
-    """Run B2.12.2 without writes or cutover side effects."""
+    """Run B2.12.2.1 without writes or cutover side effects."""
 
     from project_domain_reader import read_domain
 
@@ -634,7 +826,7 @@ def run_semantic_hardened_adjudication(
     )
     if str(domain.read_mode) != "shadow_compare":
         raise RuntimeError(
-            f"B2.12.2 BLOCKED: requirements read_mode={domain.read_mode}"
+            f"B2.12.2.1 BLOCKED: requirements read_mode={domain.read_mode}"
         )
 
     semantics = resolve_requirement_semantics(
