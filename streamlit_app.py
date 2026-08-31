@@ -112,3 +112,12 @@ st.page_link(
     icon="👤",
     width="stretch",
 )
+
+# B2.12.1 is the default operational path. B2.12 above remains available only
+# as an optional/manual provenance audit mechanism.
+st.page_link(
+    "pages/32_Automated_Adjudication_Recommendations.py",
+    label="Automated Adjudication Recommendations",
+    icon="🤖",
+    width="stretch",
+)
