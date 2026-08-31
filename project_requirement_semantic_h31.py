@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.4H3.1 — Cross-unit structural context repair.
+"""NAVE V28.7.2C0.2.4H3.1.1 — Cross-unit structural context repair.
 
 READ/CLASSIFY helper used by Requirement Reconciliation before persistence.
 
@@ -20,7 +20,7 @@ import re
 
 import project_requirement_semantic_extractor as h3
 
-H31_VERSION = "V28.7.2C0.2.4H3.1"
+H31_VERSION = "V28.7.2C0.2.4H3.1.1"
 
 _NO_DOMAIN_SECTION_MAP: dict[str, tuple[str, str]] = {
     "audience_context": ("audience_context", "context"),
@@ -52,6 +52,49 @@ def _is_example_container(raw: str) -> bool:
         or norm.endswith("dynamic environment such as")
         or norm.endswith("such as")
     )
+
+
+
+# Generic briefing/document section labels that may be extracted without terminal
+# punctuation. They are structural brakes: a child after a new section must never
+# inherit an older audience/platform/example parent merely because the heading lost ":".
+_SECTION_BOUNDARY_RE = re.compile(
+    r"^(?:"
+    r"objetivo(?:s)?(?:\s+e\s+desafio)?|"
+    r"resultado(?:s)?\s+esperado(?:s)?|"
+    r"entregaveis?|deliverables?|"
+    r"obrigatoriedades?|mandatory|mandatorios?|"
+    r"inputs?\s+(?:da|de)\s+area\s+de\s+negocio|"
+    r"financeiro|financial|budget|orcamento|"
+    r"apresentacao|presentation|"
+    r"informacoes?\s+logisticas?|logistica|logistics|"
+    r"cronograma|timing|"
+    r"publico\s+alvo|target\s+audience|"
+    r"adequacao\s+a\s+plataforma|platform\s+fit|platform\s+adequacy|"
+    r"foco\s+do\s+produto|product\s+focus|"
+    r"destaques|product\s+highlights"
+    r")$"
+)
+
+
+def _is_section_boundary(raw: str) -> bool:
+    """Return True for a compact structural heading, even when ':' was lost.
+
+    This is intentionally narrower than "all caps": decks and briefings often style
+    ordinary bullets in uppercase. We only use H3's own heading detector plus a small
+    client-agnostic vocabulary of common briefing section labels.
+    """
+    value = str(raw or "").strip()
+    norm = h3._norm(value)
+    if not norm or len(norm.split()) > 12:
+        return False
+    if h3._direct_obligation(value):
+        return False
+    if h3._is_heading_only(value):
+        return True
+    if value.endswith(":") and len(norm.split()) <= 9:
+        return True
+    return bool(_SECTION_BOUNDARY_RE.fullmatch(norm))
 
 
 def cross_unit_section_role(
@@ -163,9 +206,10 @@ def cross_unit_section_role(
                 return "example_signal"
             return "requirement_parent"
 
-        # Stop inheritance when a newer compact section heading sits between the old
-        # structural parent and the current bullet.
-        if raw.endswith(":") and len(norm.split()) <= 9 and j < hit - 1:
+        # H3.1.1: stop stale inheritance at a newer section heading even when the
+        # parser/formatting removed the terminal colon. This is deliberately checked
+        # only AFTER semantic/requirement parents above have had a chance to return.
+        if _is_section_boundary(raw) and j < hit:
             break
 
     return None
@@ -332,6 +376,7 @@ def collect_project_requirement_observations_h31(
         "semantic_extractor_version": H31_VERSION,
         "h31_cross_unit_structural_overrides": overrides,
         "h31_human_confirmed_preserved": len(human_confirmed),
+        "h31_section_boundary_guard": True,
     })
 
     extraction["observations"] = observations

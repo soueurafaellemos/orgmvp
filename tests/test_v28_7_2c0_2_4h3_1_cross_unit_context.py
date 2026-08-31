@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from project_requirement_semantic_h31 import cross_unit_section_role, _surrounding_by_evidence_h31
+from project_requirement_semantic_h31 import cross_unit_section_role, _surrounding_by_evidence_h31, _is_section_boundary
 
 
 def test_cross_unit_audience_fragment_is_context():
@@ -111,3 +111,42 @@ def test_h31_surrounding_window_reaches_fourth_previous_unit():
     context = _surrounding_by_evidence_h31(source, {"asset"})["target"]
     assert context.startswith("A proposta deve estar fortemente conectada")
     assert "Fotógrafos;" in context
+
+
+def test_unpunctuated_objective_section_stops_stale_audience_inheritance():
+    role = cross_unit_section_role(
+        "Objetivo principal",
+        "Objetivo principal: O projeto consiste em criarmos o espaço patrocinado pela marca.",
+        "PUBLICO ALVO:\nMães e pais entre 30 e 45 anos\nCrianças de 2 a 12 anos\nOBJETIVO E DESAFIO",
+    )
+    assert role is None
+
+
+def test_unpunctuated_deliverables_heading_stops_stale_platform_inheritance():
+    role = cross_unit_section_role(
+        "Cobertura de foto e vídeo",
+        "Cobertura de foto e vídeo",
+        "Adequação à Plataforma - O YouTube é o ambiente ideal para:\n"
+        "Storytelling detalhado.\n"
+        "ENTREGAVEIS",
+    )
+    assert role is None
+
+
+def test_common_briefing_heading_without_colon_is_section_boundary():
+    assert _is_section_boundary("OBJETIVO E DESAFIO") is True
+    assert _is_section_boundary("RESULTADO ESPERADO") is True
+    assert _is_section_boundary("ENTREGAVEIS") is True
+
+
+def test_uppercase_bullet_is_not_a_boundary_by_style_alone():
+    assert _is_section_boundary("MINI SHOW AO VIVO") is False
+
+
+def test_explicit_requirement_parent_still_wins_before_boundary_guard():
+    role = cross_unit_section_role(
+        "Iluminação premium para retratos.",
+        "Iluminação premium para retratos.",
+        "Público-Alvo:\nCriadores de conteúdo\nA ativação deve explorar:",
+    )
+    assert role == "requirement_parent"

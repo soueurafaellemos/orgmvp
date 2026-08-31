@@ -2,172 +2,119 @@
 
 ## Current recovery phase
 
-Active corrective checkpoint: **V28.7.2C0.2.4H3.1 — Cross-Unit Structural Context & Golden Verifier Repair**.
+Active corrective checkpoint:
+**V28.7.2C0.2.4H3.1.1 — Cross-Unit Section Boundary Guard**.
 
-The downstream B2 chain remains preserved through **V28.7.3B2.12.2.1**, but JOVI is
-blocked from B2.13 because B2.12.2.1 exposed an upstream Requirement Truth regression.
+The downstream B2 chain remains preserved through
+**V28.7.3B2.12.2.1**, but JOVI remains blocked from B2.13 while Requirement Truth is
+revalidated upstream.
 
-## Why H3.1 reopened the upstream layer
+## Why H3.1.1 exists
 
-JOVI B2.12.2.1 returned:
+JOVI B2.12.2.1 exposed an upstream H3 false-green: audience/platform/example fragments
+such as `Storytelling detalhado.` remained Current Requirements.
 
-- Current Requirements before semantic gate: 75
-- Semantic eligible: 75
-- Semantic no-domain excluded: 0
-- Semantic unknown: 0
-- canonical identity collisions: 1
-- recommendation queue: 35
-- 3 confirm / 5 partial / 27 reject
+H3.1 repaired the cross-Evidence-Unit blind spot and the punctuation-vulnerable Golden
+verifier. Its first Chambinho Golden then revealed a second structural edge case:
 
-`Storytelling detalhado.` remained a Current `requirement_candidate` and received
-`recommend_confirm`. `Performance com muito movimento;`, `Mini show ao vivo;`,
-`Frequentadores de festivais de música;` and `Universo da moda e lifestyle.` also
-remained Current Requirement identities.
+- run completed;
+- semantic gate passed;
+- 16 observations;
+- 2 no-domain;
+- 1 cross-unit override;
+- 0 blockers;
+- 0 new requirements;
+- but `Objetivo principal` was incorrectly classified as `audience_context`.
 
-The response adjudicator was no longer the root cause.
+The source structure is:
 
-### Root cause 1 — cross-Evidence-Unit structural blind spot
+`PUBLICO ALVO:` → audience rows → `OBJETIVO E DESAFIO` → `Objetivo principal: ...`
 
-H3 legacy recall found a nominal bullet inside the current Evidence Unit and therefore
-never considered the immediately preceding Evidence Units that carried its semantic
-parent. This allowed audience/platform/example children to fall through to legacy
-Requirement fallbacks.
+`OBJETIVO E DESAFIO` was extracted without terminal `:`. H3.1's stale-parent brake only
+recognized compact headings ending in `:`, so the lookback crossed the new section and
+reached the older audience parent.
 
-### Root cause 2 — false-green Golden verifier
+A technical PASS therefore did not qualify as Golden approval.
 
-The H3 verifier compared `lower(trim(title))` with punctuation-free regression strings.
-Terminal `.` / `;` therefore allowed forbidden Current Requirements to escape the gate.
+## H3.1.1 architecture
 
-H3.1 repairs both at the upstream Requirement reconciliation boundary.
+`project_requirement_semantic_h31.py` keeps the H3.1 bounded cross-unit lookback but adds
+a client-agnostic section-boundary guard:
 
-## H3.1 architecture
+- reuse H3 heading detection;
+- recognize common briefing/document section labels even without terminal punctuation;
+- do NOT use all-caps alone as a boundary signal;
+- known semantic parents still win;
+- explicit requirement parents still win;
+- only then does a nearer section boundary stop inheritance from older context;
+- human-confirmed Requirement Truth remains protected;
+- Evidence-first output remains untouched.
 
-- `project_requirement_semantic_h31.py`
-  - reuses H3 collection;
-  - repairs only legacy-recall cross-unit structural parent semantics;
-  - does not reclassify Evidence-first output;
-  - explicit obligations are not demoted;
-  - human-confirmed Requirement Truth is preserved;
-  - failure to inspect human-confirmed Truth blocks the run.
+Expected Chambinho semantic roles:
 
-- `project_requirement_reconciliation_h31.py`
-  - reuses H3 planner + installed C0.2.4 RPC;
-  - stamps H3.1 provenance on the bundle/run/materialized new objects;
-  - no auto-merge of existing Requirement identities.
+- `Público-alvo` → `audience_context`;
+- `Objetivo principal` → `strategy_context`, not `audience_context`.
 
-- normal `project_intelligence_pipeline.py` remains unchanged during Golden validation;
-  H3.1 is invoked only from the explicit governed repair page.
+The total no-domain count may remain 2. The correction is about semantic placement, not
+forcing a different count.
 
-- `pages/33_Requirement_Semantic_Truth_Repair.py`
-  - explicit governed UI for the H3.1 repair;
-  - requires requirements `shadow_compare`;
-  - no master reprocessing.
+## Golden verifier
 
-- `NAVE_V28_7_2C0_2_4H3_1_VERIFY_GOLDEN_JOVI.sql`
-  - read-only;
-  - terminal-punctuation normalization;
-  - positive role proofs for the known cross-unit regression controls.
+`NAVE_V28_7_2C0_2_4H3_1_1_VERIFY_GOLDEN_JOVI.sql` remains READ-ONLY and preserves
+terminal-punctuation normalization. It must not be run until Chambinho passes H3.1.1 and
+JOVI is explicitly released.
 
-## Downstream B2 chain preserved
+## Pipeline isolation
 
-Completed/implemented shadow chain remains:
+During Golden validation:
 
-- B2.1 — Requirement Identity Compatibility
-- B2.2 — Relational Consumer Shadow
-- B2.3 — Matrix requirements canary projection
-- B2.4 / B2.4.x — Unified requirement reconciliation/input/semantic/evidence-role/residual audits
-- B2.4.6 — Cross-Domain Residual Placement
-- B2.5 — Semantic Ownership & Response Evidence Shadow
-- B2.6 — Response Entailment Shadow
-- B2.7.1 — Requirement Response Contract denominator correction
-- B2.8 — Response Evidence Recall Shadow
-- B2.9 — Multilingual Semantic Recall Bridge Shadow
-- B2.10 / B2.10.1 — Obligation Atom Gate calibration
-- B2.11 — Governed Response Recall Review Projection
-- B2.12 — Human Response Adjudication Contract
-- B2.12.1 — Automated Response Adjudication Recommendations
-- B2.12.2 — Semantic Eligibility & Core Obligation Hardening
-- B2.12.2.1 — Semantic Precedence Veto + Hard Qualifier Hotfix
+- normal `project_intelligence_pipeline.py` remains unchanged;
+- H3.1.1 runs only from `pages/33_Requirement_Semantic_Truth_Repair.py`;
+- no master reprocessing;
+- no Solution Reconciliation A rerun;
+- no Core Semantic Domains B rerun;
+- no Graph V28.6 rebuild;
+- no domain_primary;
+- no canary change;
+- requirements stay `shadow_compare`.
 
-B2.12.2.1 itself remains useful and its core guards were validated. It is **not** being
-rolled back. It will be rerun only after H3.1 repairs Requirement Truth.
+## Downstream chain preserved
 
-## B2.12.2.1 findings that remain valid
+- B2.1 Requirement Identity Compatibility
+- B2.2 Relational Consumer Shadow
+- B2.3 Matrix requirements canary projection
+- B2.4/B2.4.x Unified requirement audits
+- B2.4.6 Cross-Domain Residual Placement
+- B2.5 Semantic Ownership & Response Evidence Shadow
+- B2.6 Response Entailment Shadow
+- B2.7.1 Requirement Response Contract
+- B2.8 Response Evidence Recall
+- B2.9 Semantic Recall Bridge
+- B2.10.1 canonical obligation atom calibration
+- B2.11 Governed Response Recall Review Projection
+- B2.12 Human Response Adjudication Contract
+- B2.12.1 Automated Response Adjudication Recommendations
+- B2.12.2 Semantic Eligibility & Core Obligation Hardening
+- B2.12.2.1 Semantic Precedence Veto + Hard Qualifier Hotfix
 
-JOVI confirmed correct downstream hardening for:
+No B2.13 / Truth-effect is approved.
 
-- travel press kit ≠ travel product activation;
-- food service ≠ financial/budget response;
-- direct payment qualifier;
-- bilingual promoters;
-- co-investment;
-- recap video + horizontal/vertical formats;
-- source-bounded complete canonical obligation text;
-- market/challenge copy ≠ experience implementation evidence;
-- physical stage + LED as a relational obligation;
-- platform-format qualifier;
-- canonical co-investment identity collision surfaced without auto-merge.
+## Golden run required now
 
-The co-investment collision remains a blocker for any future Truth-effect phase and must
-not be auto-merged.
+1. Deploy H3.1.1 files.
+2. Reboot.
+3. Open Requirement Semantic Truth Repair.
+4. Confirm `V28.7.2C0.2.4H3.1.1`.
+5. Run Festivalzinho Chambinho once.
+6. Export H3.1.1 JSON.
+7. Verify semantics before any JOVI run.
 
-## Governance freeze
+Chambinho acceptance is semantic, not numeric:
+- gate pass and zero blockers;
+- `Público-alvo=audience_context`;
+- `Objetivo principal=strategy_context`;
+- no stale `cross_unit_parent` override on `Objetivo principal`;
+- no unexpected new requirements;
+- no A/B/Graph/cutover/canary side effects.
 
-Until H3.1 + downstream rerun are separately approved:
-
-- do **not** activate `domain_primary`;
-- keep requirements `read_mode = shadow_compare`;
-- do **not** alter active briefing/matrix canaries;
-- do **not** persist machine recommendations as Human Review;
-- do **not** synthesize Human Review from machine classes;
-- do **not** reprocess Golden masters;
-- do **not** reconstruct Graph V28.6;
-- do **not** auto-merge Requirement identities;
-- do **not** advance to B2.13;
-- do **not** treat PASS status alone as Golden approval.
-
-## Required validation sequence
-
-1. Deploy H3.1 code + reboot. Normal imports/pipeline remain H3 during this validation phase.
-2. Run **Chambinho H3.1 first** from `Requirement Semantic Truth Repair` (the only H3.1 caller).
-3. Export/send H3.1 JSON and verify no regression.
-4. Only after approval, run **JOVI H3.1**.
-5. Run the new JOVI H3.1 read-only verifier and send JSON + CSV.
-6. If H3.1 passes both Goldens, rerun B2.12.2.1 on Chambinho then JOVI.
-7. Only then redesign/consider B2.13.
-
-## H3.1 JOVI acceptance intent
-
-The verifier must prove, rather than infer from aggregate counts, that:
-
-- `Frequentadores de festivais de música` → audience context / no-domain;
-- `Universo da moda e lifestyle` → audience context / no-domain;
-- `Storytelling detalhado` → platform scope / no-domain;
-- `Mini show ao vivo` → example / no-domain;
-- `Performance com muito movimento` → example / no-domain;
-- none of these survives as Current verified/human-confirmed Requirement Truth in the Golden;
-- bare model guard and H3 identity isolation remain intact;
-- semantic gate remains fail-closed with zero blockers;
-- A/B regressions remain intact;
-- Graph V28.6 remains frozen;
-- no existing-existing auto-merge occurs.
-
-Current Requirement cardinality is **not frozen**. Correct semantic exclusions may
-legitimately reduce the JOVI Current denominator.
-
-## Patch files
-
-Add:
-- `project_requirement_semantic_h31.py`
-- `project_requirement_reconciliation_h31.py`
-- `pages/33_Requirement_Semantic_Truth_Repair.py`
-- `tests/test_v28_7_2c0_2_4h3_1_cross_unit_context.py`
-- `NAVE_V28_7_2C0_2_4H3_1_VERIFY_GOLDEN_JOVI.sql`
-- `GUIA_NAVE_V28_7_2C0_2_4H3_1_CROSS_UNIT_STRUCTURAL_CONTEXT.md`
-
-Replace:
-- `NAVE_V28_7_3_CURRENT_CHECKPOINT.md`
-
-Migration SQL: **NO**.
-Verifier SQL: **READ ONLY**.
-Reboot: **YES**.
+No SQL migration is required.
