@@ -151,21 +151,15 @@ if not queue.queue_rows:
     st.stop()
 
 st.markdown("#### Fila para decisão humana")
+st.info(
+    "As DUAS PRIMEIRAS COLUNAS são as únicas que você precisa preencher: "
+    "**Decisão humana** e **Justificativa humana**. Os 3 high-confidence aparecem primeiro. "
+    "Você pode decidir apenas alguns itens e validar um PARTIAL_DRAFT antes de continuar."
+)
 st.caption(
     "Decisões permitidas: Confirmar resposta, Resposta parcial, Rejeitar correspondência, "
     "Requer revisão visual/estruturada ou Adiar decisão. Confirmar, parcial ou rejeitar exige justificativa humana."
 )
-
-base = pd.DataFrame(list(queue.queue_rows))
-editor = pd.DataFrame({
-    "candidate_id": base["candidate_id"],
-    "requirement": base["requirement_title"],
-    "status_b2_11": base["projected_response_status"],
-    "evidencia": base["evidence_locator"].fillna(""),
-    "texto_evidencia": base["evidence_text"].fillna(""),
-    "decisao": [DECISION_LABELS_PT[""]] * len(base),
-    "justificativa_humana": [""] * len(base),
-})
 
 reviewer = st.text_input(
     "Revisor",
@@ -174,60 +168,91 @@ reviewer = st.text_input(
     help="Obrigatório quando houver qualquer decisão explícita.",
 )
 
+base = pd.DataFrame(list(queue.queue_rows))
+
+def _preview(value: object, limit: int = 700) -> str:
+    text = str(value or "").strip()
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+editor = pd.DataFrame({
+    "decisao": [DECISION_LABELS_PT[""]] * len(base),
+    "justificativa_humana": [""] * len(base),
+    "requirement": base["requirement_title"],
+    "status_b2_11": base["projected_response_status"],
+    "evidencia": base["evidence_locator"].fillna(""),
+    "texto_evidencia": base["evidence_text"].fillna("").map(_preview),
+    "candidate_id": base["candidate_id"],
+})
+
 edited = st.data_editor(
     editor,
     hide_index=True,
     width="stretch",
     height=min(900, 170 + len(editor) * 48),
     disabled=[
-        "candidate_id",
         "requirement",
         "status_b2_11",
         "evidencia",
         "texto_evidencia",
+        "candidate_id",
     ],
     column_config={
-        "candidate_id": st.column_config.TextColumn("Candidate ID"),
-        "requirement": st.column_config.TextColumn("Requirement", width="large"),
-        "status_b2_11": st.column_config.TextColumn("Status B2.11"),
-        "evidencia": st.column_config.TextColumn("Localizador"),
-        "texto_evidencia": st.column_config.TextColumn("Evidência", width="large"),
         "decisao": st.column_config.SelectboxColumn(
             "Decisão humana",
             options=list(DECISION_LABELS_PT.values()),
             required=True,
             width="medium",
+            help="Selecione uma decisão explícita. A opção — Selecione — não conta como decisão.",
         ),
         "justificativa_humana": st.column_config.TextColumn(
             "Justificativa humana",
             width="large",
+            help="Obrigatória para Confirmar resposta, Resposta parcial e Rejeitar correspondência.",
         ),
+        "requirement": st.column_config.TextColumn("Requirement", width="large"),
+        "status_b2_11": st.column_config.TextColumn("Status B2.11", width="medium"),
+        "evidencia": st.column_config.TextColumn("Localizador", width="small"),
+        "texto_evidencia": st.column_config.TextColumn("Evidência · preview", width="large"),
+        "candidate_id": st.column_config.TextColumn("Candidate ID", width="small"),
     },
     key=f"b212_editor::{project_id}",
 )
 
 if st.button("Validar pacote de adjudicação", type="secondary"):
-    edited_rows = []
-    source_by_id = {str(row["candidate_id"]): dict(row) for row in queue.queue_rows}
-    for row in edited.to_dict(orient="records"):
-        cid = str(row.get("candidate_id") or "")
-        source = source_by_id.get(cid)
-        if not source:
-            continue
-        label = str(row.get("decisao") or "")
-        edited_rows.append({
-            **source,
-            "decision": LABEL_TO_DECISION.get(label, ""),
-            "human_rationale": str(row.get("justificativa_humana") or ""),
-        })
+    selected_labels = [
+        str(row.get("decisao") or "")
+        for row in edited.to_dict(orient="records")
+        if LABEL_TO_DECISION.get(str(row.get("decisao") or ""), "")
+    ]
 
-    package = build_human_adjudication_package(
-        queue=queue,
-        reviewer=reviewer,
-        edited_rows=edited_rows,
-        adjudicated_at_utc=datetime.now(timezone.utc).isoformat(),
-    )
-    st.session_state[package_key] = package
+    if not selected_labels:
+        st.session_state.pop(package_key, None)
+        st.warning(
+            "Nenhuma decisão humana foi selecionada. Escolha pelo menos uma opção na primeira coluna "
+            "`Decisão humana` antes de validar."
+        )
+    else:
+        edited_rows = []
+        source_by_id = {str(row["candidate_id"]): dict(row) for row in queue.queue_rows}
+        for row in edited.to_dict(orient="records"):
+            cid = str(row.get("candidate_id") or "")
+            source = source_by_id.get(cid)
+            if not source:
+                continue
+            label = str(row.get("decisao") or "")
+            edited_rows.append({
+                **source,
+                "decision": LABEL_TO_DECISION.get(label, ""),
+                "human_rationale": str(row.get("justificativa_humana") or ""),
+            })
+
+        package = build_human_adjudication_package(
+            queue=queue,
+            reviewer=reviewer,
+            edited_rows=edited_rows,
+            adjudicated_at_utc=datetime.now(timezone.utc).isoformat(),
+        )
+        st.session_state[package_key] = package
 
 package = st.session_state.get(package_key)
 if package is not None:
