@@ -2,74 +2,73 @@
 
 ## Current recovery phase
 
-Active corrective checkpoint:
+Upstream Requirement Truth semantic repair is Golden-closed through:
 **V28.7.2C0.2.4H3.1.3 — Structural Refinement Precedence**.
 
-The downstream B2 chain remains preserved through **V28.7.3B2.12.2.1**, but B2.13 / Truth-effect remains blocked while Requirement Truth semantics are revalidated upstream.
+Cross-Golden status:
+- Festivalzinho Chambinho H3.1.3: GOLDEN APPROVED.
+- JOVI H3.1.3: GOLDEN APPROVED.
+- H3.1.3 JOVI verifier: all checks PASS after verifier-only PostgreSQL argument-limit hotfix.
 
-## Why H3.1.x was reopened
+Active downstream corrective checkpoint:
+**V28.7.3B2.12.2.2 — Completeness Quantifier Guard**.
 
-JOVI B2.12.2.1 exposed pseudo-requirements such as `Storytelling detalhado` and `Performance com muito movimento` in Current Requirement Truth. The old H3 Golden had a verifier false-green because terminal punctuation was not normalized, and the semantic extractor could not see a structural parent across Evidence Unit boundaries.
+B2.13 / any Truth-effect remains blocked.
 
-### H3.1
-Added cross-unit structural lookback and normalized Golden verification.
+## Why B2.12.2.2 exists
 
-### H3.1.1
-Chambinho exposed stale inheritance across an unpunctuated new section (`OBJETIVO E DESAFIO`). Added Section Boundary Guard.
+After H3.1.3 removed pseudo-requirements upstream, JOVI B2.12.2.1 improved from:
+- 75 Current → 70 Current;
+- queue 35 → 33;
+- confirms 3 → 2;
+and the false `Storytelling detalhado` confirm disappeared.
 
-### H3.1.2
-JOVI then exposed two false demotions: a real local creative directive inherited old `platform_scope`, and an activation heading already recognized as `solution_reference` was retyped from preceding product context. Added Local Directive Guard and broad base-H3 semantic precedence.
+Line-by-line review still found one unsafe confirm:
 
-### H3.1.3 finding
-The broad H3.1.2 precedence was too conservative. It preserved several **contextual H3 base mistakes**, including:
-- `Kit de lentes teleobjetivas destacáveis` as `audience_context` instead of `product_attribute`;
-- `Conteúdo de longa duração` / `Reviews técnicos aprofundados` as `audience_context` instead of `platform_scope`;
-- `Curadoria visual impecável` / `Conteúdo aspiracional` as `audience_context` instead of `platform_scope`.
+`Materiais Gráficos: ... convite, STD, Reminder e todo o material proposto no projeto.`
 
-These rows were still no-domain, so Truth inclusion was improved, but semantic role integrity was not yet Golden-quality.
+The response evidence explicitly contains Save the Date, Online invitation and Reminder, but it
+does not prove the open-set completeness clause `todo o material proposto no projeto`.
 
-## H3.1.3 architecture
+B2.12.2.1 atomization represented only the named assets and therefore reported 100% atom coverage.
+That is not sufficient for a future Truth-effect.
 
-`project_requirement_semantic_h31.py` now uses **tiered semantic precedence**:
+## B2.12.2.2 architecture
 
-1. Human-confirmed Requirement Truth remains protected.
-2. Local directives (`Direcionamento criativo:`, `Creative Direction:` etc.) remain Requirements and cannot inherit an older semantic parent.
-3. Intrinsic/self-contained H3 roles are preserved: `solution_reference`, `reference_signal`, `suggestion_signal`, `example_signal`, `parameter_signal`, `constraint_qualifier`, `form_prompt`.
-4. Context-sensitive roles remain structurally refinable: `requirement_candidate`, `constraint_candidate`, `audience_context`, `product_attribute`, `platform_scope`, `strategy_context`, `channel_scope`.
-5. If cross-unit context does not yield a known parent, H3 output is preserved.
+B2.12.2.2 is a conservative wrapper over B2.12.2.1:
+- executes the already read-only B2.12.2.1 chain;
+- never promotes any recommendation;
+- only downgrades `recommend_confirm` → `recommend_partial` when an explicit
+  completeness/universal quantifier is not proven by the response evidence;
+- preserves semantic eligibility, canonical obligation, locality guards and identity collision audit;
+- re-versions candidate IDs;
+- exports the source B2.12.2.1 candidate ID for provenance.
 
-This keeps the Instagram activation heading as `solution_reference`, keeps the Instagram creative directive as Requirement, and allows nearer `Foco do Produto` / `Adequação à Plataforma` parents to correct contextual H3 mistakes.
+Covered completeness patterns include source-bounded forms such as:
+- todo/todos/todas + material/peça/item;
+- todos os convidados / all guests / every guest;
+- todo o kit / kit completo / all accessories;
+- integralmente / por completo / entirely / in full.
 
-## Golden verifier
+Evidence must contain an explicit completeness marker in a compatible local semantic segment.
+Merely covering the named atoms does not prove an open set.
 
-`NAVE_V28_7_2C0_2_4H3_1_3_VERIFY_GOLDEN_JOVI.sql` is READ-ONLY.
+## Governance
 
-Beyond the previous punctuation-normalized forbidden-title checks, it now verifies semantic **role integrity** for source-bounded siblings:
-- YouTube product-focus children → `product_attribute`;
-- YouTube platform-fit children → `platform_scope`;
-- Instagram platform-fit children → `platform_scope`;
-- Instagram local creative directive → Current reconciled Requirement;
-- Instagram activation heading → `solution_reference` no-domain.
-
-A Golden cannot pass merely because a pseudo-requirement is no-domain; the no-domain role itself must match the source structure.
-
-## Pipeline isolation
-
-During Golden validation:
-- normal `project_intelligence_pipeline.py` remains unchanged;
-- H3.1.3 runs only from `pages/33_Requirement_Semantic_Truth_Repair.py`;
-- no master reprocessing;
-- no Solution Reconciliation A rerun;
-- no Core Semantic Domains B rerun;
-- no Graph V28.6 rebuild;
-- no `domain_primary`;
+Still frozen:
+- requirements read_mode = shadow_compare;
+- no domain_primary;
 - no canary change;
-- requirements remain `shadow_compare`;
-- no auto-merge;
 - no Human Review synthesis;
-- no B2 Truth-effect.
+- no response persistence;
+- no Truth effect;
+- no cutover;
+- no auto-merge of canonical identity collisions;
+- no master reprocessing.
 
-## Downstream chain preserved
+The known JOVI co-investment canonical collision remains diagnostic and blocks future Truth-effect.
+
+## Downstream chain
 
 - B2.1 Requirement Identity Compatibility
 - B2.2 Relational Consumer Shadow
@@ -87,16 +86,17 @@ During Golden validation:
 - B2.12.1 Automated Response Adjudication Recommendations
 - B2.12.2 Semantic Eligibility & Core Obligation Hardening
 - B2.12.2.1 Semantic Precedence Veto + Hard Qualifier Hotfix
+- B2.12.2.2 Completeness Quantifier Guard
 
-## Golden run required now
+## Golden expected now
 
-1. Deploy H3.1.3 files.
+Regression order:
+1. Deploy B2.12.2.2.
 2. Reboot.
-3. Open Requirement Semantic Truth Repair.
-4. Confirm `V28.7.2C0.2.4H3.1.3`.
-5. Run Festivalzinho Chambinho once.
-6. Export H3.1.3 JSON and review before JOVI.
-7. If Chambinho passes, run JOVI H3.1.3 and export JSON.
-8. Only after preliminary JSON approval, run the H3.1.3 JOVI verifier READ-ONLY.
-
-No SQL migration is required.
+3. Run Festivalzinho Chambinho first.
+4. Expected Chambinho baseline remains 1 confirm / 1 partial / 1 reject and zero completeness downgrades.
+5. If approved, run JOVI.
+6. JOVI should remain 70 Current / 70 eligible / 0 excluded / 0 unknown / 1 identity collision / queue 33.
+7. The former `Materiais Gráficos` confirm should downgrade to partial.
+8. `Espaço para plenária` should remain the only confirm unless new evidence legitimately changes.
+9. No SQL migration is required.

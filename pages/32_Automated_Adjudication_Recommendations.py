@@ -7,7 +7,7 @@ import streamlit as st
 from branding import NAVE_APP_ICON, apply_nave_branding, page_header
 from nave_data_client import enforce_existing_app_access, get_nave_client
 from project_domain_reader import get_cutover_state
-from project_requirement_auto_adjudication_hardening import (
+from project_requirement_auto_adjudication_completeness import (
     SEMANTIC_HARDENING_VERSION,
     run_semantic_hardened_adjudication,
 )
@@ -22,11 +22,12 @@ apply_nave_branding()
 page_header(
     "Automated Adjudication Recommendations",
     (
-        "B2.12.2.1 corrige a precedência semântica antes da adjudicação, reconstrói a "
-        "obrigação canônica a partir da fonte e endurece qualificadores compostos. "
+        "B2.12.2.2 preserva o semantic/core hardening anterior e adiciona um guard "
+        "de completude: quantificadores como todo/todos/todas/integralmente/all/entire "
+        "não podem desaparecer na atomização e gerar falso recommend_confirm. "
         "Continua machine-only, read-only e sem efeito em Truth."
     ),
-    eyebrow=f"NAVE by VOE · {SEMANTIC_HARDENING_VERSION} · semantic hardening shadow",
+    eyebrow=f"NAVE by VOE · {SEMANTIC_HARDENING_VERSION} · completeness hardening shadow",
 )
 
 client = get_nave_client()
@@ -74,19 +75,19 @@ selected = st.selectbox("Projeto", [label for label, _ in projects])
 project_id = dict(projects)[selected]
 
 st.info(
-    "B2.12.2.1 não usa a fila antiga como verdade. Primeiro remove sinais que a "
-    "reconciliação semântica já classificou como scope/attribute/context/example, "
-    "depois recalibra os atoms com a obrigação canônica completa e só então recomenda."
+    "B2.12.2.2 primeiro executa o B2.12.2.1 sem writes. Depois aplica somente um "
+    "downgrade conservador: um confirm com abrangência total/universal não provada "
+    "vira partial. Rejects e partials anteriores não são promovidos."
 )
 
-if st.button("Executar hardening automático B2.12.2.1", type="primary"):
+if st.button("Executar hardening automático B2.12.2.2", type="primary"):
     try:
         state = get_cutover_state(client, project_id, "requirements")
         if state.get("read_mode") != "shadow_compare":
-            st.error("B2.12.2.1 BLOCKED: requirements não está em shadow_compare.")
+            st.error("B2.12.2.2 BLOCKED: requirements não está em shadow_compare.")
             st.stop()
 
-        with st.spinner("Aplicando semantic eligibility + canonical obligation hardening..."):
+        with st.spinner("Aplicando semantic + core + completeness hardening..."):
             result = run_semantic_hardened_adjudication(
                 client,
                 project_id=project_id,
@@ -94,14 +95,14 @@ if st.button("Executar hardening automático B2.12.2.1", type="primary"):
 
         if result.status == "BLOCKED_SEMANTIC_ELIGIBILITY_UNKNOWN":
             st.error(
-                "B2.12.2.1 bloqueou avanço: existem Requirements Current sem uma "
+                "B2.12.2.2 bloqueou avanço: existem Requirements Current sem uma "
                 "classificação semântica explícita suficiente. O relatório pode ser "
                 "exportado para diagnóstico, mas NÃO deve alimentar Truth."
             )
         else:
             st.success(
-                "B2.12.2.1 concluído. A fila foi semanticamente filtrada e recalibrada "
-                "sem intervenção humana linha a linha."
+                "B2.12.2.2 concluído sem writes. Completeness guard aplicado após "
+                "o hardening semântico anterior."
             )
 
         st.caption(
@@ -126,6 +127,7 @@ if st.button("Executar hardening automático B2.12.2.1", type="primary"):
                 "recommend_reject": result.recommend_reject_count,
                 "recommend_visual_review": result.recommend_visual_review_count,
                 "recommend_defer": result.recommend_defer_count,
+                "completeness_downgrades": result.completeness_downgrade_count,
                 "human_review_created": False,
                 "truth_changed": False,
                 "persistence_performed": False,
@@ -138,11 +140,6 @@ if st.button("Executar hardening automático B2.12.2.1", type="primary"):
         excluded = pd.DataFrame(list(result.semantic_excluded_rows))
         if not excluded.empty:
             st.markdown("#### Excluídos antes da adjudicação")
-            st.caption(
-                "Estas linhas não são respostas rejeitadas: elas foram removidas da fila "
-                "porque não são Requirements semanticamente elegíveis ou ainda não têm "
-                "elegibilidade resolvida."
-            )
             preferred_excluded = [
                 "semantic_eligibility_reason",
                 "semantic_role_current",
@@ -165,8 +162,8 @@ if st.button("Executar hardening automático B2.12.2.1", type="primary"):
             st.markdown("#### Colisões de identidade canônica")
             st.warning(
                 "A mesma obrigação canônica está representada por mais de uma identidade Current. "
-                "O B2.12.2.1 NÃO faz auto-merge. As recomendações podem ser auditadas, mas qualquer "
-                "Truth-effect futuro permanece bloqueado até uma fase explícita de identidade."
+                "O B2.12.2.2 NÃO faz auto-merge. Qualquer Truth-effect futuro permanece "
+                "bloqueado até uma fase explícita de identidade."
             )
             st.dataframe(
                 collisions,
@@ -177,7 +174,7 @@ if st.button("Executar hardening automático B2.12.2.1", type="primary"):
 
         detail = pd.DataFrame(list(result.recommendation_rows))
         if not detail.empty:
-            st.markdown("#### Recomendações automáticas semanticamente endurecidas")
+            st.markdown("#### Recomendações automáticas endurecidas")
             preferred = [
                 "machine_recommendation",
                 "machine_confidence",
@@ -185,6 +182,8 @@ if st.button("Executar hardening automático B2.12.2.1", type="primary"):
                 "canonical_obligation_text",
                 "semantic_role_current",
                 "projected_response_status",
+                "completeness_guard_applied",
+                "completeness_scope",
                 "evidence_locator",
                 "machine_rationale",
                 "machine_rule_id",
@@ -194,6 +193,7 @@ if st.button("Executar hardening automático B2.12.2.1", type="primary"):
                 "missing_atoms",
                 "missing_hard_atoms",
                 "candidate_id",
+                "source_candidate_id",
                 "requirement_id",
             ]
             visible = [c for c in preferred if c in detail.columns]
@@ -205,23 +205,23 @@ if st.button("Executar hardening automático B2.12.2.1", type="primary"):
             )
 
             st.download_button(
-                "Baixar B2.12.2.1 em CSV",
+                "Baixar B2.12.2.2 em CSV",
                 data=detail.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"NAVE_B2_12_2_1_SEMANTIC_HARDENING_{project_id}.csv",
+                file_name=f"NAVE_B2_12_2_2_COMPLETENESS_HARDENING_{project_id}.csv",
                 mime="text/csv",
             )
 
         st.download_button(
-            "Baixar B2.12.2.1 completo em JSON",
+            "Baixar B2.12.2.2 completo em JSON",
             data=json.dumps(
                 result.to_dict(),
                 ensure_ascii=False,
                 indent=2,
                 default=str,
             ).encode("utf-8"),
-            file_name=f"NAVE_B2_12_2_1_SEMANTIC_HARDENING_{project_id}.json",
+            file_name=f"NAVE_B2_12_2_2_COMPLETENESS_HARDENING_{project_id}.json",
             mime="application/json",
         )
 
     except Exception as exc:
-        st.error(f"B2.12.2.1 BLOCKED: {type(exc).__name__}: {exc}")
+        st.error(f"B2.12.2.2 BLOCKED: {type(exc).__name__}: {exc}")
