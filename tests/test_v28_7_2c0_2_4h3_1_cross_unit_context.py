@@ -164,7 +164,7 @@ def test_solution_heading_keeps_base_h3_semantics_instead_of_inheriting_product_
     title = "Ativação Instagram: Aesthetics & Lifestyle Gallery"
     allowed, reason = _cross_unit_override_decision("solution_reference", title, title)
     assert allowed is False
-    assert reason == "base_h3_no_domain_semantics_preserved"
+    assert reason == "intrinsic_h3_semantics_preserved"
 
 
 def test_requirement_candidate_can_still_receive_cross_unit_platform_override():
@@ -200,3 +200,72 @@ def test_non_directive_nominal_fragment_remains_overrideable():
     )
     assert allowed is True
     assert reason is None
+
+
+def test_context_sensitive_audience_role_can_be_refined_to_product_attribute():
+    from project_requirement_semantic_h31 import _cross_unit_override_decision
+    ok, reason = _cross_unit_override_decision(
+        "audience_context",
+        "Kit de lentes teleobjetivas destacáveis",
+        "Kit de lentes teleobjetivas destacáveis",
+    )
+    assert ok is True
+    assert reason is None
+    role = cross_unit_section_role(
+        "Kit de lentes teleobjetivas destacáveis",
+        "Kit de lentes teleobjetivas destacáveis",
+        "Foco do Produto\nJOVI X300 Ultra",
+    )
+    assert role == "product_attribute"
+
+
+def test_context_sensitive_audience_role_can_be_refined_to_platform_scope():
+    from project_requirement_semantic_h31 import _cross_unit_override_decision
+    ok, reason = _cross_unit_override_decision(
+        "audience_context",
+        "Conteúdo de longa duração;",
+        "Conteúdo de longa duração;",
+    )
+    assert ok is True
+    assert reason is None
+    role = cross_unit_section_role(
+        "Conteúdo de longa duração;",
+        "Conteúdo de longa duração;",
+        "Adequação à Plataforma - O YouTube é o ambiente ideal para:",
+    )
+    assert role == "platform_scope"
+
+
+def test_channel_child_can_be_refined_to_platform_scope_when_structurally_nested():
+    from project_requirement_semantic_h31 import _cross_unit_override_decision
+    ok, reason = _cross_unit_override_decision("channel_scope", "Reels;", "Reels;")
+    assert ok is True
+    assert reason is None
+    role = cross_unit_section_role(
+        "Reels;",
+        "Reels;",
+        "Adequação à Plataforma - O Instagram é impulsionado por:\nCuradoria visual impecável;",
+    )
+    assert role == "platform_scope"
+
+
+def test_solution_reference_is_intrinsic_and_preserved():
+    from project_requirement_semantic_h31 import _cross_unit_override_decision
+    ok, reason = _cross_unit_override_decision(
+        "solution_reference",
+        "Ativação Instagram: Aesthetics & Lifestyle Gallery",
+        "Ativação Instagram: Aesthetics & Lifestyle Gallery",
+    )
+    assert ok is False
+    assert reason == "intrinsic_h3_semantics_preserved"
+
+
+def test_local_directive_still_beats_structural_refinement():
+    from project_requirement_semantic_h31 import _cross_unit_override_decision
+    ok, reason = _cross_unit_override_decision(
+        "platform_scope",
+        "Direcionamento criativo: Construir um espaço altamente instagramável, indo além dos clichês tradicionais.",
+        "Direcionamento criativo: Construir um espaço altamente instagramável, indo além dos clichês tradicionais.",
+    )
+    assert ok is False
+    assert reason == "local_requirement_directive_preserved"

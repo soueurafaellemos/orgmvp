@@ -1,76 +1,73 @@
 # NAVE V28.7.3 — Current Governed Checkpoint
 
-## H3.1.2 Golden finding
-
-JOVI H3.1.1 fixed the target pseudo-requirements but exposed one false demotion: a local creative directive was incorrectly inherited as `platform_scope`, and an activation heading was retyped despite base H3 already recognizing its no-domain semantics. H3.1.2 therefore adds Base H3 semantic precedence plus a Local Directive Guard. Chambinho must be rerun before JOVI.
-
-
 ## Current recovery phase
 
 Active corrective checkpoint:
-**V28.7.2C0.2.4H3.1.2 — Local Directive & Base Semantic Precedence Guard**.
+**V28.7.2C0.2.4H3.1.3 — Structural Refinement Precedence**.
 
-The downstream B2 chain remains preserved through **V28.7.3B2.12.2.1**, but JOVI
-remains blocked from B2.13 while Requirement Truth is revalidated upstream.
+The downstream B2 chain remains preserved through **V28.7.3B2.12.2.1**, but B2.13 / Truth-effect remains blocked while Requirement Truth semantics are revalidated upstream.
 
-## Why H3.1.2 exists
+## Why H3.1.x was reopened
 
-H3.1 fixed the cross-Evidence-Unit blind spot that allowed audience/platform/example
-fragments to remain Current Requirements. H3.1.1 then added a Section Boundary Guard
-after Chambinho proved that an unpunctuated new section (`OBJETIVO E DESAFIO`) could be
-skipped by the wider lookback. Chambinho H3.1.1 subsequently passed.
+JOVI B2.12.2.1 exposed pseudo-requirements such as `Storytelling detalhado` and `Performance com muito movimento` in Current Requirement Truth. The old H3 Golden had a verifier false-green because terminal punctuation was not normalized, and the semantic extractor could not see a structural parent across Evidence Unit boundaries.
 
-The first JOVI H3.1.1 run fixed the original targets — audience fragments, platform
-characteristics, examples and the bare product model — but exposed two precedence
-problems:
+### H3.1
+Added cross-unit structural lookback and normalized Golden verification.
 
-- `Direcionamento criativo: Construir um espaço altamente instagramável...` is a real
-  local client directive, yet inherited the older Instagram `platform_scope` and was
-  incorrectly demoted from Current Requirement Truth;
-- `Ativação Instagram: Aesthetics & Lifestyle Gallery` had already been recognized by
-  base H3 as a solution/reference heading, but H3.1.1 unnecessarily retyped it from the
-  preceding product context.
+### H3.1.1
+Chambinho exposed stale inheritance across an unpunctuated new section (`OBJETIVO E DESAFIO`). Added Section Boundary Guard.
 
-Technical PASS therefore did not qualify as Golden approval.
+### H3.1.2
+JOVI then exposed two false demotions: a real local creative directive inherited old `platform_scope`, and an activation heading already recognized as `solution_reference` was retyped from preceding product context. Added Local Directive Guard and broad base-H3 semantic precedence.
 
-## H3.1.2 architecture
+### H3.1.3 finding
+The broad H3.1.2 precedence was too conservative. It preserved several **contextual H3 base mistakes**, including:
+- `Kit de lentes teleobjetivas destacáveis` as `audience_context` instead of `product_attribute`;
+- `Conteúdo de longa duração` / `Reviews técnicos aprofundados` as `audience_context` instead of `platform_scope`;
+- `Curadoria visual impecável` / `Conteúdo aspiracional` as `audience_context` instead of `platform_scope`.
 
-`project_requirement_semantic_h31.py` preserves the H3.1/H3.1.1 structural repairs and
-adds two conservative precedence guards:
+These rows were still no-domain, so Truth inclusion was improved, but semantic role integrity was not yet Golden-quality.
 
-1. **Base H3 semantic precedence** — cross-unit repair may only demote rows that base H3
-   still considered `requirement_candidate` or `constraint_candidate`. Existing
-   no-domain classifications are preserved rather than retyped.
-2. **Local Directive Guard** — a fresh local directive such as `Direcionamento criativo:`
-   / `Creative Direction:` cannot inherit an older audience/platform/product/example
-   parent.
+## H3.1.3 architecture
 
-The rules are client-agnostic. Project-specific strings exist only in regression tests
-and the Golden verifier. Human-confirmed Requirement Truth remains protected and
-Evidence-first output remains untouched.
+`project_requirement_semantic_h31.py` now uses **tiered semantic precedence**:
+
+1. Human-confirmed Requirement Truth remains protected.
+2. Local directives (`Direcionamento criativo:`, `Creative Direction:` etc.) remain Requirements and cannot inherit an older semantic parent.
+3. Intrinsic/self-contained H3 roles are preserved: `solution_reference`, `reference_signal`, `suggestion_signal`, `example_signal`, `parameter_signal`, `constraint_qualifier`, `form_prompt`.
+4. Context-sensitive roles remain structurally refinable: `requirement_candidate`, `constraint_candidate`, `audience_context`, `product_attribute`, `platform_scope`, `strategy_context`, `channel_scope`.
+5. If cross-unit context does not yield a known parent, H3 output is preserved.
+
+This keeps the Instagram activation heading as `solution_reference`, keeps the Instagram creative directive as Requirement, and allows nearer `Foco do Produto` / `Adequação à Plataforma` parents to correct contextual H3 mistakes.
 
 ## Golden verifier
 
-`NAVE_V28_7_2C0_2_4H3_1_2_VERIFY_GOLDEN_JOVI.sql` is READ-ONLY. In addition to the
-existing punctuation-normalized forbidden-title checks, it now verifies that the
-Instagram creative directive remains a reconciled Current Requirement and that the
-activation heading retains `solution_reference` no-domain semantics.
+`NAVE_V28_7_2C0_2_4H3_1_3_VERIFY_GOLDEN_JOVI.sql` is READ-ONLY.
 
-Do not run the verifier until Chambinho passes H3.1.2 and JOVI is explicitly released.
+Beyond the previous punctuation-normalized forbidden-title checks, it now verifies semantic **role integrity** for source-bounded siblings:
+- YouTube product-focus children → `product_attribute`;
+- YouTube platform-fit children → `platform_scope`;
+- Instagram platform-fit children → `platform_scope`;
+- Instagram local creative directive → Current reconciled Requirement;
+- Instagram activation heading → `solution_reference` no-domain.
+
+A Golden cannot pass merely because a pseudo-requirement is no-domain; the no-domain role itself must match the source structure.
 
 ## Pipeline isolation
 
 During Golden validation:
-
 - normal `project_intelligence_pipeline.py` remains unchanged;
-- H3.1.2 runs only from `pages/33_Requirement_Semantic_Truth_Repair.py`;
+- H3.1.3 runs only from `pages/33_Requirement_Semantic_Truth_Repair.py`;
 - no master reprocessing;
 - no Solution Reconciliation A rerun;
 - no Core Semantic Domains B rerun;
 - no Graph V28.6 rebuild;
-- no domain_primary;
+- no `domain_primary`;
 - no canary change;
-- requirements stay `shadow_compare`.
+- requirements remain `shadow_compare`;
+- no auto-merge;
+- no Human Review synthesis;
+- no B2 Truth-effect.
 
 ## Downstream chain preserved
 
@@ -91,26 +88,15 @@ During Golden validation:
 - B2.12.2 Semantic Eligibility & Core Obligation Hardening
 - B2.12.2.1 Semantic Precedence Veto + Hard Qualifier Hotfix
 
-No B2.13 / Truth-effect is approved.
-
 ## Golden run required now
 
-1. Deploy H3.1.2 files.
+1. Deploy H3.1.3 files.
 2. Reboot.
 3. Open Requirement Semantic Truth Repair.
-4. Confirm `V28.7.2C0.2.4H3.1.2`.
+4. Confirm `V28.7.2C0.2.4H3.1.3`.
 5. Run Festivalzinho Chambinho once.
-6. Export H3.1.2 JSON and review before any JOVI run.
-7. If Chambinho passes, run JOVI H3.1.2 and export JSON.
-8. Only after preliminary JSON approval, run the H3.1.2 JOVI verifier READ-ONLY.
-
-Chambinho acceptance remains semantic, not merely numeric. JOVI additionally requires:
-- `Storytelling detalhado` no-domain as `platform_scope`;
-- audience fragments no-domain as `audience_context`;
-- `Mini show ao vivo` / `Performance com muito movimento` no-domain as examples;
-- bare product model no-domain as `product_attribute`;
-- Instagram local creative directive preserved as `requirement_candidate`;
-- Instagram activation heading preserved as `solution_reference`;
-- no A/B/Graph/cutover/canary side effects.
+6. Export H3.1.3 JSON and review before JOVI.
+7. If Chambinho passes, run JOVI H3.1.3 and export JSON.
+8. Only after preliminary JSON approval, run the H3.1.3 JOVI verifier READ-ONLY.
 
 No SQL migration is required.

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.4H3.1.2 — Requirement Reconciliation entrypoint.
+"""NAVE V28.7.2C0.2.4H3.1.3 — Requirement Reconciliation entrypoint.
 
 This module preserves the installed C0.2.4/H1 SQL contract and H3 planner while using
-H3.1.2's corrected cross-Evidence-Unit structural classification before persistence.
+H3.1.3's corrected cross-Evidence-Unit structural classification before persistence.
 No auto-merge, delete, domain_primary promotion or Graph V28.6 rebuild is introduced.
 """
 
@@ -24,7 +24,7 @@ C0_RPC = h3r.C0_RPC
 
 
 def _patch_plan_provenance(plan: dict[str, Any]) -> dict[str, Any]:
-    """Ensure all newly materialized H3.1.2 objects say H3.1, not the H3 base module."""
+    """Ensure all newly materialized H3.1.3 objects say H3.1, not the H3 base module."""
     for row in plan.get("requirements") or []:
         attrs = dict(row.get("attributes") or {})
         attrs["normalized_by"] = H31_VERSION
@@ -63,13 +63,13 @@ def _start_run(client: Any, project_id: str, project_entity_id: str, signature: 
             "cross_unit_structural_context": True,
             "section_boundary_guard": True,
             "local_directive_guard": True,
-            "base_h3_semantic_precedence": True,
+            "structural_refinement_precedence": True,
             "golden_verifier_normalization_required": True,
         },
     }
     rows = h3r._rows(client.table("intelligence_runs").insert(payload).execute())
     if not rows:
-        raise RuntimeError("Supabase não confirmou intelligence_run de Requirement Reconciliation H3.1.2")
+        raise RuntimeError("Supabase não confirmou intelligence_run de Requirement Reconciliation H3.1.3")
     return str(rows[0].get("id") or run_id)
 
 
@@ -103,7 +103,7 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
             "project_id": project_id,
             "status": "blocked_empty_requirement_observation_bundle",
             "warnings": [
-                "H3.1.2 não encontrou Evidence-backed Requirement observations; estado anterior preservado."
+                "H3.1.3 não encontrou Evidence-backed Requirement observations; estado anterior preservado."
             ],
             "diagnostics": extraction.get("diagnostics") or [],
         }
@@ -193,8 +193,11 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
             "h31_preserved_local_directives": int(
                 (extraction.get("summary") or {}).get("h31_preserved_local_directives") or 0
             ),
-            "h31_preserved_base_semantics": int(
-                (extraction.get("summary") or {}).get("h31_preserved_base_semantics") or 0
+            "h31_preserved_intrinsic_semantics": int(
+                (extraction.get("summary") or {}).get("h31_preserved_intrinsic_semantics") or 0
+            ),
+            "h31_preserved_unrecognized_semantics": int(
+                (extraction.get("summary") or {}).get("h31_preserved_unrecognized_semantics") or 0
             ),
         }
         gate = h3r._semantic_gate(status)
@@ -231,7 +234,7 @@ def reconcile_project_requirements(client: Any, project_id: str) -> dict[str, An
             "warnings": []
             if gate["pass"]
             else [
-                "Requirement Semantic Gate H3.1.2 bloqueou V28.7.2B: "
+                "Requirement Semantic Gate H3.1.3 bloqueou V28.7.2B: "
                 + json.dumps(gate["components"], ensure_ascii=False, sort_keys=True)
             ],
         }

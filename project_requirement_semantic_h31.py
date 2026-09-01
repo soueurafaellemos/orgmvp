@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.4H3.1.2 — Cross-unit structural context repair.
+"""NAVE V28.7.2C0.2.4H3.1.3 — Cross-unit structural context repair.
 
 READ/CLASSIFY helper used by Requirement Reconciliation before persistence.
 
@@ -20,7 +20,7 @@ import re
 
 import project_requirement_semantic_extractor as h3
 
-H31_VERSION = "V28.7.2C0.2.4H3.1.2"
+H31_VERSION = "V28.7.2C0.2.4H3.1.3"
 
 _NO_DOMAIN_SECTION_MAP: dict[str, tuple[str, str]] = {
     "audience_context": ("audience_context", "context"),
@@ -97,7 +97,25 @@ def _is_section_boundary(raw: str) -> bool:
     return bool(_SECTION_BOUNDARY_RE.fullmatch(norm))
 
 
-_OVERRIDEABLE_H3_ROLES = {"requirement_candidate", "constraint_candidate"}
+_STRUCTURALLY_REFINABLE_H3_ROLES = {
+    "requirement_candidate",
+    "constraint_candidate",
+    "audience_context",
+    "product_attribute",
+    "platform_scope",
+    "strategy_context",
+    "channel_scope",
+}
+
+_INTRINSIC_H3_ROLES = {
+    "solution_reference",
+    "reference_signal",
+    "suggestion_signal",
+    "example_signal",
+    "parameter_signal",
+    "constraint_qualifier",
+    "form_prompt",
+}
 
 _LOCAL_REQUIREMENT_DIRECTIVE_RE = re.compile(
     r"^(?:"
@@ -134,16 +152,22 @@ def _cross_unit_override_decision(
 ) -> tuple[bool, str | None]:
     """Decide whether H3.1.x may replace the base H3 semantic role.
 
-    H3.1.x is a precision repair for false Requirement candidates. It must not rewrite
-    semantic objects that H3 had already correctly recognized as scope/reference/etc.,
-    and it must not demote a fresh local directive.
+    H3.1.3 distinguishes intrinsic semantics from context-sensitive semantics.
+
+    Intrinsic roles (solution/reference/suggestion/example/parameter/qualifier/form)
+    are self-contained enough to keep H3 precedence. Context-sensitive roles such as
+    audience/product/platform/strategy/channel may be wrong precisely because H3 could
+    not see the preceding Evidence Units; those remain structurally refinable.
+    Local client/agency directives are always preserved as Requirements.
     """
     role = str(previous_role or "")
-    if role not in _OVERRIDEABLE_H3_ROLES:
-        return False, "base_h3_no_domain_semantics_preserved"
     if _is_local_requirement_directive(title, current_text):
         return False, "local_requirement_directive_preserved"
-    return True, None
+    if role in _INTRINSIC_H3_ROLES:
+        return False, "intrinsic_h3_semantics_preserved"
+    if role in _STRUCTURALLY_REFINABLE_H3_ROLES:
+        return True, None
+    return False, "unrecognized_h3_semantics_preserved"
 
 
 def cross_unit_section_role(
@@ -255,7 +279,7 @@ def cross_unit_section_role(
                 return "example_signal"
             return "requirement_parent"
 
-        # H3.1.2: stop stale inheritance at a newer section heading even when the
+        # H3.1.3: stop stale inheritance at a newer section heading even when the
         # parser/formatting removed the terminal colon. This is deliberately checked
         # only AFTER semantic/requirement parents above have had a chance to return.
         if _is_section_boundary(raw) and j < hit:
@@ -325,7 +349,8 @@ def collect_project_requirement_observations_h31(
     This is deliberately conservative:
     - Evidence-first observations are not reclassified;
     - explicit obligations and local creative/agency directives are not demoted;
-    - semantic objects already recognized by H3 are not retyped by cross-unit context;
+    - intrinsic semantic objects already recognized by H3 are not retyped;
+    - context-sensitive H3 roles may be refined by a nearer cross-unit structural parent;
     - human-confirmed Requirement Truth is not demoted;
     - if cross-unit context does not yield a known semantic parent, H3 is preserved.
     """
@@ -357,7 +382,8 @@ def collect_project_requirement_observations_h31(
     overrides = 0
     overridden_ids: set[str] = set()
     preserved_local_directives = 0
-    preserved_base_semantics = 0
+    preserved_intrinsic_semantics = 0
+    preserved_unrecognized_semantics = 0
 
     for obs in observations:
         attrs = dict(obs.get("attributes") or {})
@@ -395,9 +421,12 @@ def collect_project_requirement_observations_h31(
             if preserve_reason == "local_requirement_directive_preserved":
                 attrs["h31_local_directive_guard"] = True
                 preserved_local_directives += 1
-            elif preserve_reason == "base_h3_no_domain_semantics_preserved":
-                attrs["h31_base_semantics_preserved"] = True
-                preserved_base_semantics += 1
+            elif preserve_reason == "intrinsic_h3_semantics_preserved":
+                attrs["h31_intrinsic_semantics_preserved"] = True
+                preserved_intrinsic_semantics += 1
+            elif preserve_reason == "unrecognized_h3_semantics_preserved":
+                attrs["h31_unrecognized_semantics_preserved"] = True
+                preserved_unrecognized_semantics += 1
             continue
 
         role = cross_unit_section_role(
@@ -445,7 +474,9 @@ def collect_project_requirement_observations_h31(
         "h31_section_boundary_guard": True,
         "h31_local_directive_guard": True,
         "h31_preserved_local_directives": preserved_local_directives,
-        "h31_preserved_base_semantics": preserved_base_semantics,
+        "h31_structural_refinement_precedence": True,
+        "h31_preserved_intrinsic_semantics": preserved_intrinsic_semantics,
+        "h31_preserved_unrecognized_semantics": preserved_unrecognized_semantics,
     })
 
     extraction["observations"] = observations
