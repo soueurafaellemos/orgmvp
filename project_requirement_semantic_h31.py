@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.2C0.2.4H3.1.1 — Cross-unit structural context repair.
+"""NAVE V28.7.2C0.2.4H3.1.2 — Cross-unit structural context repair.
 
 READ/CLASSIFY helper used by Requirement Reconciliation before persistence.
 
@@ -20,7 +20,7 @@ import re
 
 import project_requirement_semantic_extractor as h3
 
-H31_VERSION = "V28.7.2C0.2.4H3.1.1"
+H31_VERSION = "V28.7.2C0.2.4H3.1.2"
 
 _NO_DOMAIN_SECTION_MAP: dict[str, tuple[str, str]] = {
     "audience_context": ("audience_context", "context"),
@@ -95,6 +95,55 @@ def _is_section_boundary(raw: str) -> bool:
     if value.endswith(":") and len(norm.split()) <= 9:
         return True
     return bool(_SECTION_BOUNDARY_RE.fullmatch(norm))
+
+
+_OVERRIDEABLE_H3_ROLES = {"requirement_candidate", "constraint_candidate"}
+
+_LOCAL_REQUIREMENT_DIRECTIVE_RE = re.compile(
+    r"^(?:"
+    r"direcionamento\s+criativo(?:\s+para\s+a\s+agencia)?|"
+    r"direcionamento\s+para\s+a\s+agencia|"
+    r"creative\s+direction(?:\s+for\s+the\s+agency)?|"
+    r"agency\s+creative\s+direction"
+    r")\s*:\s*\S+",
+    re.I,
+)
+
+
+def _is_local_requirement_directive(title: str, current_text: str = "") -> bool:
+    """True when the target itself opens a new client/agency directive.
+
+    Cross-unit inheritance may classify nominal children, but it must never demote a
+    locally explicit directive just because the preceding section described platform,
+    audience or product semantics. This stays client-agnostic: the cue is the directive
+    grammar, not a project title or platform name.
+    """
+    for value in (title, current_text):
+        raw = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not raw or h3._is_suggestion_or_unconfirmed(raw):
+            continue
+        if _LOCAL_REQUIREMENT_DIRECTIVE_RE.search(raw):
+            return True
+    return False
+
+
+def _cross_unit_override_decision(
+    previous_role: str,
+    title: str,
+    current_text: str = "",
+) -> tuple[bool, str | None]:
+    """Decide whether H3.1.x may replace the base H3 semantic role.
+
+    H3.1.x is a precision repair for false Requirement candidates. It must not rewrite
+    semantic objects that H3 had already correctly recognized as scope/reference/etc.,
+    and it must not demote a fresh local directive.
+    """
+    role = str(previous_role or "")
+    if role not in _OVERRIDEABLE_H3_ROLES:
+        return False, "base_h3_no_domain_semantics_preserved"
+    if _is_local_requirement_directive(title, current_text):
+        return False, "local_requirement_directive_preserved"
+    return True, None
 
 
 def cross_unit_section_role(
@@ -206,7 +255,7 @@ def cross_unit_section_role(
                 return "example_signal"
             return "requirement_parent"
 
-        # H3.1.1: stop stale inheritance at a newer section heading even when the
+        # H3.1.2: stop stale inheritance at a newer section heading even when the
         # parser/formatting removed the terminal colon. This is deliberately checked
         # only AFTER semantic/requirement parents above have had a chance to return.
         if _is_section_boundary(raw) and j < hit:
@@ -275,7 +324,8 @@ def collect_project_requirement_observations_h31(
 
     This is deliberately conservative:
     - Evidence-first observations are not reclassified;
-    - explicit obligations are not demoted;
+    - explicit obligations and local creative/agency directives are not demoted;
+    - semantic objects already recognized by H3 are not retyped by cross-unit context;
     - human-confirmed Requirement Truth is not demoted;
     - if cross-unit context does not yield a known semantic parent, H3 is preserved.
     """
@@ -306,6 +356,8 @@ def collect_project_requirement_observations_h31(
 
     overrides = 0
     overridden_ids: set[str] = set()
+    preserved_local_directives = 0
+    preserved_base_semantics = 0
 
     for obs in observations:
         attrs = dict(obs.get("attributes") or {})
@@ -333,6 +385,21 @@ def collect_project_requirement_observations_h31(
             or attrs.get("evidence_text")
             or ""
         )
+        previous_role = str(obs.get("semantic_role") or "")
+        may_override, preserve_reason = _cross_unit_override_decision(
+            previous_role,
+            title,
+            current_text,
+        )
+        if not may_override:
+            if preserve_reason == "local_requirement_directive_preserved":
+                attrs["h31_local_directive_guard"] = True
+                preserved_local_directives += 1
+            elif preserve_reason == "base_h3_no_domain_semantics_preserved":
+                attrs["h31_base_semantics_preserved"] = True
+                preserved_base_semantics += 1
+            continue
+
         role = cross_unit_section_role(
             title,
             current_text,
@@ -342,7 +409,6 @@ def collect_project_requirement_observations_h31(
             continue
 
         semantic_role, occurrence_role = _NO_DOMAIN_SECTION_MAP[role]
-        previous_role = str(obs.get("semantic_role") or "")
         obs["semantic_role"] = semantic_role
         obs["occurrence_role"] = "reference"
         attrs["h31_structural_context"] = "cross_unit_parent"
@@ -377,6 +443,9 @@ def collect_project_requirement_observations_h31(
         "h31_cross_unit_structural_overrides": overrides,
         "h31_human_confirmed_preserved": len(human_confirmed),
         "h31_section_boundary_guard": True,
+        "h31_local_directive_guard": True,
+        "h31_preserved_local_directives": preserved_local_directives,
+        "h31_preserved_base_semantics": preserved_base_semantics,
     })
 
     extraction["observations"] = observations

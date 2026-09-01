@@ -20,8 +20,9 @@ apply_nave_branding()
 page_header(
     "Requirement Semantic Truth Repair",
     (
-        "H3.1.1 corrige a leitura estrutural de bullets cujo parent semântico está em "
-        "Evidence Units anteriores. A ação reconcilia somente Requirement Truth e "
+        "H3.1.2 corrige contexto cross-unit sem permitir que um parent antigo demova "
+        "uma nova diretriz local ou reescreva semânticas no-domain já reconhecidas por H3. "
+        "A ação reconcilia somente Requirement Truth e "
         "preserva masters, A/B, canaries, legacy_shadow e Graph V28.6."
     ),
     eyebrow=f"NAVE by VOE · {H31_VERSION} · governed upstream repair",
@@ -64,7 +65,7 @@ st.warning(
 
 st.markdown(
     """
-**H3.1.1 nesta etapa não faz:**
+**H3.1.2 nesta etapa não faz:**
 - não reprocessa PDF/DOCX/XLSM/PPTX;
 - não reroda Solution Reconciliation A;
 - não reroda Core Semantic Domains B;
@@ -79,7 +80,7 @@ st.markdown(
 )
 
 confirm = st.checkbox(
-    "Confirmo executar somente a reconciliação governada H3.1.1 sobre o projeto selecionado.",
+    "Confirmo executar somente a reconciliação governada H3.1.2 sobre o projeto selecionado.",
     value=False,
 )
 
@@ -97,7 +98,7 @@ if st.button(
         )
         st.stop()
 
-    with st.spinner("Executando somente Requirement Semantic Reconciliation H3.1.1..."):
+    with st.spinner("Executando somente Requirement Semantic Reconciliation H3.1.2..."):
         result = reconcile_project_requirements(client, project_id)
 
     actions = result.get("actions") or {}
@@ -108,18 +109,20 @@ if st.button(
         st.success(f"{H31_VERSION} concluído sem promover cutover e sem rerodar A/B/Graph.")
     else:
         st.error(
-            "H3.1.1 não concluiu todos os gates. O estado anterior válido deve ser tratado "
+            "H3.1.2 não concluiu todos os gates. O estado anterior válido deve ser tratado "
             "como baseline até revisão do diagnóstico abaixo."
         )
 
-    st.markdown("#### Requirement H3.1.1")
-    metrics = st.columns(6)
+    st.markdown("#### Requirement H3.1.2")
+    metrics = st.columns(8)
     metrics[0].metric("Observations", int(actions.get("observations") or 0))
     metrics[1].metric("No-domain", int(actions.get("no_domain_object") or 0))
     metrics[2].metric("Cross-unit overrides", int(actions.get("h31_cross_unit_structural_overrides") or 0))
-    metrics[3].metric("Review required", int(actions.get("review_required") or 0))
-    metrics[4].metric("Gate blockers", int(actions.get("semantic_gate_blockers") or 0))
-    metrics[5].metric("New requirements", int(actions.get("new_requirements") or 0))
+    metrics[3].metric("Local directives", int(actions.get("h31_preserved_local_directives") or 0))
+    metrics[4].metric("Base semantics", int(actions.get("h31_preserved_base_semantics") or 0))
+    metrics[5].metric("Review required", int(actions.get("review_required") or 0))
+    metrics[6].metric("Gate blockers", int(actions.get("semantic_gate_blockers") or 0))
+    metrics[7].metric("New requirements", int(actions.get("new_requirements") or 0))
 
     st.caption(
         f"Pipeline Requirement: {result.get('version') or '—'} · "
@@ -133,7 +136,7 @@ if st.button(
         for value in actions.get(key) or []:
             classified.append({"Classe": key, "Observação": value})
     if classified:
-        with st.expander("Classificações semânticas H3.1.1", expanded=True):
+        with st.expander("Classificações semânticas H3.1.2", expanded=True):
             st.dataframe(pd.DataFrame(classified), hide_index=True, width="stretch")
 
     diagnostics = result.get("diagnostics") or []
@@ -149,14 +152,14 @@ if st.button(
 
     payload = json.dumps(result, ensure_ascii=False, indent=2, default=str)
     st.download_button(
-        "Baixar auditoria H3.1.1 JSON",
+        "Baixar auditoria H3.1.2 JSON",
         payload.encode("utf-8"),
-        file_name=f"NAVE_H3_1_1_REQUIREMENT_TRUTH_REPAIR_{project_id}.json",
+        file_name=f"NAVE_H3_1_2_REQUIREMENT_TRUTH_REPAIR_{project_id}.json",
         mime="application/json",
     )
 
     st.info(
         "No Golden Chambinho, baixe o JSON e envie para revisão antes de qualquer outro run. "
-        "No Golden de controle com verifier específico, depois da liberação, rode também o verifier H3.1.1 read-only no Supabase. "
+        "No Golden de controle com verifier específico, depois da liberação, rode também o verifier H3.1.2 read-only no Supabase. "
         "NÃO avance para B2.13 e NÃO trate o status da página isoladamente como Golden aprovado."
     )

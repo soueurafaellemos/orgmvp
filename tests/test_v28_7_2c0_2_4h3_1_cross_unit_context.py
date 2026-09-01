@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from project_requirement_semantic_h31 import cross_unit_section_role, _surrounding_by_evidence_h31, _is_section_boundary
+from project_requirement_semantic_h31 import cross_unit_section_role, _surrounding_by_evidence_h31, _is_section_boundary, _is_local_requirement_directive, _cross_unit_override_decision
 
 
 def test_cross_unit_audience_fragment_is_context():
@@ -150,3 +150,53 @@ def test_explicit_requirement_parent_still_wins_before_boundary_guard():
         "Público-Alvo:\nCriadores de conteúdo\nA ativação deve explorar:",
     )
     assert role == "requirement_parent"
+
+
+def test_local_creative_direction_is_protected_from_old_platform_parent():
+    title = "Direcionamento criativo: Construir um espaço altamente instagramável, indo além dos clichês tradicionais."
+    assert _is_local_requirement_directive(title, title) is True
+    allowed, reason = _cross_unit_override_decision("requirement_candidate", title, title)
+    assert allowed is False
+    assert reason == "local_requirement_directive_preserved"
+
+
+def test_solution_heading_keeps_base_h3_semantics_instead_of_inheriting_product_parent():
+    title = "Ativação Instagram: Aesthetics & Lifestyle Gallery"
+    allowed, reason = _cross_unit_override_decision("solution_reference", title, title)
+    assert allowed is False
+    assert reason == "base_h3_no_domain_semantics_preserved"
+
+
+def test_requirement_candidate_can_still_receive_cross_unit_platform_override():
+    allowed, reason = _cross_unit_override_decision(
+        "requirement_candidate",
+        "Storytelling detalhado.",
+        "Storytelling detalhado.",
+    )
+    assert allowed is True
+    assert reason is None
+
+
+def test_requirement_candidate_can_still_receive_cross_unit_example_override():
+    allowed, reason = _cross_unit_override_decision(
+        "requirement_candidate",
+        "Performance com muito movimento;",
+        "Performance com muito movimento;",
+    )
+    assert allowed is True
+    assert reason is None
+
+
+def test_english_creative_direction_is_local_directive():
+    title = "Creative Direction for the Agency: Build a premium portrait environment."
+    assert _is_local_requirement_directive(title, title) is True
+
+
+def test_non_directive_nominal_fragment_remains_overrideable():
+    allowed, reason = _cross_unit_override_decision(
+        "requirement_candidate",
+        "Conteúdo aspiracional;",
+        "Conteúdo aspiracional;",
+    )
+    assert allowed is True
+    assert reason is None
