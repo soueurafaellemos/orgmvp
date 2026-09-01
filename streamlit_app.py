@@ -113,8 +113,6 @@ st.page_link(
     width="stretch",
 )
 
-# B2.12.1 is the default operational path. B2.12 above remains available only
-# as an optional/manual provenance audit mechanism.
 st.page_link(
     "pages/32_Automated_Adjudication_Recommendations.py",
     label="Automated Adjudication Recommendations",
@@ -122,11 +120,16 @@ st.page_link(
     width="stretch",
 )
 
-# H3.1 is a governed upstream Requirement Truth repair used during Golden validation.
-# It is intentionally separate from the normal import/reconciliation pipeline.
 st.page_link(
     "pages/33_Requirement_Semantic_Truth_Repair.py",
     label="Requirement Semantic Truth Repair",
+    icon="🧬",
+    width="stretch",
+)
+
+st.page_link(
+    "pages/34_Requirement_Identity_Collision_Shadow.py",
+    label="Requirement Identity Collision Shadow",
     icon="🧬",
     width="stretch",
 )
