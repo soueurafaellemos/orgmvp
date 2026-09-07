@@ -48,6 +48,8 @@ links = [
 ("pages/34_Requirement_Identity_Collision_Shadow.py","Requirement Identity Collision Shadow","🧬"),
 ("pages/35_Requirement_Identity_Supersession_Dry_Run.py","Requirement Identity Supersession Dry Run","🧪"),
 ("pages/36_Requirement_Pipeline_Promotion_Verifier.py","Requirement Pipeline Promotion Verifier","🔌"),
+("pages/37_Governed_Requirement_Identity_Supersession.py","Governed Requirement Identity Supersession","⚠️"),
+("pages/38_Requirement_Supersession_Post_Transaction_Verifier.py","Requirement Supersession Post-Transaction Verifier","✅"),
 ]
 for path, label, icon in links:
     st.page_link(path, label=label, icon=icon, width="stretch")
