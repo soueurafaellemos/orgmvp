@@ -22,7 +22,7 @@ apply_nave_branding()
 page_header(
     "Governed Requirement Identity Supersession",
     (
-        "B2.12.5 é a primeira escrita real desta sequência. A execução só é habilitada "
+        "B2.12.5.1 é a primeira escrita real desta sequência. A execução só é habilitada "
         "após um B2.12.4.1 fresco, H3.1.3P1 ativo e confirmação explícita."
     ),
     eyebrow=f"NAVE by VOE · {VERSION} · TRANSACTIONAL WRITE / FAIL CLOSED",
@@ -91,6 +91,7 @@ if preflight and str(preflight.get("project_id")) == project_id:
         "ready_for_write": preflight.get("ready_for_write"),
         "blockers": preflight.get("blockers"),
         "execution_signature": preflight.get("execution_signature"),
+        "review_fingerprint": preflight.get("review_fingerprint"),
     })
 
     dry = preflight.get("dry_run_report") or {}
@@ -131,11 +132,14 @@ if preflight and str(preflight.get("project_id")) == project_id:
         })
 
         expected_token = str(preflight.get("confirmation_token") or "")
+        reviewed_fingerprint = str(preflight.get("review_fingerprint") or "")
         st.warning(
-            "Para executar, copie exatamente o token abaixo. A função do banco usa "
-            "transaction lock + preconditions + postconditions; qualquer falha provoca rollback."
+            "Para executar, copie exatamente o token abaixo. Ele está vinculado ao "
+            "fingerprint do plano que você acabou de revisar. No clique, o sistema refaz "
+            "o preflight e bloqueia o write se o plano tiver mudado."
         )
         st.code(expected_token)
+        st.caption(f"review_fingerprint={reviewed_fingerprint}")
 
         confirm = st.checkbox(
             "Confirmo executar a supersession transacional exatamente para o projeto e identities exibidos acima.",
@@ -157,10 +161,11 @@ if preflight and str(preflight.get("project_id")) == project_id:
                     client,
                     project_id=project_id,
                     confirmation_token=token,
+                    reviewed_fingerprint=reviewed_fingerprint,
                 )
 
             st.success(
-                "B2.12.5 concluiu a transação. NÃO execute novamente. "
+                "B2.12.5.1 concluiu a transação. NÃO execute novamente. "
                 "Agora use exclusivamente o Post-Transaction Verifier."
             )
             st.json(result)

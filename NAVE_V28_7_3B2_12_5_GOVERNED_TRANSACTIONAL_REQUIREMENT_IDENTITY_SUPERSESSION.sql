@@ -1,5 +1,5 @@
 -- NAVE by VOE
--- V28.7.3B2.12.5 — Governed Transactional Requirement Identity Supersession
+-- V28.7.3B2.12.5.1 — Governed Transactional Requirement Identity Supersession
 --
 -- FIRST REAL WRITE in the B2.12.x identity-collision sequence.
 --
@@ -21,10 +21,20 @@
 
 begin;
 
+-- Remove the pre-hardening 6-arg RPC if B2.12.5 was already installed.
+revoke all on function public.apply_project_requirement_identity_supersession_b2125(
+  uuid,uuid,text,text,jsonb,text
+) from public, anon, authenticated;
+
+drop function if exists public.apply_project_requirement_identity_supersession_b2125(
+  uuid,uuid,text,text,jsonb,text
+);
+
 create or replace function public.apply_project_requirement_identity_supersession_b2125(
   p_project_id uuid,
   p_run_id uuid,
   p_confirmation_token text,
+  p_review_fingerprint text,
   p_pipeline_promotion_version text,
   p_execution_bundle jsonb,
   p_execution_signature text
@@ -35,7 +45,7 @@ security invoker
 set search_path = public
 as $$
 declare
-  c_version constant text := 'V28.7.3B2.12.5';
+  c_version constant text := 'V28.7.3B2.12.5.1';
   c_dry_run_version constant text := 'V28.7.3B2.12.4.1';
   c_promotion_version constant text := 'V28.7.2C0.2.4H3.1.3P1';
 
@@ -98,8 +108,13 @@ begin
     raise exception 'B2.12.5 requires project_id and run_id';
   end if;
 
-  if coalesce(p_confirmation_token,'') <> 'SUPERSEDE:' || p_project_id::text then
-    raise exception 'B2.12.5 explicit confirmation token mismatch';
+  if p_review_fingerprint is null or length(p_review_fingerprint) <> 64 then
+    raise exception 'B2.12.5.1 reviewed transaction fingerprint missing/invalid';
+  end if;
+
+  if coalesce(p_confirmation_token,'')
+     <> 'SUPERSEDE:' || p_project_id::text || ':' || left(p_review_fingerprint, 12) then
+    raise exception 'B2.12.5.1 explicit confirmation token/fingerprint mismatch';
   end if;
 
   if coalesce(p_pipeline_promotion_version,'') <> c_promotion_version then
@@ -143,7 +158,11 @@ begin
   end if;
 
   if coalesce(p_execution_bundle->>'pipeline_promotion_version','') <> c_promotion_version then
-    raise exception 'B2.12.5 bundle promotion version mismatch';
+    raise exception 'B2.12.5.1 bundle promotion version mismatch';
+  end if;
+
+  if coalesce(p_execution_bundle->>'review_fingerprint','') <> p_review_fingerprint then
+    raise exception 'B2.12.5.1 execution bundle is not the reviewed transaction';
   end if;
 
   v_dry := p_execution_bundle->'dry_run_report';
@@ -421,6 +440,7 @@ begin
       'survivor_review_status_before', v_survivor_review_before,
       'dry_run_version', c_dry_run_version,
       'pipeline_promotion_version', c_promotion_version,
+      'review_fingerprint', p_review_fingerprint,
       'transaction_fail_closed', true,
       'response_truth_changed', false,
       'human_review_created', false,
@@ -944,16 +964,16 @@ end;
 $$;
 
 comment on function public.apply_project_requirement_identity_supersession_b2125(
-  uuid,uuid,text,text,jsonb,text
+  uuid,uuid,text,text,text,jsonb,text
 ) is
-  'V28.7.3B2.12.5 — fail-closed transactional Requirement identity supersession. Preserves historical evidence/semantic observations and survivor business metadata; no response Truth effect.';
+  'V28.7.3B2.12.5.1 — fail-closed transactional Requirement identity supersession. Preserves historical evidence/semantic observations and survivor business metadata; no response Truth effect.';
 
 revoke all on function public.apply_project_requirement_identity_supersession_b2125(
-  uuid,uuid,text,text,jsonb,text
-) from anon, authenticated;
+  uuid,uuid,text,text,text,jsonb,text
+) from public, anon, authenticated;
 
 grant execute on function public.apply_project_requirement_identity_supersession_b2125(
-  uuid,uuid,text,text,jsonb,text
+  uuid,uuid,text,text,text,jsonb,text
 ) to service_role;
 
 commit;

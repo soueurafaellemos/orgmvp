@@ -13,7 +13,7 @@ from project_domain_reader import get_cutover_state
 from project_intelligence_pipeline import requirement_reconciliation_contract
 from project_requirement_identity_supersession_dry_run import run_hardened_dry_run
 
-VERSION = "V28.7.3B2.12.5"
+VERSION = "V28.7.3B2.12.5.1"
 DRY_RUN_VERSION = "V28.7.3B2.12.4.1"
 PROMOTION_VERSION = "V28.7.2C0.2.4H3.1.3P1"
 RPC = "apply_project_requirement_identity_supersession_b2125"
@@ -108,11 +108,26 @@ def build_supersession_preflight(
         patched_evidence.append(action)
     execution_plan["evidence_actions"] = patched_evidence
 
+    # Deterministic fingerprint of the exact reviewed transaction.
+    # `generated_at` is intentionally excluded so a fresh preflight can be compared
+    # with the user-reviewed plan without false drift.
+    review_payload = {
+        "version": VERSION,
+        "project_id": project_id,
+        "pipeline_promotion_version": PROMOTION_VERSION,
+        "execution_plan": execution_plan,
+        "current_before": plan.current_before,
+        "projected_current_after": plan.projected_current_after,
+        "projected_collisions_after": plan.projected_collisions_after,
+    }
+    review_fingerprint = _sha(review_payload)
+
     bundle = {
         "bundle_version": VERSION,
         "project_id": project_id,
         "pipeline_promotion_version": PROMOTION_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "review_fingerprint": review_fingerprint,
         "dry_run_report": dry_dict,
         "execution_plan": execution_plan,
     }
@@ -129,7 +144,10 @@ def build_supersession_preflight(
         "execution_plan": execution_plan,
         "execution_bundle": bundle,
         "execution_signature": signature,
-        "confirmation_token": f"SUPERSEDE:{project_id}",
+        "review_fingerprint": review_fingerprint,
+        "confirmation_token": (
+            f"SUPERSEDE:{project_id}:{review_fingerprint[:12]}"
+        ),
         "write_performed": False,
     }
 
@@ -139,6 +157,7 @@ def execute_governed_supersession(
     *,
     project_id: str,
     confirmation_token: str,
+    reviewed_fingerprint: str,
 ) -> dict[str, Any]:
     # Always rebuild preflight immediately before the RPC. Never execute a stale UI plan.
     preflight = build_supersession_preflight(
@@ -147,13 +166,20 @@ def execute_governed_supersession(
     )
     if not preflight.get("ready_for_write"):
         raise RuntimeError(
-            "B2.12.5 write blocked by fresh preflight: "
+            "B2.12.5.1 write blocked by fresh preflight: "
             + ", ".join(preflight.get("blockers") or [preflight.get("status") or "unknown"])
+        )
+
+    fresh_fingerprint = str(preflight.get("review_fingerprint") or "")
+    if not reviewed_fingerprint or fresh_fingerprint != reviewed_fingerprint:
+        raise RuntimeError(
+            "B2.12.5.1 transaction plan changed since the reviewed preflight. "
+            "No write was attempted. Run PRE-FLIGHT again and review the new plan."
         )
 
     expected_token = str(preflight.get("confirmation_token") or "")
     if confirmation_token != expected_token:
-        raise RuntimeError("B2.12.5 explicit confirmation token mismatch")
+        raise RuntimeError("B2.12.5.1 explicit confirmation token mismatch")
 
     run_id = str(uuid4())
     response = client.rpc(
@@ -162,6 +188,7 @@ def execute_governed_supersession(
             "p_project_id": project_id,
             "p_run_id": run_id,
             "p_confirmation_token": confirmation_token,
+            "p_review_fingerprint": reviewed_fingerprint,
             "p_pipeline_promotion_version": PROMOTION_VERSION,
             "p_execution_bundle": preflight["execution_bundle"],
             "p_execution_signature": preflight["execution_signature"],

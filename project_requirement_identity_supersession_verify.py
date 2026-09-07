@@ -13,7 +13,7 @@ from project_requirement_compatibility import (
 from project_requirement_identity_collision_shadow import run_identity_collision_shadow
 
 VERSION = "V28.7.3B2.12.5V1"
-WRITER_VERSION = "V28.7.3B2.12.5"
+WRITER_VERSION = "V28.7.3B2.12.5.1"
 PROMOTION_VERSION = "V28.7.2C0.2.4H3.1.3P1"
 
 
