@@ -75,7 +75,9 @@ st.markdown(
 - não auto-mergeia Requirement identities;
 - não persiste adjudicações B2.12.x.
 
-**Importante:** o pipeline normal continua em H3 durante a prova Golden. H3.1 só roda por esta tela.
+**Pipeline normal:** H3.1.3 agora é também o entrypoint oficial de Requirement dentro de
+`finalize_project_intelligence`. Esta tela permanece como caminho explícito de
+repair/diagnóstico e NÃO deve ser usada apenas para “sincronizar” o pipeline.
 """
 )
 
@@ -160,7 +162,7 @@ if st.button(
     )
 
     st.info(
-        "No Golden Chambinho, baixe o JSON e envie para revisão antes de qualquer outro run. "
-        "No Golden de controle com verifier específico, depois da liberação, rode também o verifier H3.1.3 read-only no Supabase. "
-        "NÃO avance para B2.13 e NÃO trate o status da página isoladamente como Golden aprovado."
+        "Esta tela continua sendo uma ação de repair real. Para verificar somente o wiring "
+        "do pipeline normal, use Requirement Pipeline Promotion Verifier. "
+        "NÃO avance para B2.13 por causa desta tela isoladamente."
     )

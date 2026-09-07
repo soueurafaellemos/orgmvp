@@ -47,6 +47,7 @@ links = [
 ("pages/33_Requirement_Semantic_Truth_Repair.py","Requirement Semantic Truth Repair","🧬"),
 ("pages/34_Requirement_Identity_Collision_Shadow.py","Requirement Identity Collision Shadow","🧬"),
 ("pages/35_Requirement_Identity_Supersession_Dry_Run.py","Requirement Identity Supersession Dry Run","🧪"),
+("pages/36_Requirement_Pipeline_Promotion_Verifier.py","Requirement Pipeline Promotion Verifier","🔌"),
 ]
 for path, label, icon in links:
     st.page_link(path, label=label, icon=icon, width="stretch")

@@ -1,47 +1,60 @@
 # NAVE V28.7.3 — Current Governed Checkpoint
 
 ## Goldens closed
-- H3.1.3 Chambinho/JOVI: GOLDEN APPROVED.
+- H3.1.3 Chambinho: GOLDEN APPROVED.
+- H3.1.3 JOVI: GOLDEN APPROVED.
 - B2.12.2.2 Chambinho/JOVI: GOLDEN APPROVED.
 - B2.12.3 Chambinho/JOVI: GOLDEN APPROVED.
-- B2.12.4 Chambinho: GOLDEN APPROVED.
+- B2.12.4.1 Chambinho: GOLDEN APPROVED.
+- B2.12.4.1 JOVI: GOLDEN APPROVED.
+  - Current 70 -> projected 69.
+  - collision 1 -> projected 0.
+  - Governance / Knowledge Entity integrity PASS.
+  - raw historical Evidence 9 -> 2 coalesced actions.
+  - B2.1 projected PASS 3/3.
+  - no writes.
 
-## JOVI B2.12.4 finding
+## Newly discovered promotion blocker
 
-The core projected transaction was correct:
-- Current 70 -> 69;
-- canonical collisions 1 -> 0;
-- one ready plan / zero blockers;
-- survivor e6fe10bf-b69e-56f6-a02e-46ff16c74f2f;
-- superseded a9536b6a-745f-462c-a78a-637ca59aa216;
-- duplicate occurrence correctly detected;
-- Legacy alias preserved;
-- B2.1 compatibility projected PASS 3/3.
+After downstream + transaction dry-run Goldens, code review proved the normal
+`project_intelligence_pipeline.py` still selected the base H3 entrypoint
+`project_requirement_reconciliation.reconcile_project_requirements`.
 
-However B2.12.4 is NOT Golden-closed for JOVI because:
-1. nine old Domain Evidence links were projected one-for-one to the survivor
-   (eight occurrence + one source on the same Evidence Unit);
-2. Governance and Knowledge Entity writes were projected without validating the actual
-   rows/lifecycle/canonical state that a real transaction would mutate.
+The explicit repair page already selected:
+`project_requirement_reconciliation_h31.reconcile_project_requirements`.
+
+A real B2.12.5 supersession must not be executed while this page/pipeline divergence exists,
+because a future normal project-intelligence run could reintroduce pre-H3.1.3 Requirement Truth.
 
 ## Active checkpoint
 
-**V28.7.3B2.12.4.1 — Transaction Integrity Hardening · DRY RUN**
+**V28.7.2C0.2.4H3.1.3P1 — Governed Normal Pipeline Promotion**
 
-It remains read-only.
+This is wiring-only promotion.
 
-Hardening:
-- validate actual Governance + Knowledge Entity rows;
-- fail closed on lifecycle/canonical mismatch;
-- coalesce historical evidence by Evidence Unit + link role;
-- reuse existing survivor evidence where possible;
-- preserve all old evidence links historically;
-- preserve survivor business metadata;
-- recompute occurrence identity;
-- preserve/rebind Legacy alias;
-- simulate B2.1 after state;
-- no writes / Truth / Human Review / cutover.
+It:
+- changes the normal Requirement reconciliation entrypoint to H3.1.3;
+- preserves ordering A -> audits -> Requirement -> B;
+- does not execute the pipeline at deploy/import time;
+- does not rerun A/B/Graph;
+- does not change masters;
+- preserves legacy_shadow / requirements shadow_compare;
+- does not change canaries or domain_primary;
+- does not auto-merge Requirement identities;
+- does not create Human Review.
+
+## Verification order
+
+1. Deploy P1 and reboot.
+2. Open `Requirement Pipeline Promotion Verifier`.
+3. Run Festivalzinho Chambinho — READ ONLY.
+4. Expected: all checks pass; read_mode shadow_compare; no writes.
+5. Send JSON.
+6. After approval run JOVI — READ ONLY.
+7. Expected: same wiring contract and shadow_compare.
+8. Only after both pass may B2.12.5 real transactional supersession be installed/executed.
 
 ## Governance freeze
 
-B2.12.5 real write and B2.13 Truth-effect remain blocked until B2.12.4.1 closes Golden on Chambinho and JOVI.
+B2.12.5 real write and B2.13 response Truth-effect remain blocked until P1 wiring closes
+Golden on both control projects.
