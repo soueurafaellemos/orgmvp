@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3B2.13 — Post-Supersession Response Projection Integrity Shadow.
+"""NAVE V28.7.3B2.13.1 — Post-Supersession Response Projection Integrity Shadow.
 
 READ ONLY / shadow only.
 
@@ -11,7 +11,7 @@ lineage, while preserving downstream response semantics for the surviving Curren
 Requirement set.
 
 The module compares:
-1. a user-supplied, previously approved B2.12.2.2 pre-supersession baseline JSON;
+1. an immutable packaged B2.12.2.2 pre-supersession Golden baseline;
 2. a fresh live B2.12.2.2 projection over the current database state;
 3. the independently verified B2.12.5.4 supersession lineage, when one exists.
 
@@ -31,10 +31,74 @@ from project_requirement_auto_adjudication_completeness import (
 )
 from project_requirement_identity_supersession_verify import verify_supersession
 
-VERSION = "V28.7.3B2.13"
+VERSION = "V28.7.3B2.13.1"
 BASELINE_VERSION = "V28.7.3B2.12.2.2"
 SUPERSESSION_WRITER_VERSION = "V28.7.3B2.12.5.4"
 PROMOTION_VERSION = "V28.7.2C0.2.4H3.1.3P1"
+
+
+GOLDEN_BASELINES = {
+    "0d9f1608-4bf7-4fd0-81ab-f303fdb0c136": {
+        "label": "Festivalzinho Chambinho",
+        "relative_path": "goldens/b2_12_2_2/0d9f1608-4bf7-4fd0-81ab-f303fdb0c136.json",
+        "sha256": "d8db2531fb6ef091ea7e65da825ff051f6fb0a012e2f90de49bbd8ee14b794a7",
+    },
+    "01415104-72f2-4b8e-aeca-2dd24c231a7d": {
+        "label": "Lançamento Jovi X300",
+        "relative_path": "goldens/b2_12_2_2/01415104-72f2-4b8e-aeca-2dd24c231a7d.json",
+        "sha256": "1695a59f126d6eccc07d84b54548890dcc8e0ab652c3b508b572317fc129c384",
+    },
+}
+
+
+def golden_project_options() -> list[dict[str, str]]:
+    return [
+        {
+            "project_id": project_id,
+            "label": str(meta["label"]),
+        }
+        for project_id, meta in GOLDEN_BASELINES.items()
+    ]
+
+
+def load_packaged_golden_baseline(
+    project_id: str,
+    *,
+    repo_root: "Path | None" = None,
+) -> dict[str, Any]:
+    from pathlib import Path
+
+    project_id = str(project_id or "")
+    meta = GOLDEN_BASELINES.get(project_id)
+    if not meta:
+        raise ValueError(f"B2.13.1 unknown Golden project: {project_id}")
+
+    base = repo_root or Path(__file__).resolve().parent
+    path = base / str(meta["relative_path"])
+    if not path.exists():
+        raise RuntimeError(f"B2.13.1 packaged Golden baseline missing: {path}")
+
+    raw = path.read_bytes()
+    actual_sha = sha256(raw).hexdigest()
+    expected_sha = str(meta["sha256"])
+    if actual_sha != expected_sha:
+        raise RuntimeError(
+            "B2.13.1 packaged Golden baseline hash mismatch "
+            f"for {project_id}: expected {expected_sha}, got {actual_sha}"
+        )
+
+    baseline = json.loads(raw.decode("utf-8"))
+    if str(baseline.get("version") or "") != BASELINE_VERSION:
+        raise RuntimeError(
+            "B2.13.1 packaged baseline version mismatch "
+            f"for {project_id}: {baseline.get('version')}"
+        )
+    if str(baseline.get("project_id") or "") != project_id:
+        raise RuntimeError(
+            "B2.13.1 packaged baseline project mismatch "
+            f"for {project_id}: {baseline.get('project_id')}"
+        )
+    return baseline
 
 
 def _rows(response: Any) -> list[dict[str, Any]]:
