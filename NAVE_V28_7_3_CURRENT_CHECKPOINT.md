@@ -3,49 +3,58 @@
 ## Goldens closed
 - H3.1.3 Chambinho/JOVI.
 - B2.12.2.2 Chambinho/JOVI.
-- B2.12.3 Chambinho/JOVI.
-- B2.12.4.1 Chambinho/JOVI.
-- H3.1.3P1 normal pipeline promotion Chambinho/JOVI.
-- B2.12.5.1 preflight Chambinho/JOVI: semantic plan Golden.
-- B2.12.5.2 failure-state diagnostic: both real-write failures independently confirmed full rollback.
-- B2.12.5.3 rollback-only transaction probe: ROOT_CAUSE_CAPTURED_ROLLBACK_VERIFIED.
+- B2.12.3 identity collision shadow Chambinho/JOVI.
+- B2.12.4.1 transaction integrity Chambinho/JOVI.
+- H3.1.3P1 normal-pipeline promotion Chambinho/JOVI.
+- B2.12.5.4 real transactional Requirement identity supersession JOVI.
+- B2.12.5.4 independent post-transaction verification: PASS / all checks true.
 
-## Captured root cause
-PostgreSQL SQLSTATE `23505` on `project_requirements_legacy_uidx`.
-
-The writer attempted to assign Legacy alias
-`8fa8b29c-8f5f-4857-abe3-76c806a6b96c`
-to the survivor while the superseded Requirement still owned:
-`(legacy_source_table, legacy_source_id) =
-(memory_briefing_requirements, 8fa8b29c-8f5f-4857-abe3-76c806a6b96c)`.
-
-This is an alias-ownership sequencing defect, not a semantic-plan defect,
-permission defect or partial-write incident.
+## Closed B2.12.5 JOVI state
+- 70 → 69 Current Requirements.
+- 1 → 0 canonical collisions.
+- survivor remains Current.
+- superseded Requirement is historical/status superseded.
+- Governance + Knowledge Entity lineage complete.
+- old active occurrence removed from Current path.
+- Legacy alias ownership transferred atomically to survivor.
+- 9 historical Evidence links preserved.
+- 2 historical Semantic Observations preserved.
+- 1 canonical survivor source Evidence link inserted.
+- Response Truth unchanged.
+- Human Review not created.
+- requirements remain `shadow_compare`.
+- normal pipeline remains H3.1.3P1.
 
 ## Active checkpoint
-**V28.7.3B2.12.5.4 — Legacy Alias Ownership Transfer Hardening**
+**V28.7.3B2.13 — Post-Supersession Response Projection Integrity Shadow**
 
-The writer now:
-1. resolves and locks the current project-local owner of each Legacy alias;
-2. fails closed if ownership is ambiguous or outside the superseded set;
-3. releases the unique Legacy bridge from the old Requirement inside the transaction;
-4. binds the exact bridge to the canonical survivor;
-5. records the transfer in `intelligence_runs`, Governance and Knowledge Entity lineage;
-6. verifies survivor ownership and old-owner release as postconditions.
+B2.13 is READ ONLY.
 
-Any later failure still rolls the whole transaction back, including alias ownership.
+It compares an approved B2.12.2.2 pre-supersession baseline with a fresh live
+B2.12.2.2 response projection.
 
-## Required validation order
-1. Install B2.12.5.4 SQL + code and reboot.
-2. Generate fresh JOVI B2.12.5.4 PRE-FLIGHT only.
-3. Run existing B2.12.5.3 rollback-only probe using that fresh preflight.
-4. Require:
-   - `WRITER_WOULD_COMPLETE_ROLLED_BACK`,
-   - `rollback_independently_verified=true`,
-   - `state_unchanged=true`.
-5. Only after independent review may one real write be authorized.
+### JOVI must prove
+- current identity set = baseline identity set minus superseded identity;
+- survivor remains present;
+- superseded identity disappears from all Current-facing response outputs;
+- every surviving projection/recommendation row remains byte-semantically unchanged;
+- the two duplicate identities had equivalent response semantics before supersession;
+- queue/distribution deltas equal exactly the removed duplicate row;
+- canonical collisions are now zero;
+- historical lineage/Evidence/Semantic Observations remain preserved by B2.12.5.4 verifier;
+- Response Truth remains unchanged.
+
+### Chambinho control must prove
+- exact identity set, projection rows, recommendation rows, counts and distribution unchanged;
+- no unexplained downstream drift.
 
 ## Governance freeze
-- DO NOT run B2.12.5.4 real writer yet.
-- DO NOT run H3 repair, A/B/Graph, or B2.13.
-- Keep requirements `shadow_compare`.
+- no Requirement writer rerun;
+- no Human Review synthesis;
+- no Response Truth persistence;
+- no cutover;
+- no A/B/Graph rerun;
+- no `domain_primary`;
+- requirements remain `shadow_compare`.
+
+Only after B2.13 Chambinho + JOVI Goldens may a later Truth-effect design be discussed.
