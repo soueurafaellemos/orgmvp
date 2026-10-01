@@ -53,6 +53,7 @@ links = [
 ("pages/39_Requirement_Supersession_Failure_State_Diagnostic.py","Supersession Failure State Diagnostic","🚑"),
 ("pages/40_Requirement_Supersession_Transaction_Probe.py","Supersession Transaction Probe","🧯"),
 ("pages/41_Response_Truth_Impact_Shadow.py","Response Truth Impact Shadow","🪞"),
+("pages/42_Response_Truth_Eligibility_Shadow.py","Response Truth Eligibility Shadow","🧾"),
 ]
 for path, label, icon in links:
     st.page_link(path, label=label, icon=icon, width="stretch")
