@@ -21,7 +21,7 @@ apply_nave_branding()
 page_header(
     "Requirement Supersession Post-Transaction Verifier",
     (
-        "Verificação independente e read-only do estado persistido após B2.12.5."
+        "Verificação independente e read-only do estado persistido após B2.12.5.4."
     ),
     eyebrow=f"NAVE by VOE · {VERSION} · READ ONLY",
 )

@@ -22,7 +22,7 @@ apply_nave_branding()
 page_header(
     "Governed Requirement Identity Supersession",
     (
-        "B2.12.5.1 é a primeira escrita real desta sequência. A execução só é habilitada "
+        "B2.12.5.4 é o writer endurecido após o probe da ownership do Legacy alias. A execução só é habilitada "
         "após um B2.12.4.1 fresco, H3.1.3P1 ativo e confirmação explícita."
     ),
     eyebrow=f"NAVE by VOE · {VERSION} · TRANSACTIONAL WRITE / FAIL CLOSED",
@@ -165,7 +165,7 @@ if preflight and str(preflight.get("project_id")) == project_id:
                 )
 
             st.success(
-                "B2.12.5.1 concluiu a transação. NÃO execute novamente. "
+                "B2.12.5.4 concluiu a transação. NÃO execute novamente. "
                 "Agora use exclusivamente o Post-Transaction Verifier."
             )
             st.json(result)

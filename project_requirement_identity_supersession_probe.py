@@ -11,7 +11,7 @@ from project_requirement_supersession_failure_diagnostic import (
 
 VERSION = "V28.7.3B2.12.5.3"
 RPC = "diagnose_project_requirement_identity_supersession_b21253"
-WRITER_VERSION = "V28.7.3B2.12.5.1"
+WRITER_VERSION = "V28.7.3B2.12.5.4"
 PROMOTION_VERSION = "V28.7.2C0.2.4H3.1.3P1"
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3B2.12.5 — governed transactional Requirement identity supersession."""
+"""NAVE V28.7.3B2.12.5.4 — governed transactional Requirement identity supersession."""
 
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -13,7 +13,7 @@ from project_domain_reader import get_cutover_state
 from project_intelligence_pipeline import requirement_reconciliation_contract
 from project_requirement_identity_supersession_dry_run import run_hardened_dry_run
 
-VERSION = "V28.7.3B2.12.5.1"
+VERSION = "V28.7.3B2.12.5.4"
 DRY_RUN_VERSION = "V28.7.3B2.12.4.1"
 PROMOTION_VERSION = "V28.7.2C0.2.4H3.1.3P1"
 RPC = "apply_project_requirement_identity_supersession_b2125"
@@ -166,20 +166,20 @@ def execute_governed_supersession(
     )
     if not preflight.get("ready_for_write"):
         raise RuntimeError(
-            "B2.12.5.1 write blocked by fresh preflight: "
+            "B2.12.5.4 write blocked by fresh preflight: "
             + ", ".join(preflight.get("blockers") or [preflight.get("status") or "unknown"])
         )
 
     fresh_fingerprint = str(preflight.get("review_fingerprint") or "")
     if not reviewed_fingerprint or fresh_fingerprint != reviewed_fingerprint:
         raise RuntimeError(
-            "B2.12.5.1 transaction plan changed since the reviewed preflight. "
+            "B2.12.5.4 transaction plan changed since the reviewed preflight. "
             "No write was attempted. Run PRE-FLIGHT again and review the new plan."
         )
 
     expected_token = str(preflight.get("confirmation_token") or "")
     if confirmation_token != expected_token:
-        raise RuntimeError("B2.12.5.1 explicit confirmation token mismatch")
+        raise RuntimeError("B2.12.5.4 explicit confirmation token mismatch")
 
     run_id = str(uuid4())
     response = client.rpc(

@@ -12,8 +12,8 @@ from project_requirement_compatibility import (
 )
 from project_requirement_identity_collision_shadow import run_identity_collision_shadow
 
-VERSION = "V28.7.3B2.12.5V1"
-WRITER_VERSION = "V28.7.3B2.12.5.1"
+VERSION = "V28.7.3B2.12.5.4V1"
+WRITER_VERSION = "V28.7.3B2.12.5.4"
 PROMOTION_VERSION = "V28.7.2C0.2.4H3.1.3P1"
 
 
@@ -236,6 +236,23 @@ def verify_supersession(
                 for alias in aliases
             )
         ),
+        "survivor_owns_legacy_alias_bridge": (
+            len(aliases) == 0
+            or (
+                len(aliases) == 1
+                and str(req_by_id.get(survivor_id, {}).get("legacy_source_id") or "")
+                    == aliases[0]
+            )
+            or (
+                len(aliases) > 1
+                and alias_map_error is None
+                and all(legacy_to_domain.get(alias) == survivor_id for alias in aliases)
+            )
+        ),
+        "superseded_requirements_release_legacy_alias_bridge": all(
+            str(req_by_id.get(rid, {}).get("legacy_source_id") or "") not in set(aliases)
+            for rid in old_ids
+        ),
         "historical_evidence_count_preserved": (
             old_evidence_count == int(metadata.get("old_evidence_count_before") or 0)
         ),
@@ -283,6 +300,8 @@ def verify_supersession(
         "survivor_requirement_id": survivor_id,
         "superseded_requirement_ids": old_ids,
         "legacy_aliases": aliases,
+        "legacy_alias_transfers": metadata.get("legacy_alias_transfers") or [],
+        "legacy_alias_transfer_count": int(metadata.get("legacy_alias_transfer_count") or 0),
         "alias_map_error": alias_map_error,
         "historical_evidence_count": old_evidence_count,
         "historical_semantic_observation_count": old_semantic_count,

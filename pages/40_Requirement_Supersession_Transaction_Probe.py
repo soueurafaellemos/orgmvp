@@ -22,7 +22,7 @@ page_header(
     (
         "B2.12.5.3 executa o caminho exato do writer dentro de uma subtransação "
         "que é obrigatoriamente revertida. Serve apenas para capturar a causa SQL "
-        "da falha do B2.12.5.1."
+        "da falha do B2.12.5.4."
     ),
     eyebrow=f"NAVE by VOE · {VERSION} · ROLLBACK-ONLY / INCIDENT PROBE",
 )
@@ -34,7 +34,7 @@ st.error(
 )
 
 uploaded = st.file_uploader(
-    "Anexe o preflight JOVI B2.12.5.1 usado na tentativa mais recente",
+    "Anexe o preflight JOVI B2.12.5.4 usado na tentativa mais recente",
     type=["json"],
 )
 
