@@ -23,7 +23,7 @@ apply_nave_branding()
 page_header(
     "Response Truth Transaction Preflight",
     (
-        "B2.15.3 prepara o bundle exato da primeira transação contract-verified. "
+        "B2.15.3.1 usa o Golden B2.15.2.1 congelado por SHA-256 e valida apenas guards live. "
         "Esta página NÃO possui botão de write real."
     ),
     eyebrow=f"NAVE by VOE · {VERSION} · PRE-FLIGHT ONLY",
@@ -39,9 +39,9 @@ label_to_id = {item["label"]: item["project_id"] for item in options}
 selected_label = st.selectbox("Projeto", list(label_to_id), index=1)
 project_id = label_to_id[selected_label]
 
-if st.button("Preparar B2.15.3 — SEM WRITE", type="primary"):
+if st.button("Preparar B2.15.3.1 — SEM WRITE", type="primary"):
     client = get_nave_client()
-    with st.spinner("Reconstruindo projection e transaction fingerprint..."):
+    with st.spinner("Validando Golden congelado + guards live..."):
         result = build_response_truth_transaction_preflight(
             client,
             project_id=project_id,
@@ -75,6 +75,6 @@ if st.button("Preparar B2.15.3 — SEM WRITE", type="primary"):
     st.download_button(
         "Baixar B2.15.3 Transaction Preflight JSON",
         data=json.dumps(result, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
-        file_name=f"NAVE_B2_15_3_TRANSACTION_PREFLIGHT_{project_id}.json",
+        file_name=f"NAVE_B2_15_3_1_TRANSACTION_PREFLIGHT_{project_id}.json",
         mime="application/json",
     )
