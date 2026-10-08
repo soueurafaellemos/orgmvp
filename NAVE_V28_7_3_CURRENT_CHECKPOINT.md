@@ -1,51 +1,35 @@
 # NAVE V28.7.3 — Current Governed Checkpoint
 
 ## Goldens closed
-- H3.1.3 + H3.1.3P1 Requirement semantics/pipeline.
-- B2.12.5.4 Requirement identity supersession JOVI + independent verifier.
+- B2.12.5.4 Requirement identity supersession + independent verifier.
 - B2.13.1 Response downstream integrity Chambinho/JOVI.
 - B2.14 Response Truth Eligibility & Provenance Chambinho/JOVI.
-- B2.15P0.3 live Response Truth architecture inventory.
-- B2.15.1 Response Truth Ledger Schema Foundation — 15/15 schema verifier PASS.
+- B2.15P0.3 Response Truth architecture inventory.
+- B2.15.1 Response Truth Ledger Schema Foundation.
+- B2.15.2.1 Contract-Verified Response Truth Projection:
+  - Chambinho GOLDEN: 13 Current, 3 contract eligible, 3 events, 3 Evidence links.
+  - JOVI GOLDEN control: 69 Current, 0 contract eligible, 1 human candidate, 0 events.
 
-## B2.15.2 Chambinho runtime finding
+JOVI raw truth-view rows = 114; governed Current = 69; non-Current/historical = 45.
+Raw view cardinality is diagnostic history, not the Current denominator.
 
-First B2.15.2 run correctly BLOCKED on exactly one check:
+## Active
+V28.7.3B2.15.3 — Transaction Preflight + Rollback-Only Probe
 
-`current_requirement_count_matches_golden`
+No real Response Truth write is authorized.
 
-Observed:
-- B2.14 Current denominator: 13
-- Response Truth status view: 13
-- raw `project_requirement_truth_status` rows fetched by B2.15.2: 16
-- all semantic/provenance/event/evidence checks: PASS
-- projected events: 3
-- projected evidence links: 3
-- ledger remains empty
+UI exposes only:
+1. preflight;
+2. rollback-only probe.
 
-Root cause:
-B2.15.2 incorrectly used the raw cardinality of `project_requirement_truth_status`,
-which intentionally includes non-Current/historical Requirement identities. The Current
-denominator must be:
-- `lifecycle_status = active`
-- `truth_state in (verified, human_confirmed)`
+Writer accepts only governed B2.7.1 verified_response event plans from B2.15.2.1.
+It rejects machine/human-confirmation paths and requires the bootstrap ledger to be empty.
 
-This is a projection-denominator bug, not data drift.
-
-## Active checkpoint
-**V28.7.3B2.15.2.1 — Current Requirement Truth Denominator Fix**
-
-READ ONLY.
-
-B2.15.2.1:
-- preserves raw truth-row count for diagnostics;
-- filters the projection input to governed Current Requirement Truth;
-- explicitly verifies all rows used by the projection are Current-only;
-- keeps the ledger empty requirement;
-- changes no event/evidence semantics.
-
-Golden order remains:
-1. Chambinho rerun.
-2. JOVI only after Chambinho PASS.
-
-No Response Truth write is authorized.
+Validation order:
+1. install SQL + deploy/reboot;
+2. JOVI preflight first -> NO_TRANSACTION_REQUIRED;
+3. review JOVI JSON;
+4. Chambinho preflight -> READY_FOR_ROLLBACK_ONLY_PROBE;
+5. review Chambinho JSON;
+6. only then run Chambinho rollback-only probe;
+7. no real write until a later explicit checkpoint.
