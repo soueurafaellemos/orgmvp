@@ -9,7 +9,7 @@ from project_requirement_response_truth_transaction import (
     build_response_truth_transaction_preflight,
 )
 
-VERSION = "V28.7.3B2.15.3P1"
+VERSION = "V28.7.3B2.15.3.2P1"
 
 
 def _rows(response: Any) -> list[dict[str, Any]]:
@@ -70,7 +70,8 @@ def run_response_truth_transaction_probe(
 
     rows = _rows(response)
     if not rows:
-        raise RuntimeError("B2.15.3P1 diagnostic RPC returned no result")
+        raise RuntimeError("B2.15.3.2P1 diagnostic RPC returned no result")
+
     rpc = rows[0]
 
     after = build_response_truth_transaction_preflight(
@@ -82,9 +83,13 @@ def run_response_truth_transaction_probe(
         after.get("status") == before.get("status")
         and after.get("execution_signature") == before.get("execution_signature")
         and after.get("review_fingerprint") == before.get("review_fingerprint")
+        and after.get("baseline_sha256") == before.get("baseline_sha256")
         and after.get("projected_event_count") == before.get("projected_event_count")
         and after.get("projected_evidence_link_count")
             == before.get("projected_evidence_link_count")
+        and (after.get("live_guards") or {}).get("event_ledger_probe_count") == 0
+        and (after.get("live_guards") or {}).get("evidence_ledger_probe_count") == 0
+        and (after.get("live_guards") or {}).get("current_response_truth_probe_count") == 0
     )
 
     rollback_verified = (
@@ -95,6 +100,7 @@ def run_response_truth_transaction_probe(
     )
 
     rpc_status = str(rpc.get("status") or "")
+
     if not rollback_verified:
         status = "PROBE_RETURNED_BUT_ROLLBACK_NOT_INDEPENDENTLY_VERIFIED"
     elif rpc_status == "WRITER_WOULD_COMPLETE_ROLLED_BACK":

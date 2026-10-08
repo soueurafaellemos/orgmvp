@@ -1,28 +1,19 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3B2.15.3.1 — Frozen Golden Transaction Preflight.
-
-Performance hotfix for B2.15.3.
-
-The original B2.15.3 preflight rebuilt B2.12.2.2 -> B2.14 -> B2.15.2.1 live on every
-button click. That is unnecessary after both B2.15.2.1 Golden projections were reviewed
-and frozen, and it makes JOVI especially slow.
-
-B2.15.3.1 instead loads the SHA-256 locked Golden projection artifact and performs only
-small live guard queries against the current database before preparing the transaction.
-No governance gate is relaxed.
-"""
+"""NAVE V28.7.3B2.15.3.2 — full-bundle reviewed transaction preflight."""
 
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 import json
 
-VERSION = "V28.7.3B2.15.3.1"
-WRITER_VERSION = "V28.7.3B2.15.3"
+VERSION = "V28.7.3B2.15.3.2"
+WRITER_VERSION = VERSION
 PROJECTION_VERSION = "V28.7.3B2.15.2.1"
 CONTRACT_VERSION = "V28.7.3B2.7.1"
-RPC_PROBE = "diagnose_contract_verified_response_truth_b2153"
+
+RPC_INSPECT = "inspect_response_truth_bundle_b21532"
+RPC_PROBE = "diagnose_contract_verified_response_truth_b21532"
 
 CHAMBINHO = "0d9f1608-4bf7-4fd0-81ab-f303fdb0c136"
 JOVI = "01415104-72f2-4b8e-aeca-2dd24c231a7d"
@@ -56,25 +47,19 @@ def _rows(response: Any) -> list[dict[str, Any]]:
 def _load_locked_projection(project_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
     spec = BASELINES.get(str(project_id or ""))
     if spec is None:
-        raise ValueError(f"B2.15.3.1 unsupported Golden project: {project_id}")
+        raise ValueError(f"B2.15.3.2 unsupported Golden project: {project_id}")
 
     path = BASELINE_DIR / spec["filename"]
     raw = path.read_bytes()
     actual_sha256 = sha256(raw).hexdigest()
     if actual_sha256 != spec["sha256"]:
         raise RuntimeError(
-            "B2.15.3.1 frozen Golden projection hash mismatch: "
+            "B2.15.3.2 frozen Golden projection hash mismatch: "
             f"expected {spec['sha256']}, got {actual_sha256}"
         )
+
     projection = json.loads(raw.decode("utf-8"))
     return projection, {**spec, "actual_sha256": actual_sha256}
-
-
-def _execution_signature(project_id: str, event_plans: list[Mapping[str, Any]]) -> str:
-    signatures = sorted(str(row.get("event_signature") or "") for row in event_plans)
-    return sha256(
-        f"{WRITER_VERSION}|{project_id}|{','.join(signatures)}".encode("utf-8")
-    ).hexdigest()
 
 
 def _lightweight_live_guards(
@@ -84,7 +69,6 @@ def _lightweight_live_guards(
     projection: Mapping[str, Any],
     baseline_spec: Mapping[str, Any],
 ) -> dict[str, Any]:
-    project_id = str(project_id or "")
     event_plans = [
         dict(row)
         for row in (projection.get("event_plans") or [])
@@ -100,21 +84,15 @@ def _lightweight_live_guards(
 
     event_probe = _rows(
         client.table("project_requirement_response_truth_events")
-        .select("id")
-        .limit(1)
-        .execute()
+        .select("id").limit(1).execute()
     )
     evidence_probe = _rows(
         client.table("project_requirement_response_truth_evidence")
-        .select("event_id")
-        .limit(1)
-        .execute()
+        .select("event_id").limit(1).execute()
     )
     current_truth_probe = _rows(
         client.table("project_requirement_response_current_truth")
-        .select("response_truth_event_id")
-        .limit(1)
-        .execute()
+        .select("response_truth_event_id").limit(1).execute()
     )
     cutover_rows = _rows(
         client.table("project_domain_cutover_readiness")
@@ -126,9 +104,11 @@ def _lightweight_live_guards(
 
     target_identity_checks = []
     evidence_checks = []
+
     for event in event_plans:
         rid = str(event.get("requirement_id") or "")
         entity_id = str(event.get("requirement_entity_id") or "")
+
         requirement_rows = _rows(
             client.table("project_requirement_truth_status")
             .select("id,project_id,entity_id,truth_state,lifecycle_status")
@@ -137,6 +117,7 @@ def _lightweight_live_guards(
             .limit(2)
             .execute()
         )
+
         target_identity_checks.append({
             "requirement_id": rid,
             "requirement_entity_id": entity_id,
@@ -153,6 +134,7 @@ def _lightweight_live_guards(
         for link in event.get("evidence_links") or []:
             if not isinstance(link, Mapping):
                 continue
+
             eid = str(link.get("evidence_unit_id") or "")
             evidence_rows = _rows(
                 client.table("evidence_units")
@@ -161,6 +143,7 @@ def _lightweight_live_guards(
                 .limit(2)
                 .execute()
             )
+
             evidence_checks.append({
                 "evidence_unit_id": eid,
                 "row_count": len(evidence_rows),
@@ -219,6 +202,7 @@ def _lightweight_live_guards(
     }
 
     failed = [key for key, value in checks.items() if not value]
+
     return {
         "checks": checks,
         "failed_checks": failed,
@@ -233,13 +217,8 @@ def _lightweight_live_guards(
     }
 
 
-def build_transaction_preflight_from_projection(
-    *,
-    project_id: str,
-    projection: Mapping[str, Any],
-) -> dict[str, Any]:
-    project_id = str(project_id or "")
-    blockers: list[str] = []
+def _projection_blockers(project_id: str, projection: Mapping[str, Any]) -> list[str]:
+    blockers = []
 
     if str(projection.get("version") or "") != PROJECTION_VERSION:
         blockers.append("projection_version_mismatch")
@@ -249,6 +228,7 @@ def build_transaction_preflight_from_projection(
         blockers.append("projection_not_pass")
     if projection.get("status") != "PASS_CONTRACT_VERIFIED_RESPONSE_TRUTH_PROJECTION":
         blockers.append(f"projection_status_{projection.get('status')}")
+
     for key in (
         "response_truth_changed",
         "human_review_created",
@@ -258,26 +238,72 @@ def build_transaction_preflight_from_projection(
     ):
         if projection.get(key) is not False:
             blockers.append(f"projection_guard_{key}")
+
     if projection.get("safe_to_write_response_truth") is not False:
         blockers.append("projection_unexpectedly_self_authorized")
 
-    event_plans = [
-        dict(row)
-        for row in (projection.get("event_plans") or [])
-        if isinstance(row, Mapping)
-    ]
+    return blockers
+
+
+def _inspect_bundle_server_side(
+    client: Any,
+    *,
+    project_id: str,
+    execution_bundle: Mapping[str, Any],
+) -> dict[str, Any]:
+    response = client.rpc(
+        RPC_INSPECT,
+        {
+            "p_project_id": project_id,
+            "p_execution_bundle": dict(execution_bundle),
+        },
+    ).execute()
+
+    rows = _rows(response)
+    if not rows:
+        raise RuntimeError("B2.15.3.2 bundle fingerprint RPC returned no result")
+
+    return rows[0]
+
+
+def build_response_truth_transaction_preflight(
+    client: Any,
+    *,
+    project_id: str,
+) -> dict[str, Any]:
+    project_id = str(project_id or "")
+    projection, baseline_spec = _load_locked_projection(project_id)
+
+    live = _lightweight_live_guards(
+        client,
+        project_id=project_id,
+        projection=projection,
+        baseline_spec=baseline_spec,
+    )
+
+    blockers = _projection_blockers(project_id, projection)
+    blockers.extend(live["failed_checks"])
 
     if blockers:
         return {
             "version": VERSION,
             "writer_version": WRITER_VERSION,
             "project_id": project_id,
-            "status": "BLOCKED_BEFORE_TRANSACTION_PREFLIGHT",
-            "blockers": blockers,
+            "status": "BLOCKED_LIVE_GOLDEN_GUARD",
+            "blockers": sorted(set(blockers)),
+            "baseline_sha256": baseline_spec["actual_sha256"],
+            "live_guards": live,
             "ready_for_probe": False,
             "ready_for_real_write": False,
             "real_write_performed": False,
+            "safe_to_write_response_truth": False,
         }
+
+    event_plans = [
+        dict(row)
+        for row in (projection.get("event_plans") or [])
+        if isinstance(row, Mapping)
+    ]
 
     if not event_plans:
         return {
@@ -298,22 +324,11 @@ def build_transaction_preflight_from_projection(
             "execution_bundle": None,
             "real_write_performed": False,
             "response_truth_changed": False,
-        }
-
-    event_signatures = [str(row.get("event_signature") or "") for row in event_plans]
-    if (
-        any(len(sig) != 64 for sig in event_signatures)
-        or len(event_signatures) != len(set(event_signatures))
-    ):
-        return {
-            "version": VERSION,
-            "writer_version": WRITER_VERSION,
-            "project_id": project_id,
-            "status": "BLOCKED_BEFORE_TRANSACTION_PREFLIGHT",
-            "blockers": ["event_signature_integrity_failed"],
-            "ready_for_probe": False,
-            "ready_for_real_write": False,
-            "real_write_performed": False,
+            "baseline_sha256": baseline_spec["actual_sha256"],
+            "baseline_file": baseline_spec["filename"],
+            "projection_source": "sha256_locked_b21521_golden_artifact",
+            "live_guards": live,
+            "safe_to_write_response_truth": False,
         }
 
     execution_bundle = {
@@ -321,9 +336,53 @@ def build_transaction_preflight_from_projection(
         "project_id": project_id,
         "projection_version": PROJECTION_VERSION,
         "contract_version": CONTRACT_VERSION,
+        "baseline_sha256": baseline_spec["actual_sha256"],
         "events": event_plans,
     }
-    execution_signature = _execution_signature(project_id, event_plans)
+
+    inspected = _inspect_bundle_server_side(
+        client,
+        project_id=project_id,
+        execution_bundle=execution_bundle,
+    )
+
+    execution_signature = str(inspected.get("bundle_fingerprint") or "")
+
+    if (
+        len(execution_signature) != 64
+        or str(inspected.get("fingerprint_scope") or "")
+            != "entire_jsonb_execution_bundle"
+    ):
+        return {
+            "version": VERSION,
+            "writer_version": WRITER_VERSION,
+            "project_id": project_id,
+            "status": "BLOCKED_BUNDLE_FINGERPRINT",
+            "blockers": ["server_bundle_fingerprint_invalid"],
+            "bundle_inspection": inspected,
+            "ready_for_probe": False,
+            "ready_for_real_write": False,
+            "real_write_performed": False,
+            "safe_to_write_response_truth": False,
+        }
+
+    if (
+        int(inspected.get("event_count") or 0) != len(event_plans)
+        or int(inspected.get("evidence_link_count") or 0)
+            != int(projection.get("projected_evidence_link_count") or 0)
+    ):
+        return {
+            "version": VERSION,
+            "writer_version": WRITER_VERSION,
+            "project_id": project_id,
+            "status": "BLOCKED_BUNDLE_FINGERPRINT",
+            "blockers": ["server_bundle_cardinality_mismatch"],
+            "bundle_inspection": inspected,
+            "ready_for_probe": False,
+            "ready_for_real_write": False,
+            "real_write_performed": False,
+            "safe_to_write_response_truth": False,
+        }
 
     return {
         "version": VERSION,
@@ -335,59 +394,30 @@ def build_transaction_preflight_from_projection(
         "contract_version": CONTRACT_VERSION,
         "projected_event_count": len(event_plans),
         "projected_evidence_link_count": sum(
-            len(row.get("evidence_links") or []) for row in event_plans
+            len(row.get("evidence_links") or [])
+            for row in event_plans
         ),
-        "event_signatures": sorted(event_signatures),
+        "event_signatures": sorted(
+            str(row.get("event_signature") or "")
+            for row in event_plans
+        ),
         "review_fingerprint": execution_signature,
         "execution_signature": execution_signature,
+        "fingerprint_scope": "entire_jsonb_execution_bundle",
         "confirmation_token": (
             f"WRITE_RESPONSE_TRUTH:{project_id}:{execution_signature[:12]}"
         ),
         "execution_bundle": execution_bundle,
+        "bundle_inspection": inspected,
         "ready_for_probe": True,
         "ready_for_real_write": False,
         "real_write_performed": False,
         "response_truth_changed": False,
         "human_review_created": False,
         "cutover_changed": False,
+        "baseline_sha256": baseline_spec["actual_sha256"],
+        "baseline_file": baseline_spec["filename"],
+        "projection_source": "sha256_locked_b21521_golden_artifact",
+        "live_guards": live,
+        "safe_to_write_response_truth": False,
     }
-
-
-def build_response_truth_transaction_preflight(
-    client: Any,
-    *,
-    project_id: str,
-) -> dict[str, Any]:
-    projection, baseline_spec = _load_locked_projection(project_id)
-    live = _lightweight_live_guards(
-        client,
-        project_id=project_id,
-        projection=projection,
-        baseline_spec=baseline_spec,
-    )
-
-    if not live["all_checks_pass"]:
-        return {
-            "version": VERSION,
-            "writer_version": WRITER_VERSION,
-            "project_id": project_id,
-            "status": "BLOCKED_LIVE_GOLDEN_GUARD",
-            "blockers": list(live["failed_checks"]),
-            "baseline_sha256": baseline_spec["actual_sha256"],
-            "live_guards": live,
-            "ready_for_probe": False,
-            "ready_for_real_write": False,
-            "real_write_performed": False,
-            "safe_to_write_response_truth": False,
-        }
-
-    result = build_transaction_preflight_from_projection(
-        project_id=project_id,
-        projection=projection,
-    )
-    result["baseline_sha256"] = baseline_spec["actual_sha256"]
-    result["baseline_file"] = baseline_spec["filename"]
-    result["projection_source"] = "sha256_locked_b21521_golden_artifact"
-    result["live_guards"] = live
-    result["safe_to_write_response_truth"] = False
-    return result

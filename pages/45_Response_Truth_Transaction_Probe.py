@@ -25,7 +25,7 @@ apply_nave_branding()
 page_header(
     "Response Truth Transaction Probe",
     (
-        "B2.15.3P1 executa o writer inteiro dentro de uma subtransação "
+        "B2.15.3.2P1 executa o writer inteiro dentro de uma subtransação "
         "obrigatoriamente revertida e reconstrói o preflight depois."
     ),
     eyebrow=f"NAVE by VOE · {VERSION} · ROLLBACK ONLY",
@@ -57,7 +57,7 @@ elif preview.get("status") != "READY_FOR_ROLLBACK_ONLY_PROBE":
 else:
     confirm = st.checkbox("Confirmo executar somente o rollback-only probe.", value=False)
     if st.button(
-        "EXECUTAR B2.15.3P1 — ROLLBACK-ONLY PROBE",
+        "EXECUTAR B2.15.3.2P1 — ROLLBACK-ONLY PROBE",
         type="primary",
         disabled=not confirm,
     ):
@@ -74,8 +74,8 @@ else:
 
         st.json(result)
         st.download_button(
-            "Baixar B2.15.3P1 Transaction Probe JSON",
+            "Baixar B2.15.3.2P1 Transaction Probe JSON",
             data=json.dumps(result, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
-            file_name=f"NAVE_B2_15_3P1_TRANSACTION_PROBE_{project_id}.json",
+            file_name=f"NAVE_B2_15_3_2P1_TRANSACTION_PROBE_{project_id}.json",
             mime="application/json",
         )
