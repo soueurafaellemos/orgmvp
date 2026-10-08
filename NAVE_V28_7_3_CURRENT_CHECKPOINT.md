@@ -6,48 +6,46 @@
 - B2.13.1 Response downstream integrity Chambinho/JOVI.
 - B2.14 Response Truth Eligibility & Provenance Chambinho/JOVI.
 - B2.15P0.3 live Response Truth architecture inventory.
-- B2.15.1 Response Truth Ledger Schema Foundation.
+- B2.15.1 Response Truth Ledger Schema Foundation — 15/15 schema verifier PASS.
 
-## B2.15.1 verifier
-`V28.7.3B2.15.1V1`
-- PASS_RESPONSE_TRUTH_LEDGER_SCHEMA
-- 15 / 15 checks passed
-- zero failed checks
-- event/evidence/current-truth stores empty
-- append-only triggers installed
-- insert validation trigger installed
-- RLS enabled
-- both Goldens remain shadow_compare
-- no domain_primary promotion
-- Requirement Response Human Review type still not activated
+## B2.15.2 Chambinho runtime finding
 
-B2.15.1 is schema-installation Golden only.
-The event INSERT path has intentionally not been runtime-tested yet.
+First B2.15.2 run correctly BLOCKED on exactly one check:
+
+`current_requirement_count_matches_golden`
+
+Observed:
+- B2.14 Current denominator: 13
+- Response Truth status view: 13
+- raw `project_requirement_truth_status` rows fetched by B2.15.2: 16
+- all semantic/provenance/event/evidence checks: PASS
+- projected events: 3
+- projected evidence links: 3
+- ledger remains empty
+
+Root cause:
+B2.15.2 incorrectly used the raw cardinality of `project_requirement_truth_status`,
+which intentionally includes non-Current/historical Requirement identities. The Current
+denominator must be:
+- `lifecycle_status = active`
+- `truth_state in (verified, human_confirmed)`
+
+This is a projection-denominator bug, not data drift.
 
 ## Active checkpoint
-**V28.7.3B2.15.2 — Contract-Verified Response Truth Projection Shadow**
+**V28.7.3B2.15.2.1 — Current Requirement Truth Denominator Fix**
 
 READ ONLY.
 
-Purpose:
-- project the already-governed B2.7.1 `verified_response` rows into exact immutable
-  B2.15.1 event/evidence payloads;
-- prove Requirement identity/entity mapping;
-- prove Evidence Unit existence;
-- freeze deterministic event signatures;
-- explicitly exclude machine/human-confirmation candidates;
-- require the ledger to remain empty.
+B2.15.2.1:
+- preserves raw truth-row count for diagnostics;
+- filters the projection input to governed Current Requirement Truth;
+- explicitly verifies all rows used by the projection are Current-only;
+- keeps the ledger empty requirement;
+- changes no event/evidence semantics.
 
-Golden order:
-1. Chambinho: expected 3 events / 3 evidence links.
-2. JOVI: expected 0 events; Plenária remains excluded human-confirmation candidate.
+Golden order remains:
+1. Chambinho rerun.
+2. JOVI only after Chambinho PASS.
 
-## Governance freeze
-- no Response Truth insert;
-- no Human Review creation;
-- no machine recommendation promotion;
-- no Requirement writer rerun;
-- no read_mode/domain_primary/cutover change;
-- no A/B/Graph rerun.
-
-No real Response Truth write is authorized by B2.15.2.
+No Response Truth write is authorized.

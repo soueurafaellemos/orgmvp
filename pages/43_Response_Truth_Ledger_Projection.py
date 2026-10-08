@@ -24,7 +24,7 @@ apply_nave_branding()
 page_header(
     "Contract-Verified Response Truth Projection",
     (
-        "B2.15.2 projeta, sem escrever, os Response Truth events que seriam "
+        "B2.15.2.1 projeta, sem escrever, os Response Truth events que seriam "
         "permitidos pelo contrato B2.7.1 e pelo B2.14. Machine recommendations "
         "e candidatos de confirmação humana permanecem fora do ledger."
     ),
@@ -51,7 +51,7 @@ else:
         "Esperado: 0 contract-verified events; Plenária continua human-confirmation candidate."
     )
 
-if st.button("Executar B2.15.2 — READ ONLY", type="primary"):
+if st.button("Executar B2.15.2.1 — READ ONLY", type="primary"):
     client = get_nave_client()
     with st.spinner(
         "Projetando immutable Response Truth events e validando Evidence/identity..."
@@ -67,7 +67,7 @@ if st.button("Executar B2.15.2 — READ ONLY", type="primary"):
         )
     else:
         st.error(
-            "B2.15.2 bloqueado. Existe drift de identity, Evidence, eligibility "
+            "B2.15.2.1 bloqueado. Existe drift de identity, Evidence, eligibility "
             "ou estado do ledger."
         )
 
@@ -124,10 +124,10 @@ if st.button("Executar B2.15.2 — READ ONLY", type="primary"):
 
     st.json(result)
     st.download_button(
-        "Baixar B2.15.2 Response Truth Projection JSON",
+        "Baixar B2.15.2.1 Response Truth Projection JSON",
         data=json.dumps(
             result, ensure_ascii=False, indent=2, default=str
         ).encode("utf-8"),
-        file_name=f"NAVE_B2_15_2_RESPONSE_TRUTH_PROJECTION_{project_id}.json",
+        file_name=f"NAVE_B2_15_2_1_RESPONSE_TRUTH_PROJECTION_{project_id}.json",
         mime="application/json",
     )

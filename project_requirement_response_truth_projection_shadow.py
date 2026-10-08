@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""NAVE V28.7.3B2.15.2 — Contract-Verified Response Truth Projection Shadow.
+"""NAVE V28.7.3B2.15.2.1 — Contract-Verified Response Truth Projection Shadow.
 
 READ ONLY / DRY RUN.
 
@@ -32,7 +32,7 @@ from project_requirement_response_truth_eligibility_shadow import (
     run_response_truth_eligibility_shadow,
 )
 
-VERSION = "V28.7.3B2.15.2"
+VERSION = "V28.7.3B2.15.2.1"
 ELIGIBILITY_VERSION = "V28.7.3B2.14"
 SOURCE_PROJECTION_VERSION = "V28.7.3B2.12.2.2"
 SOURCE_CONTRACT_VERSION = "V28.7.3B2.7.1"
@@ -91,6 +91,24 @@ def _rows(response: Any) -> list[dict[str, Any]]:
     if isinstance(data, Mapping):
         return [dict(data)]
     return [dict(row) for row in (data or []) if isinstance(row, Mapping)]
+
+
+def _current_requirement_truth_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return only governed Current Requirement Truth rows.
+
+    `project_requirement_truth_status` intentionally exposes historical/non-Current
+    Requirement identities as well. B2.15.2 must compare against the Current
+    denominator, not the raw view cardinality.
+    """
+    return [
+        dict(row)
+        for row in rows
+        if isinstance(row, Mapping)
+        and str(row.get("lifecycle_status") or "") == "active"
+        and str(row.get("truth_state") or "") in {"verified", "human_confirmed"}
+    ]
 
 
 def _canonical(value: Any) -> Any:
@@ -416,6 +434,11 @@ def build_response_truth_ledger_projection_shadow(
             str(eligibility.get("project_id") or "") == project_id,
             str(source_projection.get("project_id") or "") == project_id,
         ]),
+        "requirement_truth_rows_are_current_only": all(
+            str(row.get("lifecycle_status") or "") == "active"
+            and str(row.get("truth_state") or "") in {"verified", "human_confirmed"}
+            for row in truth_rows
+        ),
         "current_requirement_count_matches_golden": (
             int(eligibility.get("current_requirement_count") or 0)
             == expected_current_count
@@ -515,6 +538,13 @@ def build_response_truth_ledger_projection_shadow(
                 ledger_state.get("current_truth_count") or 0
             ),
             "truth_status_row_count": len(truth_status_rows),
+            "requirement_truth_row_count_raw": int(
+                ledger_state.get("requirement_truth_row_count_raw") or len(truth_rows)
+            ),
+            "requirement_truth_row_count_current": len(truth_rows),
+            "requirement_truth_row_count_noncurrent": int(
+                ledger_state.get("requirement_truth_row_count_noncurrent") or 0
+            ),
         },
         "event_plans": event_plans,
         "excluded_human_confirmation_candidates": human_rows,
@@ -561,11 +591,14 @@ def run_contract_verified_response_truth_projection_shadow(
         project_id=project_id,
     ).to_dict()
 
-    requirement_truth_rows = _rows(
+    raw_requirement_truth_rows = _rows(
         client.table("project_requirement_truth_status")
         .select("*")
         .eq("project_id", project_id)
         .execute()
+    )
+    requirement_truth_rows = _current_requirement_truth_rows(
+        raw_requirement_truth_rows
     )
 
     source_by_id = {
@@ -623,6 +656,10 @@ def run_contract_verified_response_truth_projection_shadow(
         ),
         "current_truth_count": len(current_truth_rows),
         "truth_status_rows": truth_status_rows,
+        "requirement_truth_row_count_raw": len(raw_requirement_truth_rows),
+        "requirement_truth_row_count_noncurrent": (
+            len(raw_requirement_truth_rows) - len(requirement_truth_rows)
+        ),
     }
 
     return build_response_truth_ledger_projection_shadow(
