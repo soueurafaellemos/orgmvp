@@ -1,52 +1,53 @@
 # NAVE V28.7.3 — Current Governed Checkpoint
 
 ## Goldens closed
-- H3.1.3 Chambinho/JOVI.
-- B2.12.2.2 Chambinho/JOVI.
-- B2.12.3 identity collision shadow Chambinho/JOVI.
-- B2.12.4.1 transaction integrity Chambinho/JOVI.
-- H3.1.3P1 normal-pipeline promotion Chambinho/JOVI.
-- B2.12.5.4 transactional Requirement identity supersession JOVI + independent verifier.
-- B2.13.1 post-supersession Response integrity Chambinho/JOVI.
+- H3.1.3 + H3.1.3P1 Requirement semantics/pipeline.
+- B2.12.5.4 Requirement identity supersession JOVI + independent verifier.
+- B2.13.1 Response downstream integrity Chambinho/JOVI.
+- B2.14 Response Truth Eligibility & Provenance Chambinho/JOVI.
+- B2.15P0.3 live Response Truth architecture inventory.
+- B2.15.1 Response Truth Ledger Schema Foundation.
 
-## B2.13.1 closed result
-Chambinho:
-- PASS_CONTROL_NO_DOWNSTREAM_DRIFT;
-- 13 Current / queue 3 / collision 0 unchanged;
-- exact projection and recommendation hashes unchanged.
+## B2.15.1 verifier
+`V28.7.3B2.15.1V1`
+- PASS_RESPONSE_TRUTH_LEDGER_SCHEMA
+- 15 / 15 checks passed
+- zero failed checks
+- event/evidence/current-truth stores empty
+- append-only triggers installed
+- insert validation trigger installed
+- RLS enabled
+- both Goldens remain shadow_compare
+- no domain_primary promotion
+- Requirement Response Human Review type still not activated
 
-JOVI:
-- PASS_POST_SUPERSESSION_RESPONSE_INTEGRITY;
-- 70 → 69 Current exactly;
-- queue 33 → 32 exactly;
-- collisions 1 → 0;
-- recommendation distribution changed only by removal of the superseded duplicate:
-  reject 26 → 25;
-- all surviving projection rows unchanged;
-- all surviving recommendation rows unchanged;
-- no mismatch rows;
-- Response Truth unchanged.
+B2.15.1 is schema-installation Golden only.
+The event INSERT path has intentionally not been runtime-tested yet.
 
 ## Active checkpoint
-**V28.7.3B2.14 — Response Truth Eligibility & Provenance Shadow**
+**V28.7.3B2.15.2 — Contract-Verified Response Truth Projection Shadow**
 
-B2.14 remains read-only and establishes the provenance boundary for a later Response Truth ledger.
+READ ONLY.
 
-- `eligible_contract_verified`: already `verified_response` under governed B2.7.1
-  with explicit supporting Evidence.
-- `eligible_human_confirmation_only`: machine `recommend_confirm`, explicit evidence,
-  high-confidence projection; machine remains non-Truth and requires future explicit
-  human decision for any `human_confirmed_response`.
-- partial/reject/visual/defer/no-safe/false-positive: not eligible.
-- any unknown state: fail closed as `blocked_unclassified`.
+Purpose:
+- project the already-governed B2.7.1 `verified_response` rows into exact immutable
+  B2.15.1 event/evidence payloads;
+- prove Requirement identity/entity mapping;
+- prove Evidence Unit existence;
+- freeze deterministic event signatures;
+- explicitly exclude machine/human-confirmation candidates;
+- require the ledger to remain empty.
+
+Golden order:
+1. Chambinho: expected 3 events / 3 evidence links.
+2. JOVI: expected 0 events; Plenária remains excluded human-confirmation candidate.
 
 ## Governance freeze
-- do not persist Response Truth;
-- do not auto-promote machine recommendations;
-- do not synthesize Human Review;
-- do not rerun Requirement writer;
-- no A/B/Graph rerun;
-- no cutover/domain_primary;
-- requirements remain `shadow_compare`.
+- no Response Truth insert;
+- no Human Review creation;
+- no machine recommendation promotion;
+- no Requirement writer rerun;
+- no read_mode/domain_primary/cutover change;
+- no A/B/Graph rerun.
 
-Golden order: Chambinho first, then JOVI.
+No real Response Truth write is authorized by B2.15.2.

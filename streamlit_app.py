@@ -54,6 +54,7 @@ links = [
 ("pages/40_Requirement_Supersession_Transaction_Probe.py","Supersession Transaction Probe","🧯"),
 ("pages/41_Response_Truth_Impact_Shadow.py","Response Truth Impact Shadow","🪞"),
 ("pages/42_Response_Truth_Eligibility_Shadow.py","Response Truth Eligibility Shadow","🧾"),
+("pages/43_Response_Truth_Ledger_Projection.py","Response Truth Ledger Projection","🧱"),
 ]
 for path, label, icon in links:
     st.page_link(path, label=label, icon=icon, width="stretch")
